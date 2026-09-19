@@ -2,8 +2,8 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 name: Release
 #
-# Builds the five supported targets and attaches them to a GitHub Release that
-# release-please has already created.
+# Builds the seven supported targets, attaches them to a GitHub Release that
+# release-please has already created, and publishes a container image to GHCR.
 #
 # Normally this is not started by a tag push. release-please owns the version and
 # cuts the release, then dispatches this workflow at the new tag, because GitHub
@@ -11,10 +11,16 @@ name: Release
 # release-please.yaml. The `push: tags` trigger below is kept so a tag pushed by
 # hand still works as an escape hatch.
 #
-# Unlike ci.yaml this does NOT go through mise. mise is the task runner for the
-# gates; a release is plain `cargo build`, and the toolchain still comes from one
-# place — rust-toolchain.toml, which rustup honours on its own. Adding mise here
-# would put a third name on the same 1.98.1 pin.
+# This file goes through mise, and that is a reversal. It used to call cargo
+# directly on the argument that a release is "plain cargo build" and that adding
+# mise would put a third name on the 1.98.1 pin. Two things were wrong with that.
+# .mise/config.toml already pinned 1.98.1 alongside rust-toolchain.toml, so mise
+# was never a third name. And a release stopped being plain `cargo build` the
+# moment the musl targets arrived: they need a musl C compiler for aws-lc-sys and
+# a forced crt-static, which is real build logic. Logic that lives only in a
+# workflow file is logic no developer can run before pushing a tag. It now lives
+# in .mise/config.toml with everything else, and `mise run dist-build` is the same
+# command here and on a laptop.
 
 on:
   push:
@@ -57,28 +63,17 @@ jobs:
             exit 1
           fi
 
-  # Completions are plain text and identical on every platform, so they are
-  # generated once here rather than five times. This also keeps the build matrix
-  # from ever needing to *run* the binary it just produced — which it could not
-  # do for x86_64-apple-darwin, built on an arm64 runner.
   assets:
     name: Generate completions
     needs: verify
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: release-assets
-      - name: Generate shell completions
-        run: |
-          set -euo pipefail
-          mkdir -p dist/completions
-          for shell in bash zsh fish powershell elvish; do
-            cargo run --locked -q -p fjo -- completion "$shell" \
-              > "dist/completions/fjo.$shell"
-          done
-          ls -la dist/completions
+      - run: mise run dist-completions
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: completions
@@ -93,12 +88,41 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux ships two flavours of each architecture, and the split is a
+          # distribution decision rather than a preference:
+          #
+          #   gnu   the fast path for current distributions. Built on ubuntu-22.04
+          #         for its glibc 2.35 -- the oldest runner GitHub still offers --
+          #         which covers Ubuntu 22.04+, Debian 12+ and Fedora 36+. It was
+          #         previously built on ubuntu-24.04 (glibc 2.39), which excluded
+          #         all of those but the newest Ubuntu: the download did not run
+          #         at all. `mise run glibc-floor-check` now fails the build if a
+          #         runner bump raises the floor again.
+          #
+          #         Note that 2.35 does NOT reach RHEL/Rocky/Alma 9 or Amazon
+          #         Linux 2023, which are on glibc 2.34. No available runner is
+          #         old enough to reach them, which is why musl is not optional.
+          #
+          #   musl  the universal fallback. Statically linked, so it runs on hosts
+          #         older than the gnu floor, on Alpine, and in containers with no
+          #         libc at all. install.sh picks between the two by probing the
+          #         host, so nobody has to know which they need.
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
+            os: ubuntu-22.04
             archive: tar.gz
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
+            os: ubuntu-22.04-arm
             archive: tar.gz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+            archive: tar.gz
+            musl: true
+            docker_arch: amd64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-22.04-arm
+            archive: tar.gz
+            musl: true
+            docker_arch: arm64
           # Both macOS slices build on the arm64 runner. GitHub is winding the
           # Intel (macos-13) images down, and the Apple toolchain cross-builds
           # x86_64 natively, so this avoids depending on a deprecated runner.
@@ -114,15 +138,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # No toolchain action: rustup is preinstalled on every GitHub runner and
-      # reads rust-toolchain.toml itself, so 1.98.1 is still defined in exactly
-      # one file.
-      - name: Install target
-        shell: bash
+      # The one part of the dist toolchain mise cannot own: musl-gcc is an apt
+      # package, not something with a version-manager backend. aws-lc-sys (pulled
+      # in by reqwest -> rustls) compiles AWS-LC's C sources, so a musl build
+      # needs a C compiler targeting musl -- a musl Rust std alone is not enough.
+      # `file` is what `mise run dist-verify` uses to prove the result is static.
+      - name: Install musl toolchain
+        if: matrix.musl
         run: |
           set -euo pipefail
-          rustup show
-          rustup target add ${{ matrix.target }}
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools musl-dev file
+
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -130,7 +158,19 @@ jobs:
 
       - name: Build
         shell: bash
-        run: cargo build --release --locked -p fjo --target ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: mise run dist-build
+
+      # Asserts the artifact is linked the way its target promises: musl must be
+      # static, gnu must not exceed the glibc floor. Both failures are invisible
+      # in a green build and only surface as "it does not run on my machine"
+      # reports from users, which is the worst place to find out.
+      - name: Verify linkage
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: mise run dist-verify
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -182,8 +222,71 @@ jobs:
           if-no-files-found: ignore
           retention-days: 5
 
+      # The bare binary, for the image build. Uploading it separately rather than
+      # having the docker job unpack a release archive keeps that job from having
+      # to know the archive's internal layout.
+      - name: Upload binary for image
+        if: matrix.musl
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-bin-${{ matrix.docker_arch }}
+          path: target/${{ matrix.target }}/release/fjo
+          retention-days: 1
+
+  docker:
+    name: Publish image to GHCR
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The image is assembled from the musl binaries the build matrix already
+      # produced, not compiled again here. The bytes in the image are therefore
+      # the same bytes on the release page, and there is no second toolchain that
+      # can drift from the first.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: docker-bin-amd64
+          path: dist/amd64
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: docker-bin-arm64
+          path: dist/arm64
+      - name: Restore executable bits
+        run: chmod 0755 dist/amd64/fjo dist/arm64/fjo
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
   release:
     name: Publish release
+    # Deliberately not `needs: [build, docker]`. A registry outage should not
+    # hold back binaries that are already built and verified; the image can be
+    # re-pushed by re-running that job alone.
     needs: build
     runs-on: ubuntu-24.04
     permissions:
@@ -198,8 +301,3 @@ jobs:
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*
-          # false, because release-please already wrote this release's body from the
-          # CHANGELOG. Leaving it true makes action-gh-release overwrite that with
-          # GitHub's auto-generated commit list when it attaches the archives.
-          generate_release_notes: false
-          fail_on_unmatched_files: true

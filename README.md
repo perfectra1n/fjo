@@ -6,13 +6,41 @@ Use `fjo pr`, `fjo issue`, and `fjo repo` for common tasks. For other API operat
 
 ## Install
 
+### Linux and macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/perfectra1n/fjo/main/install.sh | sh
+```
+
+Installs to `~/.local/bin` (never needs `sudo`), verifies the published SHA-256, and installs shell completions. It probes your system to choose between the glibc and the statically linked musl build, so older distributions get a binary that actually runs. Set `FJO_INSTALL_DIR` to install elsewhere, or `FJO_VERSION` to pin a release.
+
+### Windows
+
+```powershell
+irm https://raw.githubusercontent.com/perfectra1n/fjo/main/install.ps1 | iex
+```
+
+### Container
+
+```bash
+docker run --rm -v "$PWD:/workspace" -e FJO_TOKEN ghcr.io/perfectra1n/fjo pr list
+```
+
+Images are published to `ghcr.io/perfectra1n/fjo` for `linux/amd64` and `linux/arm64`, tagged `latest`, `X.Y` and `X.Y.Z`. The image contains `git`, because `fjo` reads the checkout to work out which server and repository a command is for. Authenticate with `FJO_TOKEN`: a container has no keyring for `fjo auth login` to write to.
+
+### Manual download
+
+Archives for every supported target are attached to each [release](https://github.com/perfectra1n/fjo/releases), each with a `.sha256` beside it and shell completions inside.
+
+Pick `-gnu` on Ubuntu 22.04+, Debian 12+, or Fedora 36+. Pick the statically linked `-musl` on anything older, on Alpine, and on RHEL/Rocky/Alma 9 and Amazon Linux 2023 — those ship glibc 2.34, just below what the `-gnu` build needs. `install.sh` makes this choice for you.
+
+### From source
+
 ```bash
 cargo install --git https://github.com/perfectra1n/fjo --locked fjo
 ```
 
 Requires Rust 1.95 or newer. The trailing `fjo` names the package to install: the workspace root is a virtual manifest, so cargo needs to be told which one. `--locked` builds against the committed `Cargo.lock` rather than re-resolving.
-
-Prebuilt binaries for Linux, macOS, and Windows are attached to each [release](https://github.com/perfectra1n/fjo/releases), with shell completions included.
 
 Then log in to your Forgejo server:
 
