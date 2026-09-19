@@ -147,6 +147,8 @@ fjo auth switch --host codeberg.org
 fjo pr list --host git.example.org
 ```
 
+Which server a command talks to is decided in this order: `--host` (or `$FJO_HOST`/`$FORGEJO_HOST`), then a host named inside `-R host/owner/name`, then the current checkout's git remote, and only then the `active` host. So `fjo pr list` inside a clone of `code.example/them/proj` talks to `code.example` no matter which host `fjo auth switch` selected last, and `fjo repo set-default` settles a checkout with several plausible remotes. `--debug` prints the host and the repository it was chosen for, so you can always see why.
+
 `--web` uses Forgejo's own OAuth2 provider: your browser opens, you click Authorize, and no secret crosses the clipboard. The session renews itself and lapses after about 30 days, so CI should keep using a token, which does not expire. Over SSH, add `--no-browser`. See [OAuth login](docs/oauth.md).
 
 Tokens are stored in the OS keyring when available. Without a keyring, use `FORGEJO_TOKEN` or explicitly choose file storage. Token files use `0600` permissions.

@@ -14,6 +14,29 @@
 //!    else 0. Highest wins; a tie at the top is [`ErrorKind::AmbiguousRemote`].
 //! 6. Remotes exist but none names a configured host →
 //!    [`ErrorKind::RemoteHostUnknown`].
+//!
+//! # The host is decided here, and only here
+//!
+//! [`RepoContext::host`] is not decoration: it is the host the request is *sent to*, and the
+//! caller must not resolve one of its own. `hosts.toml`'s `active` is the **last** resort, below
+//! the checkout's own remotes, because a clone of `code.example/them/proj` is a statement about
+//! which server the command is about — far more specific than a global default that was last
+//! set by whichever `fjo auth switch` ran most recently.
+//!
+//! Getting that order wrong is not a cosmetic bug. Resolving the *slug* from the remote and the
+//! *host* from `active` sends `them/proj` to a server nobody named; the visible outcome is a
+//! 404, and the invisible one — when that server happens to hold a repository of the same name
+//! — is a confident, green answer about the wrong repository on the wrong instance.
+//!
+//! So the host precedence is:
+//!
+//! 1. `--host`, `$FJO_HOST`, `$FORGEJO_HOST` — the explicit instruments, and they win
+//!    everywhere, including over a remote that names another host.
+//! 2. A host named inside `-R`/`$FJO_REPO` (`host/owner/name` or a URL). Disagreeing with 1 is
+//!    [`ErrorKind::Usage`] rather than a silent preference.
+//! 3. The git remotes, via [`host_from_remotes`] — `fjo-resolved` first, then remote-name
+//!    scoring, the same walk and the same order this module uses for the repository.
+//! 4. `active`, or the sole configured host.
 
 // See the note in `crate::config`: `crate::Error` exceeds clippy's 128-byte threshold because
 // `RequestCtx` is stored inline, so this fires on every fallible function here. The fix
@@ -61,6 +84,78 @@ pub fn remote_score(name: &str) -> u8 {
         "origin" => 1,
         _ => 0,
     }
+}
+
+/// The order remotes are considered in: highest [`remote_score`] first, then alphabetically.
+///
+/// Shared by [`resolve_repo`] and [`host_from_remotes`] precisely so the host and the
+/// repository cannot be decided by two different remotes. Alphabetical second means a
+/// `--debug` transcript is reproducible rather than dependent on git's output order.
+fn by_preference(a: &Remote, b: &Remote) -> std::cmp::Ordering {
+    remote_score(&b.name).cmp(&remote_score(&a.name)).then_with(|| a.name.cmp(&b.name))
+}
+
+/// The host this checkout is on, or `None` when its remotes say nothing usable.
+///
+/// "Nothing usable" covers every shape that is not an answer: outside a work tree, no remotes,
+/// remotes that are local paths, remotes on a host no `hosts.toml` entry matches, and a remote
+/// the user opted out of with `fjo repo set-default --none`. All of them return `Ok(None)`
+/// rather than an error, because every caller has a documented fallback (`active`) and because
+/// failing here would break `fjo api user` inside an unrelated clone — a GitHub checkout is not
+/// a reason for fjo to stop working.
+///
+/// This reads the tree in the same order as [`resolve_repo`] and honours the same
+/// `fjo-resolved` override, so the two always name the same host.
+pub fn host_from_remotes(hosts: &Hosts, git: &dyn GitCtx) -> Result<Option<HostKey>> {
+    if git.git_dir()?.is_none() {
+        return Ok(None);
+    }
+    let mut remotes = git.remotes()?;
+    remotes.sort_by(by_preference);
+    let keys = hosts.keys();
+
+    // `fjo repo set-default` is the documented escape hatch, so it has to be able to move the
+    // host as well as the repository.
+    let configured = git.config_get_regexp(&format!(r"^remote\..*\.{RESOLVED_SUFFIX}$"))?;
+    for remote in &remotes {
+        let key = resolved_key(&remote.name);
+        let Some((_, value)) = configured.iter().find(|(k, _)| *k == key) else {
+            continue;
+        };
+        match value.trim() {
+            // The user said "none of these remotes". Inferring a host from one of them anyway
+            // would be re-asking the question they already answered.
+            RESOLVED_NONE => return Ok(None),
+            RESOLVED_BASE => {
+                for url in remote.urls() {
+                    if let Resolution::Matched { host, .. } = remote_url::resolve(url, &keys) {
+                        return Ok(Some(host.clone()));
+                    }
+                }
+            }
+            // `host/owner/name` names the host outright. A bare `owner/name` names only the
+            // repository, so it is no answer to *this* question and the walk continues — which
+            // is also what keeps this function from recursing back into `host_from_pref`.
+            other => {
+                if let Ok(r) = other.parse::<RepoRef>()
+                    && let Some(h) = &r.host
+                    && let Ok(key) = HostKey::parse(h)
+                    && hosts.contains(&key)
+                {
+                    return Ok(Some(key));
+                }
+            }
+        }
+    }
+
+    for remote in &remotes {
+        for url in remote.urls() {
+            if let Resolution::Matched { host, .. } = remote_url::resolve(url, &keys) {
+                return Ok(Some(host.clone()));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Which rule produced a [`RepoContext`]. Surfaced by `--debug` and by
@@ -162,8 +257,9 @@ pub fn resolve_repo(
                 a
             }
             (Some(from_flag), None) => HostKey::parse(from_flag)?,
-            (None, Some(_)) => host_from_pref(hosts, &host_pref, env)?,
-            (None, None) => hosts.resolve_host(None, env)?,
+            // Both arms go through `host_from_pref`, so `-R owner/name` inside a checkout picks
+            // up that checkout's host instead of `active`.
+            (None, _) => host_from_pref(hosts, &host_pref, git, env)?,
         };
         return finish(hosts, host, login_pref.as_deref(), r.slug.clone(), RepoSource::Flag);
     }
@@ -180,7 +276,7 @@ pub fn resolve_repo(
         })?;
         let host = match &r.host {
             Some(h) => HostKey::parse(h)?,
-            None => host_from_pref(hosts, &host_pref, env)?,
+            None => host_from_pref(hosts, &host_pref, git, env)?,
         };
         let var: &'static str = if var == "FJO_REPO" { "FJO_REPO" } else { "FORGEJO_REPO" };
         return finish(hosts, host, login_pref.as_deref(), r.slug, RepoSource::Env { var });
@@ -199,9 +295,7 @@ pub fn resolve_repo(
     // Highest score first, then alphabetically, so the order this walks in is deterministic
     // and a `--debug` transcript is reproducible.
     let mut ordered: Vec<&Remote> = remotes.iter().collect();
-    ordered.sort_by(|a, b| {
-        remote_score(&b.name).cmp(&remote_score(&a.name)).then_with(|| a.name.cmp(&b.name))
-    });
+    ordered.sort_by(|a, b| by_preference(a, b));
 
     // ------------------------------------------- 4. remote.<name>.fjo-resolved
     let configured = git.config_get_regexp(&format!(r"^remote\..*\.{RESOLVED_SUFFIX}$"))?;
@@ -234,7 +328,9 @@ pub fn resolve_repo(
                     Resolution::Matched { host, slug } => {
                         return finish(
                             hosts,
-                            host.clone(),
+                            // `--host` still wins: one `Client` speaks to one host, and that
+                            // host is whatever the user named explicitly.
+                            explicit_or(hosts, &host_pref, host)?,
                             login_pref.as_deref(),
                             slug,
                             RepoSource::GitConfig {
@@ -276,7 +372,7 @@ pub fn resolve_repo(
         })?;
         let host = match &r.host {
             Some(h) => HostKey::parse(h)?,
-            None => host_from_pref(hosts, &host_pref, env)?,
+            None => host_from_pref(hosts, &host_pref, git, env)?,
         };
         return finish(
             hosts,
@@ -354,18 +450,48 @@ pub fn resolve_repo(
     let (score, remote, host, slug) = at_top[0];
     finish(
         hosts,
-        (*host).clone(),
+        explicit_or(hosts, &host_pref, host)?,
         login_pref.as_deref(),
         slug.clone(),
         RepoSource::Remote { remote: remote.name.clone(), score: *score },
     )
 }
 
-/// The host to use when nothing named one explicitly: the `--host`/env preference if given,
-/// otherwise `active` (or the sole configured host).
+/// An explicit `--host`/env preference if there is one, otherwise the host a remote's URL named.
+///
+/// Without this, `fjo pr list --host other.example` inside a clone of `code.example/them/proj`
+/// would leave [`RepoContext::host`] saying `code.example` while the client talked to
+/// `other.example` — the two disagreeing about the same command is the whole defect this module
+/// exists to prevent, and a field that is right only sometimes is worse than no field at all.
+fn explicit_or(
+    hosts: &Hosts,
+    pref: &Option<(String, &'static str)>,
+    matched: &HostKey,
+) -> Result<HostKey> {
+    match pref {
+        Some((h, _)) => {
+            let key = HostKey::parse(h)?;
+            if hosts.contains(&key) {
+                Ok(key)
+            } else {
+                Err(Error::new(ErrorKind::UnknownHost { given: h.clone(), known: hosts.known() }))
+            }
+        }
+        None => Ok(matched.clone()),
+    }
+}
+
+/// The host to use when the repository itself did not name one: the `--host`/env preference if
+/// given, then the checkout's own remotes, and only then `active`.
+///
+/// The middle step is the one that is easy to leave out, and leaving it out is the bug this
+/// module's docs describe: `fjo pr list -R them/sibling` typed inside a clone of
+/// `code.example/me/proj` means the sibling repository *on this server*, not the same path on
+/// whichever host `fjo auth switch` last made active.
 fn host_from_pref(
     hosts: &Hosts,
     pref: &Option<(String, &'static str)>,
+    git: &dyn GitCtx,
     env: &dyn Env,
 ) -> Result<HostKey> {
     match pref {
@@ -377,7 +503,10 @@ fn host_from_pref(
                 Err(Error::new(ErrorKind::UnknownHost { given: h.clone(), known: hosts.known() }))
             }
         }
-        None => hosts.resolve_host(None, env),
+        None => match host_from_remotes(hosts, git)? {
+            Some(key) => Ok(key),
+            None => hosts.resolve_host(None, env),
+        },
     }
 }
 
@@ -705,5 +834,206 @@ mod tests {
         let git = FakeGit::repo().with_remote("origin", "https://git.example.org/me/proj.git");
         let ctx = resolve(&git, &hosts, &MapEnv::new(), ResolveOptions::default()).unwrap();
         assert_eq!(ctx.login, None);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Host resolution must follow the remote, not `hosts.toml`'s `active`.
+    //
+    // The bug these cover, in one sentence: a clone of `code.example/them/proj` with
+    // `active = "other.example"` resolved the *slug* from the remote and the *host* from
+    // `active`, and sent the request to a server nobody named. A 404 is the lucky outcome;
+    // when the other server happens to hold a repository of the same name, the answer comes
+    // back green from the wrong instance.
+    // ---------------------------------------------------------------------------------
+
+    /// `active` is the *last* resort, so a repository flag with no host must take the host from
+    /// the checkout it was typed in.
+    #[test]
+    fn the_repo_flag_without_a_host_uses_the_remotes_host_not_active() {
+        let mut hosts = hosts_with(&["code.example", "other.example"]);
+        hosts.set_active(&HostKey::parse("other.example").unwrap()).unwrap();
+        let git = FakeGit::repo().with_remote("origin", "https://code.example/me/proj.git");
+
+        let r: RepoRef = "them/sibling".parse().unwrap();
+        let ctx = resolve(
+            &git,
+            &hosts,
+            &MapEnv::new(),
+            ResolveOptions { repo: Some(&r), ..Default::default() },
+        )
+        .unwrap();
+
+        assert_eq!(ctx.host.as_str(), "code.example", "-R must not fall through to `active`");
+        assert_eq!(ctx.slug.to_string(), "them/sibling");
+    }
+
+    /// The same for `$FJO_REPO`: the variable names a repository, not a server.
+    #[test]
+    fn an_env_repo_without_a_host_uses_the_remotes_host_not_active() {
+        let mut hosts = hosts_with(&["code.example", "other.example"]);
+        hosts.set_active(&HostKey::parse("other.example").unwrap()).unwrap();
+        let git = FakeGit::repo().with_remote("origin", "https://code.example/me/proj.git");
+        let env = MapEnv::new().with("FJO_REPO", "them/sibling");
+
+        let ctx = resolve(&git, &hosts, &env, ResolveOptions::default()).unwrap();
+        assert_eq!(ctx.host.as_str(), "code.example");
+    }
+
+    /// …and an explicit host still wins, or `--host` would have become unusable.
+    #[test]
+    fn an_explicit_host_still_outranks_the_remote() {
+        let hosts = hosts_with(&["code.example", "other.example"]);
+        let git = FakeGit::repo().with_remote("origin", "https://code.example/me/proj.git");
+        let r: RepoRef = "them/sibling".parse().unwrap();
+
+        for (opts, env, why) in [
+            (
+                ResolveOptions { repo: Some(&r), host: Some("other.example"), login: None },
+                MapEnv::new(),
+                "--host",
+            ),
+            (
+                ResolveOptions { repo: Some(&r), ..Default::default() },
+                MapEnv::new().with("FJO_HOST", "other.example"),
+                "$FJO_HOST",
+            ),
+            (
+                ResolveOptions { repo: Some(&r), ..Default::default() },
+                MapEnv::new().with("FORGEJO_HOST", "other.example"),
+                "$FORGEJO_HOST",
+            ),
+        ] {
+            let ctx = resolve(&git, &hosts, &env, opts).unwrap();
+            assert_eq!(ctx.host.as_str(), "other.example", "{why} must outrank the remote");
+        }
+    }
+
+    /// Bug this prevents: `--host` moving the client while [`RepoContext::host`] kept saying what
+    /// the remote said, so the two disagreed about one command. The field is what callers trust to
+    /// answer "which server is this about?", and a field that is right only sometimes is worse
+    /// than no field at all.
+    #[test]
+    fn an_explicit_host_also_moves_the_host_the_remote_would_have_chosen() {
+        let hosts = hosts_with(&["code.example", "other.example"]);
+        // No -R at all: the repository comes from the remote, so only `explicit_or` can be
+        // keeping the host and the client in agreement here.
+        let git = FakeGit::repo().with_remote("origin", "https://code.example/them/proj.git");
+
+        let ctx = resolve(
+            &git,
+            &hosts,
+            &MapEnv::new(),
+            ResolveOptions { host: Some("other.example"), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(ctx.host.as_str(), "other.example", "--host must move RepoContext::host too");
+        assert_eq!(ctx.slug.to_string(), "them/proj");
+
+        // The same through `fjo repo set-default`'s `base` override, which reads the URL itself.
+        let git = FakeGit::repo()
+            .with_remote("origin", "https://code.example/them/proj.git")
+            .with_config(&resolved_key("origin"), RESOLVED_BASE);
+        let ctx = resolve(
+            &git,
+            &hosts,
+            &MapEnv::new(),
+            ResolveOptions { host: Some("other.example"), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(ctx.host.as_str(), "other.example");
+        assert_eq!(ctx.slug.to_string(), "them/proj");
+    }
+
+    /// A remote this configuration knows nothing about must not become an error on a path that
+    /// never asked about the remote: `fjo issue list -R a/b` inside a GitHub clone still works,
+    /// and `active` is the right answer there.
+    #[test]
+    fn a_remote_on_an_unconfigured_host_falls_back_to_active() {
+        let mut hosts = hosts_with(&["code.example", "other.example"]);
+        hosts.set_active(&HostKey::parse("other.example").unwrap()).unwrap();
+        let git = FakeGit::repo().with_remote("origin", "https://github.com/me/proj.git");
+
+        let r: RepoRef = "them/sibling".parse().unwrap();
+        let ctx = resolve(
+            &git,
+            &hosts,
+            &MapEnv::new(),
+            ResolveOptions { repo: Some(&r), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(ctx.host.as_str(), "other.example");
+    }
+
+    /// Outside a work tree there is no remote to read, so `active` stands.
+    #[test]
+    fn outside_a_work_tree_the_repo_flag_uses_active() {
+        let mut hosts = hosts_with(&["code.example", "other.example"]);
+        hosts.set_active(&HostKey::parse("other.example").unwrap()).unwrap();
+        let r: RepoRef = "them/sibling".parse().unwrap();
+        let ctx = resolve(
+            &FakeGit::not_a_repo(),
+            &hosts,
+            &MapEnv::new(),
+            ResolveOptions { repo: Some(&r), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(ctx.host.as_str(), "other.example");
+    }
+
+    /// `host_from_remotes` must read the tree the same way [`resolve_repo`] does, or the host
+    /// and the repository could still be decided by two different remotes. `upstream` outranks
+    /// `origin` in both.
+    #[test]
+    fn host_from_remotes_walks_the_same_order_as_repo_resolution() {
+        let hosts = hosts_with(&["code.example", "other.example"]);
+        let git = FakeGit::repo()
+            .with_remote("origin", "https://other.example/me/fork.git")
+            .with_remote("upstream", "https://code.example/them/proj.git");
+
+        assert_eq!(
+            host_from_remotes(&hosts, &git).unwrap().map(|h| h.to_string()),
+            Some("code.example".to_owned())
+        );
+        // …and the full resolution agrees, which is the property that matters.
+        let ctx = resolve(&git, &hosts, &MapEnv::new(), ResolveOptions::default()).unwrap();
+        assert_eq!(ctx.host.as_str(), "code.example");
+    }
+
+    /// `fjo repo set-default` is the documented override, so it has to move the host too.
+    #[test]
+    fn host_from_remotes_honours_fjo_resolved() {
+        let hosts = hosts_with(&["code.example", "other.example"]);
+        // `base` points at the remote whose URL is authoritative, beating `upstream`'s score.
+        let git = FakeGit::repo()
+            .with_remote("origin", "https://other.example/me/fork.git")
+            .with_remote("upstream", "https://code.example/them/proj.git")
+            .with_config(&resolved_key("origin"), RESOLVED_BASE);
+        assert_eq!(
+            host_from_remotes(&hosts, &git).unwrap().map(|h| h.to_string()),
+            Some("other.example".to_owned())
+        );
+
+        // An explicit `host/owner/name` names the host outright.
+        let git = FakeGit::repo()
+            .with_remote("origin", "git@work-forge:whatever/thing.git")
+            .with_config(&resolved_key("origin"), "code.example/them/proj");
+        assert_eq!(
+            host_from_remotes(&hosts, &git).unwrap().map(|h| h.to_string()),
+            Some("code.example".to_owned())
+        );
+    }
+
+    /// No remotes, no work tree, and an unparseable remote all mean "no opinion" — never an
+    /// error, because every caller has a fallback and a hard failure here would break
+    /// commands that need no repository at all.
+    #[test]
+    fn host_from_remotes_has_no_opinion_rather_than_an_error() {
+        let hosts = hosts_with(&["code.example"]);
+        assert_eq!(host_from_remotes(&hosts, &FakeGit::not_a_repo()).unwrap(), None);
+        assert_eq!(host_from_remotes(&hosts, &FakeGit::repo()).unwrap(), None);
+        let git = FakeGit::repo().with_remote("backup", "/srv/mirrors/proj.git");
+        assert_eq!(host_from_remotes(&hosts, &git).unwrap(), None);
+        let git = FakeGit::repo().with_remote("origin", "https://github.com/me/proj.git");
+        assert_eq!(host_from_remotes(&hosts, &git).unwrap(), None);
     }
 }

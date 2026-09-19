@@ -1,9 +1,29 @@
 //! Everything a command needs, assembled once.
 //!
 //! [`Runtime`] is the seam between the global flags and the runtime crate: it resolves the
-//! host, finds a credential, builds a [`Client`], and works out where output is going. The
-//! repository is *not* resolved here — see [`Runtime::repo`] — because resolving it shells out
-//! to `git` and most commands never need it.
+//! host, finds a credential, builds a [`Client`], and works out where output is going.
+//!
+//! # The host comes from repository resolution, not from `active`
+//!
+//! One [`Client`] speaks to one host, and it is built here — so the host has to be *final* here.
+//! It therefore comes from [`resolve_repo`], the same call that decides the repository, because
+//! the checkout's remotes are part of that decision and `hosts.toml`'s `active` is only its last
+//! resort. See the [`forgejo_core::context`] module docs for the full precedence.
+//!
+//! Resolving the host independently of the repository is what this arrangement exists to
+//! prevent, and it is not a hypothetical: asking [`Hosts::resolve_host`] directly took the slug
+//! from the checkout's remote and the host from `active`, so `fjo pr list` in a clone of
+//! `code.example/them/proj` sent `GET /repos/them/proj/pulls` to whichever host `fjo auth
+//! switch` had last selected. The 404 was the *good* case; had that instance held a repository
+//! of the same name, the command would have answered confidently about the wrong repository on
+//! the wrong server, with `--debug` naming the host it chose and nothing naming the one it was
+//! asked about.
+//!
+//! So resolution is no longer deferred in full. [`Runtime::repo`] keeps its cell — commands that
+//! need the repository still ask for it, and the cell is pre-filled here when resolution
+//! succeeded, so the `git` subprocesses are spent once rather than twice. The one path that
+//! still skips them entirely is an explicit `--host`/`$FJO_HOST`/`$FORGEJO_HOST`, which outranks
+//! anything resolution could find and is how CI names its host.
 //!
 //! # Warnings are warnings
 //!
@@ -48,8 +68,10 @@ pub struct Runtime {
     term: Term,
     git: GitCli,
     debug: bool,
-    /// Resolved on first use. `OnceCell` rather than a field because ~90% of commands never
-    /// ask, and asking costs several `git` subprocesses.
+    /// Pre-filled by [`Runtime::new`] when resolution succeeded — it had to resolve the
+    /// repository to know which host to build the client for — and resolved on first use
+    /// otherwise. Still a cell rather than a plain field because resolution legitimately fails
+    /// on a command that needs no repository, and that must not fail the command.
     repo: OnceCell<RepoContext>,
 }
 
@@ -85,7 +107,8 @@ impl Runtime {
         // never persisted; see `Hosts::adopt_env_host`.
         hosts.adopt_env_host(globals.host.as_deref(), env)?;
 
-        let host = hosts.resolve_host(globals.host.as_deref(), env)?;
+        let git = GitCli::default();
+        let (host, resolved) = client_host(globals, &hosts, &git, env)?;
 
         // An explicitly named login that does not exist is a usage error. An *absent* default
         // is not: `fjo api version` needs no credential, and a 401 from the server carries a
@@ -190,9 +213,9 @@ impl Runtime {
             login,
             client,
             term,
-            git: GitCli::default(),
+            git,
             debug: globals.debug,
-            repo: OnceCell::new(),
+            repo: seeded(resolved),
         };
 
         for kind in &warnings {
@@ -205,6 +228,13 @@ impl Runtime {
                 rt.login.as_deref().unwrap_or("<none>"),
                 describe_source(token_source.as_ref()),
             ));
+            // Printed here rather than in `Runtime::repo`, which returns early on a pre-filled
+            // cell and would otherwise leave the transcript saying which host was chosen but
+            // not which repository it was chosen *for* — the pairing that makes a wrong host
+            // obvious at a glance.
+            if let Some(ctx) = rt.repo.get() {
+                rt.trace(&format!("repo {} via {}", ctx.slug, ctx.source));
+            }
         }
         Ok(rt)
     }
@@ -237,12 +267,7 @@ impl Runtime {
         if let Some(ctx) = self.repo.get() {
             return Ok(ctx);
         }
-        let opts = ResolveOptions {
-            repo: globals.repo.as_ref(),
-            host: globals.host.as_deref(),
-            login: globals.login.as_deref(),
-        };
-        let ctx = resolve_repo(&opts, &self.hosts, &self.git, &SYS_ENV)?;
+        let ctx = resolve_repo(&resolve_options(globals), &self.hosts, &self.git, &SYS_ENV)?;
         if self.debug {
             self.trace(&format!("repo {} via {}", ctx.slug, ctx.source));
         }
@@ -293,6 +318,65 @@ fn retry_policy(globals: &GlobalOpts) -> RetryPolicy {
         Some(n) => RetryPolicy { max: n.saturating_add(1), ..RetryPolicy::default() },
         None => RetryPolicy::default(),
     }
+}
+
+/// The host the [`Client`] is built for, together with the repository resolution that produced
+/// it.
+///
+/// Returned as a pair deliberately. They are one decision, and handing a caller the host without
+/// the context it came from is exactly how the two drifted apart: the client ended up on
+/// `hosts.toml`'s `active` while the repository came from the checkout's remote.
+fn client_host(
+    globals: &GlobalOpts,
+    hosts: &Hosts,
+    git: &dyn GitCtx,
+    env: &dyn Env,
+) -> Result<(HostKey, Option<RepoContext>)> {
+    // An explicit `--host`/`$FJO_HOST`/`$FORGEJO_HOST` outranks anything resolution could find,
+    // so there is nothing to learn from `git` — and no reason to spend three subprocesses on a
+    // CI invocation that already named its host.
+    if host_named_explicitly(globals, env) {
+        return Ok((hosts.resolve_host(globals.host.as_deref(), env)?, None));
+    }
+    match resolve_repo(&resolve_options(globals), hosts, git, env) {
+        Ok(ctx) => Ok((ctx.host.clone(), Some(ctx))),
+        // No repository here: not a work tree, a remote on a host `hosts.toml` does not know, or
+        // two equally plausible remotes. None of those is fatal — `fjo api user` and `fjo repo
+        // list` need no repository at all — so `active` still answers the host question.
+        //
+        // The error is dropped rather than reported because a command that *does* need the
+        // repository asks [`Runtime::repo`], which re-runs resolution and renders the full
+        // "here is what I tried" list. Raising it here would replace that report with a
+        // host complaint on commands that never asked.
+        Err(_) => Ok((hosts.resolve_host(globals.host.as_deref(), env)?, None)),
+    }
+}
+
+/// Whether the user named a host outright, in either of the three places that count.
+fn host_named_explicitly(globals: &GlobalOpts, env: &dyn Env) -> bool {
+    globals.host.is_some() || env.get("FJO_HOST").is_some() || env.get("FORGEJO_HOST").is_some()
+}
+
+/// The resolution inputs, in one place, so [`client_host`] and [`Runtime::repo`] cannot ask
+/// subtly different questions and get different answers.
+fn resolve_options(globals: &GlobalOpts) -> ResolveOptions<'_> {
+    ResolveOptions {
+        repo: globals.repo.as_ref(),
+        host: globals.host.as_deref(),
+        login: globals.login.as_deref(),
+    }
+}
+
+/// A cell already holding `ctx`, so the `git` subprocesses resolution just spent are not spent
+/// again by the first command that asks for the repository.
+fn seeded(ctx: Option<RepoContext>) -> OnceCell<RepoContext> {
+    let cell = OnceCell::new();
+    if let Some(ctx) = ctx {
+        // Cannot fail on a cell created one line ago. The result is dropped rather than
+        // unwrapped because the panic ratchet counts `expect` in shipping code, and rightly.
+        let _ = cell.set(ctx);
+    }
+    cell
 }
 
 fn wait_line(n: &WaitNotice) -> String {

@@ -361,3 +361,155 @@ fn output_to_a_file_writes_the_body_there() {
         .assert()
         .success();
 }
+
+// -------------------------------------------------------------------------------------------
+// Which server the client actually talks to.
+//
+// `--debug`'s first line is the only place a user can see this, and it is what these assert on.
+// Nothing here reaches the network: both hosts are ports nothing listens on, so the run fails at
+// connect — long after the host has been chosen, traced, and baked into the client.
+// -------------------------------------------------------------------------------------------
+
+/// Two configured hosts, `active` being the one no remote names.
+///
+/// Ports 1 and 2 are both reserved and never listening, so a test that got as far as a socket
+/// fails loudly rather than quietly talking to something real.
+fn two_hosts_active_is_the_wrong_one(dir: &std::path::Path) {
+    std::fs::write(
+        dir.join("hosts.toml"),
+        "active = \"127.0.0.1:1\"\n\
+         [[hosts]]\n\
+         name = \"127.0.0.1:1\"\n\
+         url = \"http://127.0.0.1:1\"\n\
+         active_login = \"me\"\n\
+         [[hosts.logins]]\n\
+         user = \"me\"\n\
+         [[hosts]]\n\
+         name = \"127.0.0.1:2\"\n\
+         url = \"http://127.0.0.1:2\"\n\
+         active_login = \"me\"\n\
+         [[hosts.logins]]\n\
+         user = \"me\"\n",
+    )
+    .unwrap();
+}
+
+fn git_in(dir: &std::path::Path, args: &[&str]) {
+    let out = StdCommand::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("git is on PATH for these tests");
+    assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// A work tree whose only remote is `url`.
+fn work_tree_with_remote(url: &str) -> tempfile::TempDir {
+    let work = tmp();
+    git_in(work.path(), &["init", "--quiet"]);
+    git_in(work.path(), &["remote", "add", "origin", url]);
+    work
+}
+
+/// The `debug: host …` line, which is the whole observable under test.
+fn debug_host_line(stderr: &str) -> String {
+    stderr
+        .lines()
+        .find(|l| l.starts_with("debug: host "))
+        .unwrap_or_else(|| panic!("--debug printed no host line:\n{stderr}"))
+        .to_owned()
+}
+
+/// Bug this prevents — and it is the reason this file has a section about it.
+///
+/// In a clone of `127.0.0.1:2/them/proj` with `active = "127.0.0.1:1"`, `fjo` resolved the
+/// *slug* from the remote and the *host* from `active`, then sent
+/// `GET /repos/them/proj/pulls` to a server nobody had named. A 404 is the lucky outcome: when
+/// the other instance happens to hold a repository of the same name, the request succeeds and
+/// the answer is about the wrong repository on the wrong server, with nothing in the output to
+/// say so.
+#[test]
+fn the_client_talks_to_the_host_the_git_remote_names() {
+    let dir = tmp();
+    two_hosts_active_is_the_wrong_one(dir.path());
+    let work = work_tree_with_remote("http://127.0.0.1:2/them/proj.git");
+
+    let assert = cmd(dir.path())
+        .current_dir(work.path())
+        .args(["pr", "list", "--debug", "--no-retry"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+
+    let line = debug_host_line(&stderr);
+    assert!(
+        line.contains("127.0.0.1:2"),
+        "the client must target the remote's host, not `active`:\n{stderr}"
+    );
+    assert!(!line.contains("127.0.0.1:1"), "`active` must not win over the remote:\n{stderr}");
+    // The repository is the remote's too, or the host agreeing would prove nothing.
+    assert!(stderr.contains("them/proj"), "the slug came from somewhere else:\n{stderr}");
+}
+
+/// Bug this prevents: `-R host/owner/name` naming a host outright and the request going to
+/// `active` anyway — the same defect as above, with the host typed by hand.
+#[test]
+fn an_explicit_host_in_the_repo_flag_retargets_the_client() {
+    let dir = tmp();
+    two_hosts_active_is_the_wrong_one(dir.path());
+    // A cwd that is not a work tree, so only `-R` can be supplying the host.
+    let elsewhere = tmp();
+
+    let assert = cmd(dir.path())
+        .current_dir(elsewhere.path())
+        .args(["pr", "list", "-R", "127.0.0.1:2/them/proj", "--debug", "--no-retry"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+
+    let line = debug_host_line(&stderr);
+    assert!(line.contains("127.0.0.1:2"), "-R named the host and was ignored:\n{stderr}");
+    assert!(!line.contains("127.0.0.1:1"), "`active` must not win over -R:\n{stderr}");
+}
+
+/// The other direction, so the fix cannot become an overcorrection: `--host` is the explicit
+/// instrument and outranks whatever the checkout says.
+#[test]
+fn an_explicit_host_flag_still_outranks_the_remote() {
+    let dir = tmp();
+    two_hosts_active_is_the_wrong_one(dir.path());
+    let work = work_tree_with_remote("http://127.0.0.1:2/them/proj.git");
+
+    let assert = cmd(dir.path())
+        .current_dir(work.path())
+        .args(["pr", "list", "--host", "127.0.0.1:1", "--debug", "--no-retry"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+
+    let line = debug_host_line(&stderr);
+    assert!(line.contains("127.0.0.1:1"), "--host must win:\n{stderr}");
+}
+
+/// A checkout of a host this configuration knows nothing about must not break commands that
+/// never needed a repository: `active` is still the answer for `fjo api user` inside a GitHub
+/// clone.
+#[test]
+fn a_remote_on_an_unconfigured_host_leaves_active_alone() {
+    let dir = tmp();
+    two_hosts_active_is_the_wrong_one(dir.path());
+    let work = work_tree_with_remote("https://github.com/me/proj.git");
+
+    let assert = cmd(dir.path())
+        .current_dir(work.path())
+        .args(["api", "user", "--debug", "--no-retry"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+
+    let line = debug_host_line(&stderr);
+    assert!(
+        line.contains("127.0.0.1:1"),
+        "an unknown remote host must fall back to `active`, not fail:\n{stderr}"
+    );
+}
