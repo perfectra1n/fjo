@@ -552,6 +552,14 @@ run = [
 
 [tasks.dist-build]
 description = "Release-build one distribution target (TARGET=<rustc triple>)"
+# bash, not the platform default. mise runs a task body in the OS's default
+# shell, which on Windows is cmd.exe -- where `set -eu` parses as "print the
+# variable -eu" and the task dies with "Environment variable -eu not defined".
+# The workflow step's `shell: bash` does not help: it governs how `mise run` is
+# invoked, not the shell mise then spawns for the body. Git Bash is on PATH on
+# windows runners, so naming bash explicitly makes these tasks behave the same
+# on all three platforms.
+shell = "bash -c"
 run = '''
 set -eu
 : "${TARGET:?set TARGET to a rustc target triple, e.g. x86_64-unknown-linux-musl}"
@@ -594,6 +602,8 @@ cargo build --release --locked -p fjo --target "$TARGET"
 
 [tasks.dist-verify]
 description = "Assert a built dist artifact is linked the way its target promises (TARGET=<triple>)"
+# See tasks.dist-build for why this is not the platform default shell.
+shell = "bash -c"
 run = '''
 set -eu
 : "${TARGET:?set TARGET to a rustc target triple}"
@@ -622,6 +632,8 @@ esac
 
 [tasks.glibc-floor-check]
 description = "Ratchet gate: fail if a gnu dist build requires a newer glibc than the floor"
+# See tasks.dist-build for why this is not the platform default shell.
+shell = "bash -c"
 run = '''
 set -eu
 : "${TARGET:?set TARGET to a rustc target triple}"
@@ -677,6 +689,8 @@ fi
 
 [tasks.dist-completions]
 description = "Generate the shell completions bundled into every release archive"
+# See tasks.dist-build for why this is not the platform default shell.
+shell = "bash -c"
 run = '''
 set -eu
 out="${OUT_DIR:-dist/completions}"
