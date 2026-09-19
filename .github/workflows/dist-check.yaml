@@ -1,0 +1,137 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Dist check
+#
+# A release dry run. Builds every target release.yaml builds and assembles the
+# container image, but publishes nothing.
+#
+# This exists because of how v0.2.3 failed. Six of seven targets built; the
+# Windows leg died in the first second on `set -eu` (mise runs a task body in
+# the OS default shell, which is cmd.exe on Windows), and because the publish
+# jobs sit behind `needs: build`, one dead leg meant no release and no image at
+# all. Nothing in CI could have caught it: the release path only ran when a tag
+# was pushed, which is the most expensive possible place to discover it.
+#
+# So the matrix below is deliberately a copy of release.yaml's, not a subset. A
+# dry run that skips a target is a dry run that cannot catch the next version of
+# this bug. The paths filter is what keeps it affordable -- it runs when the
+# files that decide whether a release works change, and stays out of the way of
+# ordinary code and dependency pull requests, which ci.yaml already covers.
+
+on:
+  pull_request:
+    paths:
+      - ".mise/config.toml"
+      - ".github/workflows/release.yaml"
+      - ".github/workflows/dist-check.yaml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "install.sh"
+      - "install.ps1"
+      - "rust-toolchain.toml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Dry-run build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+            musl: true
+            docker_arch: amd64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-22.04-arm
+            musl: true
+            docker_arch: arm64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install musl toolchain
+        if: matrix.musl
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools musl-dev file
+
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: mise run dist-build
+
+      - name: Verify linkage
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: mise run dist-verify
+
+      - name: Upload binary for image
+        if: matrix.musl
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: distcheck-bin-${{ matrix.docker_arch }}
+          path: target/${{ matrix.target }}/release/fjo
+          retention-days: 1
+
+  image:
+    name: Dry-run image
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: distcheck-bin-amd64
+          path: dist/amd64
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: distcheck-bin-arm64
+          path: dist/arm64
+      - run: chmod 0755 dist/amd64/fjo dist/arm64/fjo
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Both platforms, so a missing dist/<arch> or a broken TARGETARCH mapping
+      # fails here rather than at release time. Cheap: the image only copies an
+      # already-built binary, so the arm64 leg compiles nothing.
+      - name: Build both platforms (no push)
+        run: docker buildx build --platform linux/amd64,linux/arm64 -t fjo:distcheck .
+
+      - name: Load amd64 and smoke test
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64 --load -t fjo:smoke .
+          # Proves the three things the base image has to get right: the binary
+          # executes, TLS has a trust store, and git is present for repo context.
+          docker run --rm fjo:smoke --version
+          docker run --rm --entrypoint sh fjo:smoke -c 'git --version && ls /etc/ssl/certs/ca-certificates.crt'
