@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.4](https://github.com/perfectra1n/fjo/compare/v0.2.3...v0.2.4) (2026-09-19)
+
+
+### Bug Fixes
+
+* **dist:** run mise task bodies under bash, and dry-run the release path in CI ([436d213](https://github.com/perfectra1n/fjo/commit/436d21335b1a3911d61d4427e781c4f763b3e3a4))
+* **dist:** run mise task bodies under bash, and dry-run the release path in CI ([24635e8](https://github.com/perfectra1n/fjo/commit/24635e884825b0f064aa938b226576544913c73a))
+
 ## [0.2.3](https://github.com/perfectra1n/fjo/compare/v0.2.2...v0.2.3) (2026-09-19)
 
 
