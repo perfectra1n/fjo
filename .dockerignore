@@ -1,0 +1,4 @@
+# The build context carries only the staged binaries in dist/. Everything else
+# would be uploaded to the daemon for nothing.
+*
+!dist/

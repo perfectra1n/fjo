@@ -21,6 +21,14 @@ rust = { version = "1.98.1", components = "rustfmt,clippy" }
 # a default must not be able to turn CI red on an unrelated PR.
 "aqua:nextest-rs/nextest/cargo-nextest" = "0.9.140"
 
+# aws-lc-sys (reqwest -> rustls, which defaults to the aws-lc-rs provider) compiles
+# AWS-LC's C sources with cmake. Needed only by the dist targets, but pinned here
+# for the same reason as everything else in this block: a release must not pick up
+# a different cmake than the one a developer reproduced it with. The musl C
+# compiler cmake drives is `musl-gcc`, an apt package -- the one tool in the dist
+# path mise cannot own. See tasks.dist-build.
+"aqua:Kitware/CMake" = "3.31.6"
+
 [env]
 CARGO_TERM_COLOR = "always"
 RUST_BACKTRACE = "1"
@@ -530,3 +538,155 @@ run = [
   "mise run deny",
   "mise run budget-check",
 ]
+
+# ---------------------------------------------------------------------------
+# Distribution
+# ---------------------------------------------------------------------------
+# release.yaml drives these instead of calling cargo itself. It previously called
+# cargo directly, arguing that a release is "plain cargo build" and that adding
+# mise would put a third name on the 1.98.1 pin. But .mise/config.toml already
+# pins 1.98.1 alongside rust-toolchain.toml, so mise was never a third name -- and
+# the real cost of the split was that the release path was the one path no
+# developer could run locally. `mise run dist-build` is now the same command in
+# both places.
+
+[tasks.dist-build]
+description = "Release-build one distribution target (TARGET=<rustc triple>)"
+run = '''
+set -eu
+: "${TARGET:?set TARGET to a rustc target triple, e.g. x86_64-unknown-linux-musl}"
+
+rustup target add "$TARGET"
+
+case "$TARGET" in
+  *-linux-musl)
+    # musl needs exactly one variable set, and setting a second one breaks it.
+    #
+    # SET -- a C compiler targeting musl. aws-lc-sys (reqwest -> rustls, which
+    # defaults to the aws-lc-rs provider) compiles AWS-LC's C sources, so a musl
+    # Rust std alone is not enough. `musl-gcc` comes from the `musl-tools` apt
+    # package: mise has no backend for system libc toolchains, so this is the
+    # documented seam where the release environment is not fully described by
+    # this file.
+    #
+    # DO NOT SET -- the linker. Pointing CARGO_TARGET_<TRIPLE>_LINKER at musl-gcc
+    # looks like the obvious companion to CC and quietly ruins the artifact. gcc
+    # links dynamically unless told otherwise, so the output carries an
+    # /lib/ld-musl-x86_64.so.1 interpreter. Such a binary runs on Alpine and
+    # nowhere else, which inverts the entire purpose of the musl build: it exists
+    # for hosts whose glibc is below the gnu floor, and those hosts have no musl
+    # loader at all. Adding `-C target-feature=+crt-static` does NOT rescue it.
+    #
+    # Left alone, Rust links musl self-contained and emits static-pie. Measured,
+    # not assumed: with the linker override `file` reports "dynamically linked";
+    # without it, "static-pie linked", and that binary runs unmodified on
+    # debian:12. `mise run dist-verify` is the gate that keeps it that way.
+    command -v musl-gcc >/dev/null 2>&1 || {
+      echo "error: musl-gcc not found. Install it: apt-get install -y musl-tools" >&2
+      exit 1
+    }
+    export "CC_$(echo "$TARGET" | tr - _)=musl-gcc"
+    ;;
+esac
+
+cargo build --release --locked -p fjo --target "$TARGET"
+'''
+
+[tasks.dist-verify]
+description = "Assert a built dist artifact is linked the way its target promises (TARGET=<triple>)"
+run = '''
+set -eu
+: "${TARGET:?set TARGET to a rustc target triple}"
+bin="target/$TARGET/release/fjo"
+[ -f "$bin" ] || { echo "error: $bin not found; run dist-build first" >&2; exit 1; }
+
+case "$TARGET" in
+  *-linux-musl)
+    # A musl artifact that is not static is worse than no musl artifact: install.sh
+    # hands it to exactly the hosts that cannot run it.
+    if file "$bin" | grep -q 'dynamically linked'; then
+      echo "error: $bin is dynamically linked; musl artifacts must be static." >&2
+      file "$bin" >&2
+      exit 1
+    fi
+    echo "dist-verify: $bin is statically linked"
+    ;;
+  *-linux-gnu)
+    mise run glibc-floor-check
+    ;;
+  *)
+    echo "dist-verify: no linkage assertions for $TARGET"
+    ;;
+esac
+'''
+
+[tasks.glibc-floor-check]
+description = "Ratchet gate: fail if a gnu dist build requires a newer glibc than the floor"
+run = '''
+set -eu
+: "${TARGET:?set TARGET to a rustc target triple}"
+
+# RATCHET: the floor is a distribution promise, not a preference.
+#
+# A gnu binary records the highest glibc symbol version it references, and a host
+# with an older glibc cannot exec it at all -- it dies with a GLIBC_x.yz symbol
+# error before main(). The floor is therefore set by whichever runner builds the
+# artifact, which makes it the kind of decision that changes silently: someone
+# bumps ubuntu-22.04 to ubuntu-24.04 for an unrelated reason and every RHEL 9 and
+# Debian 12 user loses the download, with nothing in CI failing to say so.
+#
+# 2.35 is ubuntu-22.04's glibc, and ubuntu-22.04 is the oldest runner GitHub
+# still offers -- so this floor is a fact about the build environment, not a
+# target anyone picked. It covers Ubuntu 22.04+, Debian 12+ and Fedora 36+.
+#
+# It does NOT cover RHEL/Rocky/Alma 9 or Amazon Linux 2023, which ship glibc
+# 2.34. Measured, not assumed: running install.sh's detection inside
+# rockylinux:9 resolves to musl. Those hosts take the static musl artifact and
+# work fine, which is the whole reason both flavours are built -- the gnu floor
+# cannot be lowered to reach them, so the fallback has to.
+#
+# Lowering this is therefore not possible today. Raising it by accident is, and
+# that is what this gate is for.
+#
+# install.sh hardcodes the same two numbers to decide gnu vs musl. They must move
+# together or the installer will hand gnu binaries to hosts that cannot run them.
+FLOOR_MAJOR=2
+FLOOR_MINOR=35
+
+case "$TARGET" in
+  *-linux-gnu) ;;
+  *) echo "glibc-floor-check: $TARGET is not a gnu target, nothing to check"; exit 0 ;;
+esac
+
+bin="target/$TARGET/release/fjo"
+[ -f "$bin" ] || { echo "error: $bin not found; run dist-build first" >&2; exit 1; }
+
+highest=$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sort -V -u | tail -1)
+[ -n "$highest" ] || { echo "error: no GLIBC_ version symbols found in $bin" >&2; exit 1; }
+
+v=${highest#GLIBC_}; maj=${v%%.*}; rest=${v#*.}; min=${rest%%.*}
+echo "glibc-floor-check: $bin requires at most $highest (floor ${FLOOR_MAJOR}.${FLOOR_MINOR})"
+
+if [ "$maj" -gt "$FLOOR_MAJOR" ] || { [ "$maj" -eq "$FLOOR_MAJOR" ] && [ "$min" -gt "$FLOOR_MINOR" ]; }; then
+  echo "error: $bin requires $highest, above the ${FLOOR_MAJOR}.${FLOOR_MINOR} floor." >&2
+  echo "       The build runner's glibc is newer than the floor this project promises." >&2
+  echo "       Build on an older runner, or raise the floor here AND in install.sh." >&2
+  exit 1
+fi
+'''
+
+[tasks.dist-completions]
+description = "Generate the shell completions bundled into every release archive"
+run = '''
+set -eu
+out="${OUT_DIR:-dist/completions}"
+mkdir -p "$out"
+# Generated once, not once per target: completions are plain text and identical
+# on every platform. This also keeps the build matrix from ever needing to RUN
+# the binary it just produced, which it could not do for x86_64-apple-darwin
+# (built on an arm64 runner) or for either musl target on a glibc runner.
+for shell in bash zsh fish powershell elvish; do
+  cargo run --locked -q -p fjo -- completion "$shell" > "$out/fjo.$shell"
+done
+ls -la "$out"
+'''
