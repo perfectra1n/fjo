@@ -99,6 +99,18 @@ impl WebCredential {
             .map_err(|e| Error::new(ErrorKind::Usage(format!("could not store the session: {e}"))))
     }
 
+    /// The stored document as a plain `String`, for deliberate export.
+    ///
+    /// Deliberately not a `SecretString`: the one caller is `fjo auth export --web`, whose whole
+    /// job is to put this on stdout, and `secrecy` is not a dependency of the `fjo` crate. A
+    /// name this explicit is also the point — `to_export_json` reads as a decision at the call
+    /// site in a way that `.expose_secret()` on a general accessor would not, so the guards that
+    /// must accompany it (refuse a terminal, warn on stderr) are visibly attached to it.
+    pub fn to_export_json(&self) -> Result<String> {
+        serde_json::to_string(self)
+            .map_err(|e| Error::new(ErrorKind::Usage(format!("could not export the session: {e}"))))
+    }
+
     /// Whether the remember token is within `skew` of lapsing.
     ///
     /// Used only to warn: this is the one failure that cannot be recovered without a password,
