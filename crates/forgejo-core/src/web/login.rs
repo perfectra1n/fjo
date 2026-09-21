@@ -60,16 +60,20 @@ impl std::fmt::Debug for LoginStep {
 }
 
 /// First leg: username and password.
+/// `password` is a plain `&str` rather than a `SecretString` on purpose: `secrecy` is not a
+/// dependency of the `fjo` crate (see its `auth/common.rs`), so the caller cannot construct one,
+/// and forcing it to would mean adding the crate there just to hand a value straight back. It is
+/// wrapped here, at the boundary, and never stored.
 pub async fn password(
     client: &WebClient,
     user: &str,
-    password: &SecretString,
+    password: &str,
     now: Timestamp,
 ) -> Result<LoginStep> {
     let form = WebBody::Form(vec![
         ("user_name".to_owned(), user.to_owned()),
         // The only place the plaintext appears. Moved, not copied into a binding.
-        ("password".to_owned(), secrecy::ExposeSecret::expose_secret(password).to_owned()),
+        ("password".to_owned(), password.to_owned()),
         // See the module comment: without this there is nothing storable to keep.
         ("remember".to_owned(), "on".to_owned()),
     ]);
@@ -154,8 +158,15 @@ fn flash_error(html: &str) -> Option<String> {
     let at = html.find("flash-error")?;
     let rest = &html[at..];
     let open_end = rest.find('>')?;
-    let text = &rest[open_end + 1..];
-    let close = text.find("</")?;
+    let mut text = &rest[open_end + 1..];
+    // Forgejo nests the message inside the flash div (a `<p>` in 16.0.5). Take the innermost
+    // run of text rather than everything after the first `>`, or the tag leaks into what is
+    // presented to the user as the server's own words.
+    while let Some(next) = text.trim_start().strip_prefix('<') {
+        let Some(end) = next.find('>') else { break };
+        text = &next[end + 1..];
+    }
+    let close = text.find('<')?;
     let msg = decode_entities(text[..close].trim());
     let msg = msg.trim();
     (!msg.is_empty() && msg.len() < 300).then(|| msg.to_owned())
@@ -234,9 +245,7 @@ mod tests {
                 .with_header("set-cookie", "persistent=remember-me; Path=/; Max-Age=2592000")
                 .with_header("set-cookie", "session=sess-1; Path=/; HttpOnly"),
         );
-        let step = password(&client(t), "perf3ct", &SecretString::from("pw"), now())
-            .await
-            .expect("signs in");
+        let step = password(&client(t), "perf3ct", "pw", now()).await.expect("signs in");
         let LoginStep::Done(cred) = step else { panic!("expected a completed sign-in") };
         assert_eq!(cred.user, "perf3ct");
         assert_eq!(cred.expose_remember(), "remember-me");
@@ -255,9 +264,7 @@ mod tests {
                 r#"<div class="ui negative message flash-message flash-error">Username or password is incorrect.</div>"#,
             ),
         );
-        let err = password(&client(t), "perf3ct", &SecretString::from("nope"), now())
-            .await
-            .expect_err("refuses");
+        let err = password(&client(t), "perf3ct", "nope", now()).await.expect_err("refuses");
         match *err.kind {
             ErrorKind::WebLoginFailed { ref reason, .. } => {
                 assert_eq!(reason.as_deref(), Some("Username or password is incorrect."));
@@ -273,9 +280,7 @@ mod tests {
             "/user/login",
             Canned::new(303).with_header("location", "/user/webauthn"),
         );
-        let err = password(&client(t), "perf3ct", &SecretString::from("pw"), now())
-            .await
-            .expect_err("refuses");
+        let err = password(&client(t), "perf3ct", "pw", now()).await.expect_err("refuses");
         assert!(matches!(*err.kind, ErrorKind::WebAuthnRequired { .. }), "{err:?}");
     }
 
@@ -288,9 +293,7 @@ mod tests {
                 .with_header("location", "/user/two_factor")
                 .with_header("set-cookie", "session=half-done; Path=/; HttpOnly"),
         );
-        let step = password(&client(t), "perf3ct", &SecretString::from("pw"), now())
-            .await
-            .expect("first leg");
+        let step = password(&client(t), "perf3ct", "pw", now()).await.expect("first leg");
         let LoginStep::TotpRequired { state } = step else { panic!("expected a TOTP prompt") };
         assert_eq!(secrecy::ExposeSecret::expose_secret(&state), "half-done");
     }
@@ -310,6 +313,20 @@ mod tests {
             .await
             .expect_err("refuses");
         assert!(matches!(*err.kind, ErrorKind::WebLoginFailed { .. }), "{err:?}");
+    }
+
+    /// Bug this prevents: presenting `<p>Username or password is incorrect.` as the server's
+    /// own words. Observed against a real 16.0.5 instance, which nests the message in a `<p>`.
+    #[test]
+    fn a_flash_message_is_the_text_not_the_markup_around_it() {
+        let html = r#"<div class="ui negative message flash-message flash-error"                       ><p>Username or password is incorrect.</p></div>"#;
+        assert_eq!(flash_error(html).as_deref(), Some("Username or password is incorrect."));
+        // Unnested still works.
+        assert_eq!(
+            flash_error(r#"<div class="flash-error">Plain text.</div>"#).as_deref(),
+            Some("Plain text.")
+        );
+        assert_eq!(flash_error("<html>no flash here</html>"), None);
     }
 
     #[test]

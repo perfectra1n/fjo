@@ -29,6 +29,7 @@ mod status;
 mod switch;
 mod token;
 mod web_login;
+mod web_password;
 
 use clap::{Args as ClapArgs, Subcommand};
 use forgejo_core::Result;
