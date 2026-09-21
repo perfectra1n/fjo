@@ -32,6 +32,7 @@ pub mod oauth_refresh;
 pub mod output;
 pub mod raw;
 pub mod runtime;
+pub mod web;
 
 /// The one-line description, shared by both parse phases so `fjo --help` and
 /// `fjo raw … --help` cannot describe two different tools.

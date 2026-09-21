@@ -43,6 +43,7 @@ use forgejo_core::context::{GitCli, GitCtx, RepoContext, ResolveOptions, resolve
 use forgejo_core::error::{Error, ErrorKind, Result, TokenSource, render};
 use forgejo_core::http::{Auth, Client, Credentials as HttpCredentials, RetryPolicy, WaitNotice};
 use forgejo_core::oauth::StoredOauth;
+use forgejo_core::web::{WebClient, WebCredential};
 
 use crate::exit;
 use crate::global::GlobalOpts;
@@ -298,6 +299,70 @@ impl Runtime {
 
     pub fn is_debug(&self) -> bool {
         self.debug
+    }
+
+    /// A client for the undocumented web routes, sharing the resolved host but none of
+    /// [`Client`]'s state: [`WebClient`] speaks cookies, not `Authorization`, and follows no
+    /// redirects, because a redirect to `/user/login` is the signal that the session lapsed
+    /// rather than something to be followed transparently.
+    pub fn web_client(&self) -> Result<WebClient> {
+        let entry =
+            self.hosts.get(&self.host).ok_or_else(|| Error::new(ErrorKind::NoHostConfigured))?;
+        WebClient::new(&entry.url, &user_agent())
+    }
+
+    /// The login `fjo web` stores and looks up its session under. Web credentials are
+    /// login-scoped the same as API tokens, so a stray `$FORGEJO_TOKEN`-only environment (which
+    /// leaves `login` unset) has nothing to key a web session on and must be told so, not guessed
+    /// at.
+    pub fn login(&self) -> Option<&str> {
+        self.login.as_deref()
+    }
+
+    /// The stored web credential for the active host and login, if any.
+    ///
+    /// `Ok(None)` — as opposed to an error — covers both "never logged in with `--with-password`"
+    /// and "no login resolved at all"; the caller turns that into
+    /// [`ErrorKind::WebSessionMissing`], which is one place to get that message right rather than
+    /// two.
+    pub fn load_web_credential(&mut self) -> Result<Option<WebCredential>> {
+        let Some(login) = self.login.clone() else {
+            return Ok(None);
+        };
+        let mut creds = forgejo_core::config::Credentials::new(&SYS_ENV)
+            .with_preference(self.config.credential_store(Some(self.host.as_str())));
+        let token = creds.secret(&mut self.hosts, &self.host, &login, Slot::Web)?;
+        for kind in creds.take_warnings() {
+            exit::warn(&kind, exit::color());
+        }
+        // `secret` looks but does not write; `hosts.toml` only changes here, once, regardless of
+        // whether a credential was found.
+        self.hosts.save_if_dirty()?;
+        Ok(token.and_then(|t| WebCredential::parse(t.expose())))
+    }
+
+    /// Persist a web credential — freshly minted or just renewed — for the active host and
+    /// login.
+    ///
+    /// Called before the credential is used for anything, mirroring [`crate::oauth_refresh`]'s
+    /// rule for the same reason: a session sent but never written down is a session a crash
+    /// between the two would throw away, forcing a second `/user/login` round trip the first one
+    /// already paid for.
+    pub fn store_web_credential(&mut self, cred: &WebCredential) -> Result<()> {
+        let login = self.login.clone().ok_or_else(|| {
+            Error::new(ErrorKind::WebSessionMissing { host: self.host.to_string() })
+        })?;
+        let mut creds = forgejo_core::config::Credentials::new(&SYS_ENV)
+            .with_preference(self.config.credential_store(Some(self.host.as_str())));
+        let doc = cred.to_json()?;
+        // `store_in` persists on its own; a second `save_if_dirty` here would be a needless
+        // write, not a wrong one, but the convention (see `Credentials::secret` above) is that
+        // the method that changes `hosts.toml`'s bookkeeping is the one that flushes it.
+        creds.store_in(&mut self.hosts, &self.host, &login, Slot::Web, &doc, Vec::new(), None)?;
+        for kind in creds.take_warnings() {
+            exit::warn(&kind, exit::color());
+        }
+        Ok(())
     }
 }
 

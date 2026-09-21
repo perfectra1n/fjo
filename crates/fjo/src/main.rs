@@ -78,6 +78,12 @@ enum Cmd {
     #[command(long_about = API_LONG_ABOUT)]
     Api(fjo::api::ApiArgs),
 
+    /// Call a route under the instance's web root, with a signed-in session
+    ///
+    /// Layer 0: for the parts of Forgejo that have no REST API at all. Listed after `api`
+    /// because it is the rarer answer -- anything reachable under `/api/v1` should go there.
+    Web(fjo::web::WebArgs),
+
     /// Call any Forgejo API operation directly
     ///
     /// Present so that `fjo --help` lists it. Real `fjo raw …` invocations never reach here:
@@ -149,6 +155,21 @@ fn dispatch(argv: &[OsString]) -> Result<(), Fail> {
             let sub = matches.subcommand_matches("api").expect("clap matched `api`");
             let globals = GlobalOpts::from_chain(&[sub, &matches]);
             fjo::api::run(&globals, &args, sub).map_err(Fail::from)
+        }
+        Cmd::Web(args) => {
+            // No `expect`: clap having matched `web` to reach this arm is true but not worth a
+            // panicking construct, and the globals-only chain is a correct fallback rather
+            // than a degraded one -- it simply reads them from the root matches.
+            match matches.subcommand_matches("web") {
+                Some(sub) => {
+                    let globals = GlobalOpts::from_chain(&[sub, &matches]);
+                    fjo::web::run(&globals, &args, sub).map_err(Fail::from)
+                }
+                None => {
+                    let globals = GlobalOpts::from_chain(&[&matches]);
+                    fjo::web::run(&globals, &args, &matches).map_err(Fail::from)
+                }
+            }
         }
         Cmd::Porcelain(p) => {
             // Globals may appear before or after the group, so read them off the whole chain.
