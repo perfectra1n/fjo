@@ -15,7 +15,7 @@ Layers 1 and 2 are complete by construction, over the surface the vendored spec 
 
 This is the story for layers 1 through 3 — everything downstream of the generator. Layer 0 has no generator to be downstream of; its own coverage story is next.
 
-The generator (`cargo xtask codegen`) reads `spec/forgejo-v16.0.4.json` — a de-templated, key-sorted copy of Forgejo's Swagger 2.0 document, vendored at git tag `v16.0.4` — and emits four things:
+The generator (`cargo xtask codegen`) reads `spec/forgejo-v16.0.5.json` — a de-templated, key-sorted copy of Forgejo's Swagger 2.0 document, vendored at git tag `v16.0.5` — and emits four things:
 
 | Emitter | Output | Feeds |
 | --- | --- | --- |
@@ -164,10 +164,10 @@ This is the property the layering exists to buy, and it is worth being concrete 
 
 ### `fjo admin badge` — the API has no badge route
 
-`spec/forgejo-v16.0.4.json` contains the string `badge` zero times:
+`spec/forgejo-v16.0.5.json` contains the string `badge` zero times:
 
 ```console
-$ grep -c badge spec/forgejo-v16.0.4.json
+$ grep -c badge spec/forgejo-v16.0.5.json
 0
 ```
 

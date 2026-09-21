@@ -3,8 +3,15 @@
 Status: design, approved in conversation 2026-09-21. Verified against Forgejo **16.0.5** by reading
 `routers/web/web.go`, `routers/web/repo/projects.go`, `routers/web/shared/project/column.go`,
 `routers/web/auth/auth.go`, `templates/projects/view.tmpl` and `web_src/js/features/repo-projects.js`
-at tag `v16.0.5`, and by probing `code.perfectra1n.com`. The write path was **not** yet driven live;
-the first integration test does that.
+at tag `v16.0.5`, and by probing `code.perfectra1n.com`. The routes and markup below were then **confirmed
+empirically** by driving a 16.0.5 container: creating a board, adding a column, assigning issues
+and moving cards, all with plain `curl` and no CSRF token. Two facts in this document's first
+draft were wrong, and are corrected throughout rather than quietly overwritten:
+
+* the session cookie is named **`session`**, not Gitea's `i_like_gitea`; and
+* the web forms take **lowercase** field names (`title`, `content`, `template_type`,
+  `card_type`, `user_name`, `password`, `remember`, `passcode`), not the capitalised Go struct
+  field names declared in `services/forms/repo_form.go`.
 
 ## The problem
 
@@ -25,11 +32,15 @@ These facts drive every decision below.
 
 - **Writes are JSON endpoints.** Every mutating project route ends in `ctx.JSONOK()`. The two that
   matter take JSON bodies, exactly what the browser sends:
-  - `POST /{o}/{r}/projects/{id}/{columnID}/move` — `{"issues":[{"issueID":n,"sorting":i},…]}`
+  - `POST /{o}/{r}/projects/{id}/{columnID}/move` — `{"issues":[{"issueID":n,"sorting":i},…]}`,
+    where `issueID` is the issue's **internal database id**, not its per-repo number
   - `POST /{o}/{r}/projects/{id}/move` — `{"columns":[{"columnID":n,"sorting":i},…]}`
-  - `POST /{o}/{r}/issues/projects?id={projectID}` — form `issue_ids` (assign issues to a board)
-  - `POST …/projects/new` (form `Title`, `Content`, `TemplateType`, `CardType`); `POST …/projects/{id}`
-    (add column: `Title`, `Sorting`, `Color`); `PUT`/`DELETE …/projects/{id}/{columnID}`;
+  - `POST /{o}/{r}/issues/projects?id={projectID}` — form `issue_ids` as a **comma-joined**
+    list (`issue_ids=1,2,3`), not repeated parameters; issues land in the board's default column
+  - `POST …/projects/new` (form `title`, `content`, `template_type`, `card_type` — where
+    `template_type` 0=none, 1=basic kanban, 2=bug triage, and 1 creates Backlog/To Do/In
+    Progress/Done); `POST …/projects/{id}` (add column: `title`, `sorting`, `color`);
+    `PUT`/`DELETE …/projects/{id}/{columnID}`;
     `POST …/projects/{id}/{open|close|delete}`; `POST …/projects/{id}/{columnID}/default`.
   - The same tree exists for org and user boards under `/{owner}/-/projects/…`.
 - **Reads are HTML.** `ViewProject` renders `templates/projects/view.tmpl`; there is no JSON board
@@ -43,7 +54,7 @@ These facts drive every decision below.
 - **Authentication is a token, not a password.** `POST /user/login` with `remember=on` sets a
   `persistent` cookie whose value is a long-term authorization token (`auth_token` table, purpose
   `long_term_authorization`, lifetime `LOGIN_REMEMBER_DAYS`, default 31). `GET /user/login` with that
-  cookie runs `autoSignIn()` (`auth.go:155`) and mints a fresh `i_like_gitea` session. The token is
+  cookie runs `autoSignIn()` (`auth.go:155`) and mints a fresh `session` cookie. The token is
   not rotated on auto-sign-in.
 - **2FA.** TOTP → `303 → /user/two_factor`, a second form post (`passcode`), after which the
   `persistent` cookie is issued. WebAuthn → `303 → /user/webauthn`; there is no headless completion.
@@ -148,15 +159,19 @@ Stored credential (one JSON document, the `StoredOauth` pattern — a long-lived
 short-lived one):
 
 ```json
-{"user":"perfectra1n","remember":"…","remember_expires_at":"2026-10-22T08:24:00Z",
- "session":"…","session_minted_at":"2026-09-21T08:24:00Z"}
+{"v":1,"kind":"web-session","user":"perfectra1n","remember":"…",
+ "remember_expires_at":"2026-10-22T08:24:00Z","session":"…"}
 ```
+
+The first draft carried a `session_minted_at`, and it was dropped in implementation because
+nothing may read it: a client cannot know the server's `SESSION_LIFE_TIME`, so a minted-at
+timestamp could only feed the local guess this design exists to refuse.
 
 `WebSession::ensure`, run by every web request:
 
 1. Send with the cached `session` cookie. No TTL guess.
 2. On `303 → /user/login`: re-mint **once** — `GET /user/login` with the `persistent` cookie, capture
-   the new `i_like_gitea`, persist it, retry the request **once**. This covers session expiry, a
+   the new `session` cookie, persist it, retry the request **once**. This covers session expiry, a
    server restart under `PROVIDER = memory`, and a session revoked from the UI.
 3. If the re-mint is itself bounced, the remember token is dead (expired, "log out everywhere",
    password changed). Fail with `web session for <host> has expired — run
@@ -195,7 +210,7 @@ All structural — none is a convention a caller has to remember.
 
 | Store | `Slot::Api` (unchanged) | `Slot::Web` |
 | --- | --- | --- |
-| keyring | account `{login}@{host}` | account `web:{login}@{host}` |
+| keyring | account `{login}@{host}` (unchanged, forever) | account `web:{login}@{host}` |
 | file (`hosts.toml`) | `Login.token` | `Login.web_session` (new field, `opt_secret`) |
 | env | `FORGEJO_TOKEN` | `FJO_WEB_SESSION` — the JSON document, for CI |
 
@@ -218,9 +233,9 @@ the five named entities and numeric references; nothing else appears in a title.
 
 The parser is tested against **fixture HTML captured from the 16.0.5 image**
 (`crates/fjo/tests/fixtures/projects/view-16.0.5.html`) as an `insta` snapshot, and the live suite
-parses a real board it just built. A parse failure is an error whose facts include
-`server: Forgejo <version>` and `verified against: 16.0.5`, fetched from `/api/v1/version` **only on
-this failure path**. There is no version warning on success: a warning about a risk that did not
+parses a real board it just built. A parse failure is an error whose facts include `verified against: 16.0.5`
+(`forgejo_core::web::VERIFIED_AGAINST`) and the server's own version, fetched from
+`/api/v1/version` **only on this failure path**. There is no version warning on success: a warning about a risk that did not
 materialise is noise, and layers 1–3 do not editorialise about the spec pin either.
 
 ## Failure handling
