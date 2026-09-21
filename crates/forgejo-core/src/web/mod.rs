@@ -60,6 +60,6 @@ pub mod session;
 pub mod stored;
 
 pub use client::{Cookie, WebBody, WebClient, WebResponse};
-pub use login::{LoginStep, password, totp};
+pub use login::{LoginStep, decode_entities, password, totp};
 pub use session::remint;
 pub use stored::WebCredential;

@@ -37,6 +37,7 @@ pub mod notification;
 pub mod org;
 pub mod package;
 pub mod pr;
+pub mod project;
 pub mod quota;
 pub mod reaction;
 pub mod release;

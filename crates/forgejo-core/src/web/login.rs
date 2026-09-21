@@ -163,9 +163,9 @@ fn flash_error(html: &str) -> Option<String> {
 
 /// The five named entities and numeric references Go's `html/template` emits.
 ///
-/// Shared with the board parser's needs but kept here rather than exported: a second caller
-/// should move it to a common place rather than grow this one.
-pub(crate) fn decode_entities(s: &str) -> String {
+/// Public because the board parser needs exactly this and a second implementation would be a
+/// second thing to get wrong: Go's `html/template` is the only producer either caller sees.
+pub fn decode_entities(s: &str) -> String {
     if !s.contains('&') {
         return s.to_owned();
     }
