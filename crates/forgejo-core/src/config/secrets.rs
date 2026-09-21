@@ -1014,6 +1014,54 @@ mod tests {
         assert!(ring.get(&key, "perf3ct", Slot::Api, &hosts).unwrap().is_some());
     }
 
+    /// The CI path, end to end: a session document in `FJO_WEB_SESSION` is found and parses.
+    ///
+    /// Bug this prevents: `fjo auth export --web` producing something the environment variable
+    /// cannot take back. The two halves are written in different crates, so nothing but a test
+    /// that round-trips an actual document keeps them agreeing.
+    #[test]
+    fn a_web_session_can_be_supplied_entirely_through_the_environment() {
+        use crate::web::WebCredential;
+
+        let (_d, mut hosts, key) = fixture();
+        let doc = WebCredential::new(
+            "perf3ct",
+            SecretString::from("remember-me"),
+            "2026-10-22T08:00:00Z".parse().expect("a valid timestamp"),
+        )
+        .to_json()
+        .expect("serialises");
+
+        let env = MapEnv::new().with("FJO_WEB_SESSION", doc.expose_secret());
+        let mut creds = Credentials::new(&env).with_keyring(Box::new(FakeKeyring::new()));
+
+        let got = creds
+            .secret(&mut hosts, &key, "perf3ct", Slot::Web)
+            .expect("the lookup succeeds")
+            .expect("the environment supplies one");
+        assert_eq!(got.source(), &TokenSource::Env { var: "FJO_WEB_SESSION".into() });
+
+        let parsed = WebCredential::parse(got.expose()).expect("what export wrote, import reads");
+        assert_eq!(parsed.user, "perf3ct");
+        assert_eq!(parsed.expose_remember(), "remember-me");
+    }
+
+    /// The two slots do not read each other's variables: a CI runner with only FJO_TOKEN set
+    /// must not have it handed back as a web session, which would be sent as a cookie and fail
+    /// with a 303 that explains nothing.
+    #[test]
+    fn the_api_and_web_environment_variables_are_not_interchangeable() {
+        let (_d, mut hosts, key) = fixture();
+        let env = MapEnv::new().with("FJO_TOKEN", "a-personal-access-token");
+        let mut creds = Credentials::new(&env).with_keyring(Box::new(FakeKeyring::new()));
+
+        assert!(
+            creds.secret(&mut hosts, &key, "perf3ct", Slot::Web).unwrap().is_none(),
+            "an API token must not be offered as a web session"
+        );
+        assert!(creds.secret(&mut hosts, &key, "perf3ct", Slot::Api).unwrap().is_some());
+    }
+
     #[test]
     fn keyring_round_trip() {
         let (_d, mut hosts, key) = fixture();
