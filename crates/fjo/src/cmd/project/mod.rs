@@ -181,8 +181,55 @@ pub struct DeleteArgs {
 pub enum ColumnCmd {
     /// Add a column
     Add(ColumnAddArgs),
+    /// Rename a column or change its colour
+    Edit(ColumnEditArgs),
+    /// Reorder a column
+    Move(ColumnMoveArgs),
     /// Delete a column
     Delete(ColumnRefArgs),
+}
+
+#[derive(Debug, ClapArgs)]
+pub struct ColumnEditArgs {
+    /// Board title
+    #[arg(value_name = "PROJECT")]
+    pub project: String,
+    /// Column to change
+    #[arg(value_name = "COLUMN")]
+    pub column: String,
+    /// New title
+    #[arg(long, value_name = "TITLE")]
+    pub title: Option<String>,
+    /// New colour, as `#rrggbb` (see `column add --hex` for why it is not `--color`)
+    #[arg(long = "hex", value_name = "RRGGBB")]
+    pub color: Option<String>,
+    #[command(flatten)]
+    pub scope: ScopeArgs,
+}
+
+#[derive(Debug, ClapArgs)]
+#[command(group = clap::ArgGroup::new("where").required(true).multiple(false))]
+pub struct ColumnMoveArgs {
+    /// Board title
+    #[arg(value_name = "PROJECT")]
+    pub project: String,
+    /// Column to move
+    #[arg(value_name = "COLUMN")]
+    pub column: String,
+    /// Put it before this column
+    #[arg(long, value_name = "COLUMN", group = "where")]
+    pub before: Option<String>,
+    /// Put it after this column
+    #[arg(long, value_name = "COLUMN", group = "where")]
+    pub after: Option<String>,
+    /// Put it first
+    #[arg(long, group = "where")]
+    pub first: bool,
+    /// Put it last
+    #[arg(long, group = "where")]
+    pub last: bool,
+    #[command(flatten)]
+    pub scope: ScopeArgs,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -367,6 +414,50 @@ async fn cmd_column(rt: &mut Runtime, globals: &GlobalOpts, c: &ColumnCmd) -> Re
             let found = ops::find(rt, &scope, &a.project, None).await?;
             ops::add_column(rt, &scope, found.id, &a.title, &a.color).await?;
             println!("✓ added column {:?} to {:?}", a.title, found.title);
+            Ok(())
+        }
+        ColumnCmd::Edit(a) => {
+            // Nothing to change is a usage error before any request, the rule every other edit
+            // command here follows (see `fjo milestone edit`).
+            if a.title.is_none() && a.color.is_none() {
+                return Err(usage("nothing to change: pass --title, --hex, or both"));
+            }
+            let scope = Scope::resolve(rt, globals, a.scope.owner.as_deref())?;
+            let found = ops::find(rt, &scope, &a.project, None).await?;
+            let board = ops::view(rt, &scope, found.id).await?;
+            // Resolve the id first: `column_of` is the one place ambiguity is refused, and
+            // calling it inside the closure would both re-run it per column and swallow that.
+            let column_id = ops::column_of(&board, &a.column)?;
+            let column = board
+                .columns
+                .iter()
+                .find(|c| c.id == column_id)
+                .ok_or_else(|| usage("that column vanished from the board"))?;
+            // Unchanged fields are sent back as they are: the form takes all three, so omitting
+            // one clears it.
+            let title = a.title.clone().unwrap_or_else(|| column.title.clone());
+            let color = a.color.clone().or_else(|| column.color.clone()).unwrap_or_default();
+            ops::edit_column(rt, &scope, found.id, column, &title, &color).await?;
+            println!("✓ updated column {:?} on {:?}", a.column, board.title);
+            Ok(())
+        }
+        ColumnCmd::Move(a) => {
+            let scope = Scope::resolve(rt, globals, a.scope.owner.as_deref())?;
+            let found = ops::find(rt, &scope, &a.project, None).await?;
+            let board = ops::view(rt, &scope, found.id).await?;
+            let moving = ops::column_of(&board, &a.column)?;
+            let to = match (&a.before, &a.after, a.first, a.last) {
+                (Some(x), _, _, _) => ops::Move::Before(x),
+                (_, Some(x), _, _) => ops::Move::After(x),
+                (_, _, true, _) => ops::Move::First,
+                (_, _, _, true) => ops::Move::Last,
+                // clap's ArgGroup is `required`, so this cannot be reached; an error beats a
+                // panic for a shape clap has not thought of.
+                _ => return Err(usage("say where: --before, --after, --first or --last")),
+            };
+            let ordered = ops::reordered(&board.columns, moving, to)?;
+            ops::reorder_columns(rt, &scope, found.id, &ordered).await?;
+            println!("✓ moved column {:?} on {:?}", a.column, board.title);
             Ok(())
         }
         ColumnCmd::Delete(a) => {

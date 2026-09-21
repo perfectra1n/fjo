@@ -61,6 +61,11 @@ const FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Str,
         doc: "when an OAuth access token lapses; null for a token",
     },
+    FieldSpec {
+        name: "web_session",
+        kind: FieldKind::Str,
+        doc: "the web session for fjo web and fjo project: where it is kept and when it lapses",
+    },
     FieldSpec { name: "is_admin", kind: FieldKind::Bool, doc: "site administrator" },
     FieldSpec { name: "error", kind: FieldKind::Str, doc: "why authentication failed, or null" },
 ];
@@ -119,6 +124,17 @@ struct Row {
     scopes: Vec<String>,
     kind: Option<&'static str>,
     expires_at: Option<String>,
+    /// The web session filed beside the API token, if any: where it lives, and the date its
+    /// remember token lapses.
+    ///
+    /// A login may hold a token, a session, both, or neither — they authenticate different
+    /// transports and neither substitutes for the other (see `forgejo_core::web`). Reporting
+    /// only the token would leave someone whose `fjo project` commands started failing with
+    /// nothing to look at, which is the question `auth status` exists to answer.
+    ///
+    /// Read from the store and never checked over the network: a session is verified by being
+    /// used, and asking a status question should not mint one as a side effect.
+    web: Option<(TokenSource, String)>,
     /// `Ok(is_admin)` on success; the classified failure otherwise.
     outcome: std::result::Result<bool, Error>,
 }
@@ -137,6 +153,10 @@ impl Row {
             "scopes": self.scopes,
             "credential_kind": self.kind,
             "expires_at": self.expires_at,
+            "web_session": self.web.as_ref().map(|(src, until)| json!({
+                "source": common::source_label(src),
+                "expires_at": until,
+            })),
             "is_admin": self.outcome.as_ref().ok().copied().unwrap_or(false),
             "error": self.outcome.as_ref().err().map(|e| render::headline(&e.kind)),
         })
@@ -238,6 +258,17 @@ struct Pending {
     kind: Option<&'static str>,
     /// When an OAuth access token lapses, RFC 3339. `None` for a personal access token.
     expires_at: Option<String>,
+    /// The web session filed beside the API token, if any: where it lives, and the date its
+    /// remember token lapses.
+    ///
+    /// A login may hold a token, a session, both, or neither — they authenticate different
+    /// transports and neither substitutes for the other (see `forgejo_core::web`). Reporting
+    /// only the token would leave someone whose `fjo project` commands started failing with
+    /// nothing to look at, which is the question `auth status` exists to answer.
+    ///
+    /// Read from the store and never checked over the network: a session is verified by being
+    /// used, and asking a status question should not mint one as a side effect.
+    web: Option<(TokenSource, String)>,
     /// The client to ask `GET /user` with, or the failure that already settled this row — no
     /// token, an unusable URL. An `Err` here becomes the row's `outcome` untouched, so phase 2
     /// never has to re-derive a diagnosis phase 1 already made.
@@ -268,6 +299,7 @@ async fn check_all(pending: Vec<Pending>) -> Vec<Row> {
                 scopes,
                 kind,
                 expires_at,
+                web,
                 check,
             } = p;
             let outcome = match check {
@@ -285,6 +317,7 @@ async fn check_all(pending: Vec<Pending>) -> Vec<Row> {
                 scopes,
                 kind,
                 expires_at,
+                web,
                 outcome,
             }
         })
@@ -315,6 +348,22 @@ fn plan_host(setup: &mut Setup, key: &HostKey, only: Option<&str>) -> Vec<Pendin
         let store = creds.effective_store(&setup.hosts, key);
         let token = creds.token(&mut setup.hosts, key, &login);
         for kind in creds.take_warnings() {
+            common::warn(&kind);
+        }
+
+        // Deliberately read after the API token, and deliberately not network-checked; see the
+        // field's comment on `Pending`.
+        let mut web_creds = setup.credentials(Some(key));
+        let web = web_creds
+            .secret(&mut setup.hosts, key, &login, forgejo_core::config::Slot::Web)
+            .ok()
+            .flatten()
+            .and_then(|t| {
+                let source = t.source().clone();
+                forgejo_core::web::WebCredential::parse(t.expose())
+                    .map(|c| (source, c.remember_expires_at.strftime("%Y-%m-%d").to_string()))
+            });
+        for kind in web_creds.take_warnings() {
             common::warn(&kind);
         }
 
@@ -353,6 +402,7 @@ fn plan_host(setup: &mut Setup, key: &HostKey, only: Option<&str>) -> Vec<Pendin
             scopes,
             kind,
             expires_at,
+            web,
             check,
         });
     }
@@ -369,6 +419,7 @@ fn plan_host(setup: &mut Setup, key: &HostKey, only: Option<&str>) -> Vec<Pendin
             scopes: Vec::new(),
             kind: None,
             expires_at: None,
+            web: None,
             check: Err(Error::new(ErrorKind::NotAuthenticated { host: key.to_string() })),
         });
     }
@@ -415,6 +466,19 @@ fn write_human(rows: &[Row], term: &Term, out: &mut dyn Write) -> std::io::Resul
             Some(s) => writeln!(out, "  - Token kept in: {}", common::source_label(s))?,
             None => writeln!(out, "  - Token kept in: nowhere fjo can find one")?,
         }
+        match &row.web {
+            Some((src, until)) => writeln!(
+                out,
+                "  - Web session: {} (for fjo web and fjo project; lapses {until})",
+                common::source_label(src)
+            )?,
+            // Said explicitly rather than omitted: "no line about it" and "no session" render
+            // identically, and only one of them is a fact the reader can act on.
+            None => writeln!(
+                out,
+                "  - Web session: none (run `fjo auth login --with-password` for fjo project)"
+            )?,
+        }
         // Never the token. `fjo auth token` is the way to get the value, and this line says so
         // rather than leaving a reader to look for a flag that does not exist.
         writeln!(out, "  - Token: hidden; use `fjo auth token` to print it")?;
@@ -458,6 +522,7 @@ mod tests {
             scopes: vec!["read:repository".to_owned(), "write:issue".to_owned()],
             kind: Some("pat"),
             expires_at: None,
+            web: None,
             outcome: if ok {
                 Ok(false)
             } else {
@@ -547,6 +612,10 @@ mod tests {
             assert!(out.contains("Token: hidden"), "{out}");
             assert!(out.contains("fjo auth token"), "{out}");
             assert!(out.contains("Token kept in: keyring entry"), "{out}");
+            assert!(
+                out.contains("Web session: none"),
+                "a login with no web session must say so rather than omit the line: {out}"
+            );
         }
     }
 
