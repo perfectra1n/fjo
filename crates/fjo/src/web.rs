@@ -174,7 +174,13 @@ async fn execute(
 
     let m: Method = method.parse().map_err(|_| usage(format!("{method} is not an HTTP method")))?;
     let resp = request(rt, m, &path, body).await?;
-    write_response(rt, globals, args, &resp)
+    // The body is written first even on a failure when `-i` asked for it, so the user sees what
+    // the server said rather than only that it said no.
+    let shown = args.include || resp.status.is_success() || resp.status.is_redirection();
+    if shown {
+        write_response(rt, globals, args, &resp)?;
+    }
+    classify(&resp, &path)
 }
 
 /// One authenticated web request, with the whole session lifecycle around it.
@@ -203,12 +209,30 @@ pub(crate) async fn request(
     }
 
     let resp = send(&client, method.clone(), path, body.clone(), &cred).await?;
-    if !session::is_lapsed(&resp) {
+    if !worth_renewing(&resp) {
         return Ok(resp);
     }
     // Exactly one retry. See the module comment.
     let cred = renew(rt, &client, cred).await?;
     send(&client, method, path, body, &cred).await
+}
+
+/// Whether a response is worth one retry with a fresh session.
+///
+/// `session::is_lapsed` covers the signal Forgejo gives for a *public* resource: a `303` to
+/// `/user/login`. A **private** one is different and the difference is easy to miss — Forgejo
+/// answers an unauthenticated request with `404`, deliberately, so that the existence of a
+/// private repository is not disclosed by its error code. A dead session on a private repo is
+/// therefore indistinguishable from a genuinely missing page, and treating only the `303` as
+/// "lapsed" means the renewal never fires for exactly the repositories people most want this
+/// for.
+///
+/// So a `404` earns one retry too. The cost is a single extra request on a genuinely missing
+/// page, paid only by someone who already holds a session; the alternative is a feature that
+/// silently stops working on private repositories the moment a session expires. The retry is
+/// still bounded at one by the caller, so a real 404 fails as a 404.
+fn worth_renewing(resp: &WebResponse) -> bool {
+    session::is_lapsed(resp) || resp.status.as_u16() == 404
 }
 
 /// Mint a session and write it down *before* it is used.
@@ -341,6 +365,25 @@ fn write_response(
 
     print!("{}", resp.text());
     Ok(())
+}
+
+/// Turn a non-success status into a failure, the way `fjo api` does.
+///
+/// Without this `fjo web` exits 0 on a 404 or a 403, so a script cannot tell a refused write
+/// from a successful one — and neither could this command's own integration tests, which is how
+/// it was found.
+fn classify(resp: &WebResponse, path: &str) -> Result<()> {
+    if resp.status.is_success() || resp.status.is_redirection() {
+        return Ok(());
+    }
+    // Forgejo answers a refused web write with a JSON `{"message": …}`; prefer its words.
+    let said = serde_json::from_slice::<serde_json::Value>(&resp.body)
+        .ok()
+        .and_then(|v| v["message"].as_str().map(str::to_owned));
+    Err(usage(match said {
+        Some(m) => format!("{} {path}: {m}", resp.status.as_u16()),
+        None => format!("{} {path}", resp.status),
+    }))
 }
 
 fn usage(msg: impl Into<String>) -> Error {

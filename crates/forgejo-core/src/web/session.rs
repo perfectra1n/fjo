@@ -110,6 +110,48 @@ mod tests {
         assert_eq!(secrecy::ExposeSecret::expose_secret(&got), "fresh-abc");
     }
 
+    /// The bug this exists for, with the header sequence a real Forgejo 16.0.5 sends.
+    ///
+    /// `RegenerateSession` issues a fresh id *after* writing the user id, so the response
+    /// carries two `session` cookies. Taking the first stores a valid but **anonymous** session:
+    /// public routes then work, private ones answer 404 rather than 401 or a redirect, and
+    /// nothing in the session-lapsed path ever fires because the server never says "signed
+    /// out". It presents as "the feature is broken for private repositories".
+    #[tokio::test]
+    async fn the_session_taken_is_the_one_issued_after_regeneration() {
+        let t = FakeTransport::new().on(
+            Method::GET,
+            "/user/login",
+            Canned::new(303)
+                .with_header("location", "/")
+                .with_header("set-cookie", "session=pre-regeneration; Path=/; HttpOnly")
+                .with_header("set-cookie", "lang=en-US; Path=/; HttpOnly")
+                .with_header("set-cookie", "session=after-regeneration; Path=/; HttpOnly"),
+        );
+        let got = remint(&client(t), &SecretString::from("remember")).await.expect("mints");
+        assert_eq!(
+            secrecy::ExposeSecret::expose_secret(&got),
+            "after-regeneration",
+            "the last Set-Cookie for a name is the one a browser keeps, and the only one that \
+             is actually signed in"
+        );
+    }
+
+    /// A later clear genuinely overrides an earlier set, so the order rule cuts both ways.
+    #[tokio::test]
+    async fn a_session_cleared_later_in_the_same_response_is_not_taken() {
+        let t = FakeTransport::new().on(
+            Method::GET,
+            "/user/login",
+            Canned::new(303)
+                .with_header("location", "/")
+                .with_header("set-cookie", "session=transient; Path=/")
+                .with_header("set-cookie", "session=; Path=/; Max-Age=0"),
+        );
+        let err = remint(&client(t), &SecretString::from("remember")).await.expect_err("refuses");
+        assert!(matches!(*err.kind, ErrorKind::WebSessionExpired { .. }), "{err:?}");
+    }
+
     /// Bug this prevents: treating a bounce back to the login page as success, which would store
     /// an empty or stale session and fail every later request with no explanation.
     #[tokio::test]

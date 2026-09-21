@@ -19,7 +19,7 @@ use clap::{Args as ClapArgs, Subcommand, ValueEnum};
 
 use forgejo_core::error::{Error, ErrorKind, Result};
 
-pub use parse::{Board, Card, Column, ProjectRef, parse_board, parse_index};
+pub use parse::{Board, Card, Column, ProjectRef, parse_board, parse_index, parse_issue_id};
 
 use crate::global::GlobalOpts;
 use crate::output::Table;
@@ -528,19 +528,41 @@ async fn locate(
 }
 
 /// The issue's internal database id, which the move endpoint wants and the user never sees.
-async fn internal_id(rt: &Runtime, globals: &GlobalOpts, number: i64) -> Result<i64> {
-    let repo = rt.repo(globals)?;
-    let api = forgejo_client::Api::new(rt.client().clone());
-    let issue = api.issue().get_issue(&repo.slug.owner, &repo.slug.name, number).await?;
-    Ok(issue.id.get())
+///
+/// Read over the web session rather than the API, so a card command needs one credential and not
+/// two. See `parse::parse_issue_id`.
+async fn internal_id(rt: &mut Runtime, globals: &GlobalOpts, number: i64) -> Result<i64> {
+    let (owner, name) = {
+        let repo = rt.repo(globals)?;
+        (repo.slug.owner.clone(), repo.slug.name.clone())
+    };
+    let path = format!("{owner}/{name}/issues/{number}");
+    let resp = crate::web::request(
+        rt,
+        forgejo_core::http::Method::GET,
+        &path,
+        forgejo_core::web::WebBody::None,
+    )
+    .await?;
+    parse::parse_issue_id(&resp.text())
 }
 
 fn emit<T: serde::Serialize>(rt: &Runtime, globals: &GlobalOpts, value: &T) -> Result<()> {
     let json = serde_json::to_value(value)
         .map_err(|e| usage(format!("could not render that as JSON: {e}")))?;
-    let fields = globals.json.as_deref().map(|l| {
-        l.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect::<Vec<_>>()
-    });
+    // A bare `--json` has an empty field list, which must mean "the whole document" and not
+    // "project nothing" -- the latter renders `{}`, which looks like an empty board.
+    let fields = globals
+        .json
+        .as_deref()
+        .map(|l| {
+            l.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .filter(|f: &Vec<String>| !f.is_empty());
     let filter = globals.jq.as_deref().map(crate::output::Filter::compile).transpose()?;
     let template = globals.template.as_deref().map(crate::output::Template::parse).transpose()?;
     let pipeline = crate::output::Pipeline::new()

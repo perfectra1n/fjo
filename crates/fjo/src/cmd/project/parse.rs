@@ -89,6 +89,7 @@ const COLUMN_TITLE: &str = r#"project-column-title-label">"#;
 const CARD_ID: &str = r#"data-issue=""#;
 const CARD_TITLE: &str = r#"class="issue-card-title"#;
 const PROJECT_ID: &str = r#"data-project=""#;
+const ISSUE_ID: &str = r#"data-issue-id=""#;
 const INDEX_CARD: &str = r#"<li class="milestone-card">"#;
 const INDEX_LINK: &str = r#"<a class="muted tw-break-anywhere" href=""#;
 
@@ -109,6 +110,21 @@ pub fn parse_board(html: &str) -> Result<Board> {
         .ok_or_else(|| rotted("the board's id"))?;
 
     Ok(Board { id, title, columns })
+}
+
+/// The internal database id of an issue, from its own page.
+///
+/// The move endpoint wants this, not the `#42` a user types — they are equal in a repository
+/// whose issues were all created in it and diverge as soon as one is transferred in, and a move
+/// posted with the wrong one silently targets a different issue.
+///
+/// Read from the web page rather than from `GET /api/v1/repos/{o}/{r}/issues/{n}` **so that
+/// `fjo project` needs only a web session**. Using the API here would mean every card command
+/// required an API token *as well*, which defeats the point: these routes exist precisely
+/// because the API cannot reach them, and asking for a second credential to use the first is a
+/// poor bargain. Found by running `card add` with only a session and watching it 404.
+pub fn parse_issue_id(html: &str) -> Result<i64> {
+    attr_value(html, ISSUE_ID).and_then(|v| v.parse().ok()).ok_or_else(|| rotted("the issue's id"))
 }
 
 /// Read the boards out of `/{owner}/{repo}/projects`.

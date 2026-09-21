@@ -9,6 +9,7 @@ git.example.org (https://git.example.org)
   - Active account: true
   - Credential store: hosts.toml (mode 0600)
   - Token kept in: nowhere fjo can find one
+  - Web session: none (run `fjo auth login --with-password` for fjo project)
   - Token: hidden; use `fjo auth token` to print it
   - Token scopes: read:repository, write:issue
 

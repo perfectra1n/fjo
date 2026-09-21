@@ -20,25 +20,23 @@
 //! them into a red test rather than a user's bug report. That pin is layer 0's entire safety
 //! story: see `docs/layers.md`.
 //!
-//! # STATUS: these do not pass yet, and are `#[ignore]`d rather than deleted
+//! # What these caught, and why the fixture alone was not enough
 //!
-//! Sign-in works against a real instance (the suite gets a session, and requests carry it
-//! without bouncing to `/user/login`), and the parser is proven against a captured page by the
-//! unit tests. What fails here is earlier than either: `GET /{owner}/{repo}/projects` answers
-//! **404** on a repository this suite just created, even though the API reports
-//! `has_projects: true` on it.
+//! These were written before they could run, and the first thing they found was a bug no unit
+//! test could have: `fjo` stored the **pre-authentication** session id.
 //!
-//! `repo.MustEnableProjects` (routers/web/repo/projects.go at v16.0.5) produces that 404 from
-//! exactly two conditions — `unit.TypeProjects.UnitGlobalDisabled()`, or
-//! `!ctx.Repo.CanRead(unit.TypeProjects)` — and which one applies is unresolved. The likely
-//! candidates are the container's `DEFAULT_REPO_UNITS`/`DISABLED_REPO_UNITS` settings (the
-//! harness sets neither) and the fact that `TestRepo::create_initialized` makes the repository
-//! private. The board fixture these were written against was captured from a repo built by
-//! hand, which is why the difference did not show up sooner.
+//! Forgejo's sign-in calls `RegenerateSession`, a session-fixation defence that issues a fresh
+//! session id *after* writing the user id, so the response sets the cookie twice — the first
+//! anonymous, the second signed in. Reading the first yielded a session that was perfectly
+//! valid and perfectly anonymous, so every public route worked and every private one answered
+//! **404** rather than a 401 or a redirect. Nothing in the lapsed-session path fired, because
+//! the server never said "signed out".
 //!
-//! Resolving it is a harness question, not a question about the code under test: enable the unit
-//! the way the container needs, or create the repository differently. They are ignored so that
-//! `cargo test` is honestly green while the intent, and the diagnosis, stay in the tree.
+//! That is the shape of bug this file exists for: it needs a real server, a real sign-in, and a
+//! *private* repository, and it is invisible to a `FakeTransport` answering whatever the test
+//! author believed. It also explains why the captured board fixture did not reveal it — that
+//! page was fetched with a session obtained by `curl`, which keeps the last cookie as a browser
+//! does.
 //!
 //! # The environment is built from scratch, deliberately
 //!
@@ -190,7 +188,6 @@ fn password_or_skip(inst: &Instance) -> Option<&'static str> {
 /// code would need to exist, and a future Forgejo that adds the endpoint should make this test
 /// fail loudly so the layer can be retired rather than silently kept.
 #[test]
-#[ignore = "the board page 404s on a freshly created itest repo even with has_projects=true; MustEnableProjects rejects on either UnitGlobalDisabled or !CanRead(TypeProjects) and which one is unresolved -- see the module comment"]
 fn the_api_has_no_projects_endpoint_but_the_web_session_reaches_one() {
     let inst = instance_or_skip!();
     cover!(porcelain: ["auth login", "web"]);
@@ -223,7 +220,6 @@ fn the_api_has_no_projects_endpoint_but_the_web_session_reaches_one() {
 /// them was wrong in the first draft of the design, and each would have produced a plausible
 /// looking 200 or a silent no-op rather than an error.
 #[test]
-#[ignore = "the board page 404s on a freshly created itest repo even with has_projects=true; MustEnableProjects rejects on either UnitGlobalDisabled or !CanRead(TypeProjects) and which one is unresolved -- see the module comment"]
 fn a_board_round_trips_through_the_porcelain() {
     let inst = instance_or_skip!();
     cover!(porcelain: [
@@ -301,7 +297,6 @@ fn a_board_round_trips_through_the_porcelain() {
 /// produce the same thing — a cookie Forgejo does not recognise, answered with `303` to
 /// `/user/login` — and this way needs no surgery on the container's database.
 #[test]
-#[ignore = "the board page 404s on a freshly created itest repo even with has_projects=true; MustEnableProjects rejects on either UnitGlobalDisabled or !CanRead(TypeProjects) and which one is unresolved -- see the module comment"]
 fn a_dead_session_is_renewed_silently_from_the_remember_token() {
     let inst = instance_or_skip!();
     cover!(porcelain: ["auth login", "web"]);
@@ -338,7 +333,6 @@ fn a_dead_session_is_renewed_silently_from_the_remember_token() {
 /// A remember token that is itself dead cannot self-heal, and must say so in terms that name the
 /// one command that fixes it.
 #[test]
-#[ignore = "the board page 404s on a freshly created itest repo even with has_projects=true; MustEnableProjects rejects on either UnitGlobalDisabled or !CanRead(TypeProjects) and which one is unresolved -- see the module comment"]
 fn a_dead_remember_token_asks_for_a_password_rather_than_looping() {
     let inst = instance_or_skip!();
     cover!(porcelain: ["auth login", "web"]);
@@ -366,7 +360,6 @@ fn a_dead_remember_token_asks_for_a_password_rather_than_looping() {
 /// `Sec-Fetch-Site` is accepted. If Forgejo ever reintroduces a CSRF token, this is the test
 /// that says so.
 #[test]
-#[ignore = "the board page 404s on a freshly created itest repo even with has_projects=true; MustEnableProjects rejects on either UnitGlobalDisabled or !CanRead(TypeProjects) and which one is unresolved -- see the module comment"]
 fn a_raw_json_move_is_accepted_without_any_csrf_token() {
     let inst = instance_or_skip!();
     cover!(porcelain: ["web"]);
@@ -393,6 +386,12 @@ fn a_raw_json_move_is_accepted_without_any_csrf_token() {
         r[1].as_str(),
     ]);
     assert_eq!(code, Some(0), "creating the board failed: {err}");
+
+    // The issue has to be ON the board before it can be moved between columns: Forgejo's
+    // MoveIssues answers 500, not 4xx, when asked to move an issue the project does not hold.
+    let (code, _, err) =
+        s.run(&["project", "card", "add", "1", "--project", "Raw", r[0].as_str(), r[1].as_str()]);
+    assert_eq!(code, Some(0), "putting the issue on the board failed: {err}");
 
     let (_, ids, _) = s.run(&["project", "view", "Raw", "--json", r[0].as_str(), r[1].as_str()]);
     let board: serde_json::Value = serde_json::from_str(&ids).unwrap_or_default();

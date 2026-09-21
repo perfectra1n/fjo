@@ -84,22 +84,39 @@ impl WebResponse {
     }
 
     /// The cookie's value and its raw attribute string (`Path=/; Max-Age=2592000; …`).
+    ///
+    /// # The LAST header for a name wins, and that is load-bearing
+    ///
+    /// A response may set the same cookie twice, and Forgejo's sign-in does exactly that:
+    ///
+    /// ```text
+    /// Set-Cookie: session=1adbe5fe03655ecc      <- before RegenerateSession
+    /// Set-Cookie: persistent=…
+    /// Set-Cookie: session=4f6bf17b6364e8e3      <- after it, and the authenticated one
+    /// ```
+    ///
+    /// `RegenerateSession` is a session-fixation defence: the id a client arrived with is
+    /// discarded and a fresh one issued *after* the user id is written into the session. Taking
+    /// the first match therefore stores the **pre-authentication** id, which is not a broken
+    /// credential but a valid anonymous one — so requests succeed against anything public and
+    /// fail against anything private, with no `401` and no redirect to explain why. That cost a
+    /// long debugging session; a browser applies these headers in order and the last value wins,
+    /// which is both the standard behaviour and the only correct answer here.
     pub fn set_cookie_attrs(&self, name: &str) -> Option<(SecretString, String)> {
+        let mut found = None;
         for raw in self.headers.get_all(header::SET_COOKIE) {
             let Ok(text) = raw.to_str() else { continue };
             let (pair, attrs) = text.split_once(';').unwrap_or((text, ""));
             let Some((k, v)) = pair.split_once('=') else { continue };
-            if k.trim() == name {
-                let v = v.trim();
-                // An empty value is how a cookie is *cleared*. Treating that as a credential
-                // would store the empty string and fail every later request with no clue why.
-                if v.is_empty() {
-                    return None;
-                }
-                return Some((SecretString::from(v), attrs.trim().to_owned()));
+            if k.trim() != name {
+                continue;
             }
+            let v = v.trim();
+            // An empty value is how a cookie is *cleared* — and a later clear genuinely does
+            // override an earlier set, so this replaces rather than skips.
+            found = (!v.is_empty()).then(|| (SecretString::from(v), attrs.trim().to_owned()));
         }
-        None
+        found
     }
 
     pub fn location(&self) -> Option<&str> {
