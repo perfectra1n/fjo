@@ -149,6 +149,43 @@ What each verb earns over `fjo web`, per the conventions: context inference (rep
 issue), orchestration (title → id resolution, HTML read then JSON write), interactive fallback,
 and rendering.
 
+### `fjo auth export --web` / `fjo auth import --web`
+
+A web session is worth moving between machines, because signing in again on every CI run defeats
+the point of a credential that lasts a month.
+
+**What moves is the remember token**, not the session cookie. The session lapses in about a day
+(`SESSION_LIFE_TIME`, default 86400), so exporting only that yields a job that works this
+afternoon and fails tomorrow. The whole document goes, and the receiving machine mints its own
+sessions from it for the remember token's remaining life.
+
+```
+fjo auth export --web | gh secret set FJO_WEB_SESSION     # provision CI
+FJO_WEB_SESSION=... fjo project card move 42 --to Done    # CI needs no import step
+fjo auth import --web < session.json                      # or store it on a workstation
+```
+
+`--web` is the only mode. API tokens are deliberately **not** exportable: `FJO_TOKEN` with a
+scoped PAT created in the web UI is already the better CI story, and an exported PAT would lose
+the scope record `Login.scopes` keeps — which is the only reason an `InsufficientScope` error can
+say what the token actually has.
+
+Two guards, both because of what this credential is. It authenticates the **whole account** for
+~31 days and cannot be scoped the way a PAT can:
+
+* export refuses to write to a terminal without `--force`, reusing the global flag that already
+  means exactly that. A full-account credential scrolling into terminal scrollback is how one
+  ends up in a screen recording;
+* export prints one line to **stderr** — never stdout, which must stay a clean pipe — naming what
+  the value is, when it lapses, and that a dedicated bot account is the right thing for CI.
+
+Import verifies before storing, the same contract `auth login` has: a document that cannot mint a
+session is refused rather than filed away to fail later somewhere else.
+
+No `import` is needed for CI. The store precedence is unchanged — env, then file, then keyring —
+so `FJO_WEB_SESSION` is read directly. `import` exists for a workstation where the keyring is
+wanted instead.
+
 ## The session lifecycle
 
 Principle: **never guess server configuration; observe and self-heal.** `SESSION_LIFE_TIME` and
