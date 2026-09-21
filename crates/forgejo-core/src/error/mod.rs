@@ -289,6 +289,33 @@ pub enum ErrorKind {
     NotAuthenticated {
         host: String,
     },
+    /// No web session is filed for this host, and one is required: the route being asked for is
+    /// not in the API, so an API token cannot substitute.
+    WebSessionMissing {
+        host: String,
+    },
+    /// A web session existed but could not be renewed, because the long-lived remember token is
+    /// gone: expired, revoked by "log out everywhere", or invalidated by a password change.
+    ///
+    /// Distinct from [`ErrorKind::WebSessionMissing`] because the remedy is the same command but
+    /// the cause is not, and a user who just logged in deserves to be told that it lapsed rather
+    /// than that it was never there.
+    WebSessionExpired {
+        host: String,
+    },
+    /// Forgejo refused the password (or the second factor) at `/user/login`.
+    ///
+    /// `reason` is the server's own flash message where one could be read, because Forgejo
+    /// distinguishes cases this tool should not try to re-derive — a wrong password, a disabled
+    /// account, a login source that forbids password auth.
+    WebLoginFailed {
+        host: String,
+        reason: Option<String>,
+    },
+    /// The account's second factor is WebAuthn, which has no headless completion.
+    WebAuthnRequired {
+        host: String,
+    },
     TokenRejected {
         host: String,
         login: Option<String>,

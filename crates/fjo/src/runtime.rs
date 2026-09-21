@@ -37,7 +37,7 @@
 use std::cell::OnceCell;
 use std::time::Duration;
 
-use forgejo_core::config::secrets::{CredStore, EnvStore};
+use forgejo_core::config::secrets::{CredStore, EnvStore, Slot};
 use forgejo_core::config::{ColorPref, Config, Env, HostKey, Hosts, SystemEnv};
 use forgejo_core::context::{GitCli, GitCtx, RepoContext, ResolveOptions, resolve_repo};
 use forgejo_core::error::{Error, ErrorKind, Result, TokenSource, render};
@@ -126,7 +126,7 @@ impl Runtime {
             // find, and probing the keyring anyway would emit a "no keyring" warning on a
             // command that needs no credential. An environment token is not login-scoped, so
             // ask only for that.
-            None => EnvStore::new(env).get(&host, "", &hosts)?,
+            None => EnvStore::new(env).get(&host, "", Slot::Api, &hosts)?,
         };
         warnings.extend(creds.take_warnings());
 

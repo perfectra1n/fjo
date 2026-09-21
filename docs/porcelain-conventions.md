@@ -24,6 +24,12 @@ If a command does none of these, leave it to `fjo raw` and say so in the group's
 - **A verb must describe what the API does, not what its route is called.** Where the two differ, the route is the one that is wrong for a user. `fjo git-hook disable` exists rather than `delete` because `DELETE /repos/{o}/{r}/hooks/git/{id}` only empties the hook's script — the hook is one of a fixed set and survives. Copying the route's name there would be a silent lie about what just happened to a production repository.
 - The built-in `tea` aliases are `pull` → `pr`, `labels` → `label`, `ms` → `milestone`, `login` → `auth login`, `whoami` → `auth status`. They are **hidden**: they work, and they appear in no `--help`, no completion script, and no `fjo alias list`. `gh`'s names are still the only names the tool advertises. They live in **one table**, `cmd::alias::BUILTIN`, applied by the same argv rewrite that expands user aliases — not scattered across the groups as clap aliases, which could not express the two that expand to two words. A user's own alias of the same name wins. Do not add more without a reason as concrete as `tea` muscle memory.
 
+## Addressing by title, not id
+
+`fjo project` follows a convention `fjo milestone` already set: **the user names things by title, never by numeric id.** Forgejo's project routes are all `/projects/{id}/{columnID}`, and nobody knows that a board called `Roadmap` is id 3 — the same reasoning that put `milestone_by_title` in `crates/fjo/src/cmd/issue/shared.rs` and is written out in full in `crates/fjo/src/cmd/milestone.rs`'s module doc.
+
+The corollary `fjo milestone` established holds here too: an **ambiguous** title is refused, not guessed. Forgejo does not require titles to be unique — real testing found two milestones called `1.0` on the same repository — and `fjo milestone` answers that by listing the colliding ids and telling the user to rename or delete one; it will not guess which was meant. `fjo project` lists the matches the same way, and adds the one thing `fjo milestone` does not have: `--id` is accepted as a single escape hatch, so an ambiguous project or column can be pinned to one of the ids the error just listed instead of requiring a rename.
+
 ## Flags every command shares
 
 Inherited from `GlobalOpts`; **do not redeclare them**:
@@ -47,9 +53,12 @@ Copy these exactly. A flag that means something different here than in `gh` is w
 | `-a/--assignee` | Repeatable; `@me` means the authenticated user |
 | `-m/--milestone` | By title, not id — resolve it for the user |
 | `-s/--state` | `open` \| `closed` \| `all`, default `open` for list commands |
+| `--owner <ORG>` | Organisation or user board instead of the repository board |
 | `-L <n>` | Maximum items, default 30. **Short only** — the long form is the global `--limit`, which means the same thing |
 | `--yes` | Skip a destructive confirmation |
 | `--add-X` / `--remove-X` | Edit commands mutate; they never replace a whole set |
+
+`--owner` exists because Forgejo exposes the same project routes twice: once under `/{owner}/{repo}/projects/...` for a repository board, and once under `/{owner}/-/projects/...` for an organisation or user board. Same verbs, one flag picks which. It does not collide with any global flag — `--owner` is not among `GlobalOpts`'s names.
 
 `--add-label`/`--remove-label` rather than `--label` on `edit` is `gh`'s convention and it matters: replace-semantics on an edit silently discards labels someone else added.
 

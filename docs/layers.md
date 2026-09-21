@@ -1,16 +1,19 @@
-# The three layers
+# The four layers
 
-`fjo` exposes the Forgejo API three times over. This is not redundancy — it is the mechanism that lets the tool claim complete coverage while still having a small, opinionated set of everyday commands.
+`fjo` exposes the Forgejo REST API three times over, plus a fourth layer underneath all of them for the handful of things Forgejo does not expose as an API at all. The three API layers are not redundancy — they are the mechanism that lets the tool claim complete coverage of that API while still having a small, opinionated set of everyday commands. Layer 0 exists because "complete coverage of the API" and "complete coverage of Forgejo" are different claims, and Forgejo's project boards are the proof: they have no REST API to cover.
 
 ```
 fjo <noun> <verb>        layer 3   hand-written porcelain   35 groups, 238 commands
 fjo raw <group> <op>     layer 2   generated                506 operations, all of them
 fjo api <path>           layer 1   generated from nothing   any path under /api/v1
+fjo web <path>           layer 0   web-root, cookie-authenticated     any route under /
 ```
 
-Layers 1 and 2 are complete by construction. Layer 3 is deliberately partial and always will be.
+Layers 1 and 2 are complete by construction, over the surface the vendored spec describes. Layer 3 is deliberately partial and always will be. Layer 0 is neither: there is no spec for it to be complete or partial against — see below.
 
 ## Why coverage is a property of the build
+
+This is the story for layers 1 through 3 — everything downstream of the generator. Layer 0 has no generator to be downstream of; its own coverage story is next.
 
 The generator (`cargo xtask codegen`) reads `spec/forgejo-v16.0.4.json` — a de-templated, key-sorted copy of Forgejo's Swagger 2.0 document, vendored at git tag `v16.0.4` — and emits four things:
 
@@ -24,6 +27,27 @@ The generator (`cargo xtask codegen`) reads `spec/forgejo-v16.0.4.json` — a de
 `ops_is_a_bijection_with_the_specs_operation_ids`, in `crates/forgejo-client/src/generated/meta/invariants.rs`, loads the same spec at test time and asserts a bijection between its `operationId`s and `OPS` — nothing in the spec missing from the table, nothing in the table absent from the spec. Coverage is therefore a test failure, not a judgement call, and it fails loudly the moment `cargo xtask update-spec` pulls in new endpoints.
 
 Nobody writes 506 commands. Nobody has to.
+
+## Layer 0 — `fjo web <path>`
+
+Forgejo has features with no REST API at all. Projects — the per-repository and per-organisation kanban boards — are the one that forced this layer into existence: the OpenAPI spec Forgejo serves has zero `project` paths on 16.0.5, and the web routes that actually back the board UI reject an API token outright, answering `303 → /user/login` instead of `401`. Layers 1 through 3 all descend from the vendored spec — a generated client, a generated command tree, and porcelain hand-written on top of both — so none of them can reach a route the spec never mentions.
+
+`fjo web <path>` requests the instance's web root instead of `/api/v1`: the same flags as `fjo api` (`-X`, `-f`, `-F`, `--input`, `-H`, `-i`), the same `{owner}`/`{repo}` substitution, the same `--json`/`--jq`/`--template` pipeline, but authenticated with a session cookie rather than a token, because the web routes only accept the former.
+
+This is a difference in kind, not degree, and it should be said plainly rather than softened: layers 1 through 3 are pinned to the vendored spec — the JSON file this repository vendors and diffs on every bump, named above. Layer 0 is pinned to Forgejo's *source* at the same tag — undocumented, unversioned web routes that no spec describes and that Forgejo is free to change in any release, including a patch release, without telling anyone. There is nothing to diff.
+
+That pin is nevertheless enforced, which is what makes it acceptable rather than reckless: the live integration suite boots `codeberg.org/forgejo/forgejo:16.0.5`, the same version this layer is written against, so a Forgejo release that changes a route or the board template turns the suite red before it reaches a user. This is the same mechanism in spirit as `ops_is_a_bijection_with_the_specs_operation_ids` enforcing the spec for layer 2 — coverage and correctness are test failures here too, not judgement calls — and the `coverage-check` ratchet refuses a new porcelain leaf, `fjo project` included, that was never actually driven against a real server.
+
+```bash
+fjo web POST AtvikSecurity/VulnCorp/projects/3/12/move --input cards.json
+fjo web GET  AtvikSecurity/VulnCorp/projects/3 > board.html
+```
+
+`fjo web` never warns about server versions. It is the escape hatch below the escape hatch.
+
+**Reach for it when** the vendored spec has nothing for the feature you need — check it first — because that is the only case this layer exists for.
+
+When the upstream project API lands (`forgejo` PR #9384) and `cargo xtask update-spec` generates its operations, `fjo project` re-targets to layer 2 and its HTML parser is deleted. `fjo web` and the session stay: they exist for every web-only surface Forgejo has, not for this one.
 
 ## Layer 1 — `fjo api`
 

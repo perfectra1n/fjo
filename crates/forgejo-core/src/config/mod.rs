@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, ErrorKind, Result};
 
 pub use hosts::{HostEntry, HostKey, Hosts, Login};
-pub use secrets::{CredStore, CredentialStore, Credentials, Token};
+pub use secrets::{CredStore, CredentialStore, Credentials, Slot, Token};
 
 /// The preferences file, relative to the config directory.
 pub const CONFIG_FILE: &str = "config.toml";

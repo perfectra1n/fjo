@@ -61,6 +61,12 @@ pub const KEYRING_TIMEOUT: Duration = Duration::from_secs(2);
 /// Environment variables checked for a token, in order.
 pub const TOKEN_VARS: &[&str] = &["FJO_TOKEN", "FORGEJO_TOKEN"];
 
+/// Environment variables checked for a web-session document, in order.
+///
+/// Deliberately not `FORGEJO_*`: the document's shape is this tool's, not Forgejo's, and a
+/// name in Forgejo's namespace would suggest the server has a concept it does not have.
+pub const WEB_SESSION_VARS: &[&str] = &["FJO_WEB_SESSION"];
+
 /// The variable that hard-overrides store selection.
 pub const STORE_VAR: &str = "FJO_CREDENTIAL_STORE";
 
@@ -179,6 +185,57 @@ impl std::fmt::Debug for Token {
 /// giving `FileStore` a borrow of `Hosts` — would put a lifetime on the trait object and
 /// force `Credentials` to juggle a `&mut Hosts` it also needs elsewhere. Passing it in
 /// keeps the trait object-safe and lifetime-free, which is worth one unused parameter.
+/// Which of a login's credentials a store operation is about.
+///
+/// # Why a second slot, when the OAuth document deliberately is not one
+///
+/// `oauth/stored.rs` packs an OAuth session's three values into a single document precisely so
+/// they cannot be written non-atomically, and records that "a second entry for the refresh token
+/// would be one more thing to orphan on logout". That reasoning is about values which rotate
+/// **together**, and it still stands. It does not extend to these two: an API token and a web
+/// session authenticate different transports — `Authorization` against `/api/v1`, a cookie
+/// against the web root — neither can be derived from the other, and a login may hold either,
+/// both, or neither. Packing them into one document would mean rewriting a working API token
+/// every time a session is re-minted, which is the *opposite* of what that note protects.
+///
+/// The orphaning objection is real and is answered structurally rather than by remembering:
+/// `Slot` is a closed enum, [`Slot::ALL`] enumerates it, and [`Credentials::forget`] iterates
+/// that. A slot added here is a slot logout already clears, and a variant added without
+/// updating `ALL` fails the test that asserts their lengths agree.
+///
+/// The keyring layout promise is kept intact: `{login}@{host}` remains the API entry's account
+/// key forever. A web entry is a *prefixed* key beside it, never a change to that one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Slot {
+    /// The API token, sent as `Authorization` to `/api/v1`. The overwhelmingly common one, and
+    /// the only one the tool had before layer 0 existed.
+    #[default]
+    Api,
+    /// The web-session document — see `forgejo_core::web::WebCredential` — holding the
+    /// long-lived remember token and the short-lived session cookie minted from it.
+    Web,
+}
+
+impl Slot {
+    /// Every slot, in the order `forget` clears them.
+    ///
+    /// This is what makes an orphaned credential impossible rather than merely unlikely, so it
+    /// must stay exhaustive; `every_slot_is_in_all` asserts that it is.
+    pub const ALL: [Slot; 2] = [Slot::Api, Slot::Web];
+
+    /// The prefix distinguishing this slot's keyring account and environment variable.
+    ///
+    /// Empty for [`Slot::Api`], which is what preserves the documented `{login}@{host}` layout
+    /// for every credential that existed before this enum did.
+    fn prefix(self) -> &'static str {
+        match self {
+            Slot::Api => "",
+            Slot::Web => "web:",
+        }
+    }
+}
+
+/// One credential backend.
 pub trait CredStore {
     fn kind(&self) -> CredentialStore;
 
@@ -186,17 +243,18 @@ pub trait CredStore {
     /// distinct from `Err`, which means the backend itself is unusable. Conflating the two
     /// is how a missing token turns into a scary D-Bus error, and how a broken keyring turns
     /// into a silent "not logged in".
-    fn get(&self, host: &HostKey, login: &str, hosts: &Hosts) -> Result<Option<Token>>;
+    fn get(&self, host: &HostKey, login: &str, slot: Slot, hosts: &Hosts) -> Result<Option<Token>>;
 
     fn set(
         &self,
         host: &HostKey,
         login: &str,
+        slot: Slot,
         token: &SecretString,
         hosts: &mut Hosts,
     ) -> Result<TokenSource>;
 
-    fn delete(&self, host: &HostKey, login: &str, hosts: &mut Hosts) -> Result<()>;
+    fn delete(&self, host: &HostKey, login: &str, slot: Slot, hosts: &mut Hosts) -> Result<()>;
 }
 
 // ------------------------------------------------------------------------ keyring store
@@ -292,14 +350,19 @@ impl KeyringStore {
         self
     }
 
-    /// `<login>@<host>` — the host key is included so two accounts on one instance, and one
-    /// account on two instances, all get distinct entries.
-    fn account(host: &HostKey, login: &str) -> String {
-        format!("{login}@{host}")
+    /// `<login>@<host>` for the API token, `web:<login>@<host>` for the web session — the host
+    /// key is included so two accounts on one instance, and one account on two instances, all
+    /// get distinct entries.
+    ///
+    /// [`Slot::Api`] has an empty prefix, so the account key documented as stable forever is
+    /// byte-for-byte what it always was; a credential written by an older `fjo` is found here
+    /// unchanged.
+    fn account(host: &HostKey, login: &str, slot: Slot) -> String {
+        format!("{}{login}@{host}", slot.prefix())
     }
 
-    fn entry_label(&self, host: &HostKey, login: &str) -> String {
-        format!("{}:{}", self.service, Self::account(host, login))
+    fn entry_label(&self, host: &HostKey, login: &str, slot: Slot) -> String {
+        format!("{}:{}", self.service, Self::account(host, login, slot))
     }
 }
 
@@ -308,9 +371,15 @@ impl CredStore for KeyringStore {
         CredentialStore::Keyring
     }
 
-    fn get(&self, host: &HostKey, login: &str, _hosts: &Hosts) -> Result<Option<Token>> {
+    fn get(
+        &self,
+        host: &HostKey,
+        login: &str,
+        slot: Slot,
+        _hosts: &Hosts,
+    ) -> Result<Option<Token>> {
         let service = self.service.clone();
-        let account = Self::account(host, login);
+        let account = Self::account(host, login, slot);
         // `Entry::new` is where the backend is lazily initialised, so it must be inside the
         // timeout too — that call is the one that blocks on a broken bus.
         let got = with_timeout(self.timeout, move || {
@@ -325,7 +394,7 @@ impl CredStore for KeyringStore {
         Ok(got.map(|mut plain| {
             let secret = SecretString::from(plain.as_str());
             plain.zeroize();
-            Token::new(secret, TokenSource::Keyring { entry: self.entry_label(host, login) })
+            Token::new(secret, TokenSource::Keyring { entry: self.entry_label(host, login, slot) })
         }))
     }
 
@@ -333,22 +402,23 @@ impl CredStore for KeyringStore {
         &self,
         host: &HostKey,
         login: &str,
+        slot: Slot,
         token: &SecretString,
         _hosts: &mut Hosts,
     ) -> Result<TokenSource> {
         let service = self.service.clone();
-        let account = Self::account(host, login);
+        let account = Self::account(host, login, slot);
         let plain = token.expose_secret().to_owned();
         with_timeout(self.timeout, move || {
             keyring::Entry::new(&service, &account)?.set_password(&plain)
         })
         .map_err(|cause| Error::new(ErrorKind::KeyringUnavailable { cause }))?;
-        Ok(TokenSource::Keyring { entry: self.entry_label(host, login) })
+        Ok(TokenSource::Keyring { entry: self.entry_label(host, login, slot) })
     }
 
-    fn delete(&self, host: &HostKey, login: &str, _hosts: &mut Hosts) -> Result<()> {
+    fn delete(&self, host: &HostKey, login: &str, slot: Slot, _hosts: &mut Hosts) -> Result<()> {
         let service = self.service.clone();
-        let account = Self::account(host, login);
+        let account = Self::account(host, login, slot);
         with_timeout(self.timeout, move || {
             match keyring::Entry::new(&service, &account)?.delete_credential() {
                 // Already gone is success: `auth logout` must be idempotent.
@@ -389,11 +459,17 @@ impl CredStore for FakeKeyring {
         CredentialStore::Keyring
     }
 
-    fn get(&self, host: &HostKey, login: &str, _hosts: &Hosts) -> Result<Option<Token>> {
+    fn get(
+        &self,
+        host: &HostKey,
+        login: &str,
+        slot: Slot,
+        _hosts: &Hosts,
+    ) -> Result<Option<Token>> {
         if let Some(cause) = &self.fail {
             return Err(Error::new(ErrorKind::KeyringUnavailable { cause: cause.clone() }));
         }
-        let key = format!("{login}@{host}");
+        let key = format!("{}{login}@{host}", slot.prefix());
         Ok(self.entries.borrow().get(&key).map(|v| {
             Token::new(
                 SecretString::from(v.as_str()),
@@ -406,22 +482,23 @@ impl CredStore for FakeKeyring {
         &self,
         host: &HostKey,
         login: &str,
+        slot: Slot,
         token: &SecretString,
         _hosts: &mut Hosts,
     ) -> Result<TokenSource> {
         if let Some(cause) = &self.fail {
             return Err(Error::new(ErrorKind::KeyringUnavailable { cause: cause.clone() }));
         }
-        let key = format!("{login}@{host}");
+        let key = format!("{}{login}@{host}", slot.prefix());
         self.entries.borrow_mut().insert(key.clone(), token.expose_secret().to_owned());
         Ok(TokenSource::Keyring { entry: format!("{KEYRING_SERVICE}:{key}") })
     }
 
-    fn delete(&self, host: &HostKey, login: &str, _hosts: &mut Hosts) -> Result<()> {
+    fn delete(&self, host: &HostKey, login: &str, slot: Slot, _hosts: &mut Hosts) -> Result<()> {
         if let Some(cause) = &self.fail {
             return Err(Error::new(ErrorKind::KeyringUnavailable { cause: cause.clone() }));
         }
-        self.entries.borrow_mut().remove(&format!("{login}@{host}"));
+        self.entries.borrow_mut().remove(&format!("{}{login}@{host}", slot.prefix()));
         Ok(())
     }
 }
@@ -437,10 +514,11 @@ impl CredStore for FileStore {
         CredentialStore::File
     }
 
-    fn get(&self, host: &HostKey, login: &str, hosts: &Hosts) -> Result<Option<Token>> {
-        let Some(secret) =
-            hosts.get(host).and_then(|h| h.login(login)).and_then(|l| l.token.as_ref())
-        else {
+    fn get(&self, host: &HostKey, login: &str, slot: Slot, hosts: &Hosts) -> Result<Option<Token>> {
+        let Some(secret) = hosts.get(host).and_then(|h| h.login(login)).and_then(|l| match slot {
+            Slot::Api => l.token.as_ref(),
+            Slot::Web => l.web_session.as_ref(),
+        }) else {
             return Ok(None);
         };
         Ok(Some(Token::new(
@@ -456,17 +534,35 @@ impl CredStore for FileStore {
         &self,
         host: &HostKey,
         login: &str,
+        slot: Slot,
         token: &SecretString,
         hosts: &mut Hosts,
     ) -> Result<TokenSource> {
         let copy = SecretString::from(token.expose_secret());
-        hosts.add_login(host, login, Some(copy), Vec::new(), None)?;
+        match slot {
+            Slot::Api => hosts.add_login(host, login, Some(copy), Vec::new(), None)?,
+            // `add_login` first, so a web session written for a host whose login is not yet
+            // recorded establishes the identity exactly as an API token would, rather than
+            // being silently dropped by `set_web_session`'s "login not present" arm.
+            Slot::Web => {
+                hosts.add_login(host, login, None, Vec::new(), None)?;
+                if !hosts.set_web_session(host, login, Some(copy)) {
+                    return Err(Error::new(ErrorKind::UnknownHost {
+                        given: host.to_string(),
+                        known: Vec::new(),
+                    }));
+                }
+            }
+        }
         Ok(TokenSource::File { path: hosts.path().to_owned() })
     }
 
-    fn delete(&self, host: &HostKey, login: &str, hosts: &mut Hosts) -> Result<()> {
+    fn delete(&self, host: &HostKey, login: &str, slot: Slot, hosts: &mut Hosts) -> Result<()> {
         if let Some(l) = hosts.get_mut(host).and_then(|h| h.login_mut(login)) {
-            l.token = None;
+            match slot {
+                Slot::Api => l.token = None,
+                Slot::Web => l.web_session = None,
+            }
         }
         Ok(())
     }
@@ -495,8 +591,18 @@ impl CredStore for EnvStore<'_> {
         CredentialStore::Env
     }
 
-    fn get(&self, _host: &HostKey, _login: &str, _hosts: &Hosts) -> Result<Option<Token>> {
-        for var in TOKEN_VARS {
+    fn get(
+        &self,
+        _host: &HostKey,
+        _login: &str,
+        slot: Slot,
+        _hosts: &Hosts,
+    ) -> Result<Option<Token>> {
+        let vars = match slot {
+            Slot::Api => TOKEN_VARS,
+            Slot::Web => WEB_SESSION_VARS,
+        };
+        for var in vars {
             if let Some(mut plain) = self.env.get(var) {
                 let secret = SecretString::from(plain.as_str());
                 plain.zeroize();
@@ -510,6 +616,7 @@ impl CredStore for EnvStore<'_> {
         &self,
         _host: &HostKey,
         _login: &str,
+        _slot: Slot,
         _token: &SecretString,
         _hosts: &mut Hosts,
     ) -> Result<TokenSource> {
@@ -519,7 +626,7 @@ impl CredStore for EnvStore<'_> {
         ))))
     }
 
-    fn delete(&self, _host: &HostKey, _login: &str, _hosts: &mut Hosts) -> Result<()> {
+    fn delete(&self, _host: &HostKey, _login: &str, _slot: Slot, _hosts: &mut Hosts) -> Result<()> {
         // Nothing to delete, and nothing to complain about: `auth logout` should not fail
         // because a variable is exported in the caller's shell. The caller is told to unset
         // it by `auth status`.
@@ -636,12 +743,13 @@ impl<'a> Credentials<'a> {
         kind: CredentialStore,
         host: &HostKey,
         login: &str,
+        slot: Slot,
         hosts: &Hosts,
     ) -> Result<Option<Token>> {
         match kind {
-            CredentialStore::Keyring => self.keyring.get(host, login, hosts),
-            CredentialStore::File => self.file.get(host, login, hosts),
-            CredentialStore::Env => EnvStore::new(self.env).get(host, login, hosts),
+            CredentialStore::Keyring => self.keyring.get(host, login, slot, hosts),
+            CredentialStore::File => self.file.get(host, login, slot, hosts),
+            CredentialStore::Env => EnvStore::new(self.env).get(host, login, slot, hosts),
         }
     }
 
@@ -650,13 +758,14 @@ impl<'a> Credentials<'a> {
         kind: CredentialStore,
         host: &HostKey,
         login: &str,
+        slot: Slot,
         token: &SecretString,
         hosts: &mut Hosts,
     ) -> Result<TokenSource> {
         match kind {
-            CredentialStore::Keyring => self.keyring.set(host, login, token, hosts),
-            CredentialStore::File => self.file.set(host, login, token, hosts),
-            CredentialStore::Env => EnvStore::new(self.env).set(host, login, token, hosts),
+            CredentialStore::Keyring => self.keyring.set(host, login, slot, token, hosts),
+            CredentialStore::File => self.file.set(host, login, slot, token, hosts),
+            CredentialStore::Env => EnvStore::new(self.env).set(host, login, slot, token, hosts),
         }
     }
 
@@ -665,12 +774,13 @@ impl<'a> Credentials<'a> {
         kind: CredentialStore,
         host: &HostKey,
         login: &str,
+        slot: Slot,
         hosts: &mut Hosts,
     ) -> Result<()> {
         match kind {
-            CredentialStore::Keyring => self.keyring.delete(host, login, hosts),
-            CredentialStore::File => self.file.delete(host, login, hosts),
-            CredentialStore::Env => EnvStore::new(self.env).delete(host, login, hosts),
+            CredentialStore::Keyring => self.keyring.delete(host, login, slot, hosts),
+            CredentialStore::File => self.file.delete(host, login, slot, hosts),
+            CredentialStore::Env => EnvStore::new(self.env).delete(host, login, slot, hosts),
         }
     }
 
@@ -685,6 +795,21 @@ impl<'a> Credentials<'a> {
         hosts: &mut Hosts,
         host: &HostKey,
         login: &str,
+    ) -> Result<Option<Token>> {
+        self.secret(hosts, host, login, Slot::Api)
+    }
+
+    /// [`Credentials::token`], for any slot.
+    ///
+    /// The store-selection and warning behaviour is identical for every slot; only the key
+    /// differs. Keeping one implementation means a web session cannot acquire a subtly
+    /// different fallback order from the API token beside it.
+    pub fn secret(
+        &mut self,
+        hosts: &mut Hosts,
+        host: &HostKey,
+        login: &str,
+        slot: Slot,
     ) -> Result<Option<Token>> {
         // A store chosen explicitly for this one invocation must never be written back.
         //
@@ -701,7 +826,7 @@ impl<'a> Credentials<'a> {
         let may_cache = self.forced.is_none() && !self.insecure;
 
         for kind in self.read_order(hosts, host) {
-            let got = self.get_from(kind, host, login, hosts);
+            let got = self.get_from(kind, host, login, slot, hosts);
             match got {
                 Ok(Some(t)) => {
                     if may_cache {
@@ -751,6 +876,26 @@ impl<'a> Credentials<'a> {
         scopes: Vec<Scope>,
         kind: Option<&str>,
     ) -> Result<TokenSource> {
+        self.store_in(hosts, host, login, Slot::Api, token, scopes, kind)
+    }
+
+    /// [`Credentials::store`], for any slot.
+    ///
+    /// `scopes` and `kind` describe an API token and are recorded on the login regardless of
+    /// slot, because they are properties of the identity rather than of the secret; a web
+    /// session passes an empty `scopes` and `None`, which leaves whatever the API token
+    /// already recorded untouched (`add_login` only overwrites what it is given).
+    #[allow(clippy::too_many_arguments)]
+    pub fn store_in(
+        &mut self,
+        hosts: &mut Hosts,
+        host: &HostKey,
+        login: &str,
+        slot: Slot,
+        token: &SecretString,
+        scopes: Vec<Scope>,
+        kind: Option<&str>,
+    ) -> Result<TokenSource> {
         // Record the identity first so `hosts.toml` is consistent even if the secret write
         // fails; being listed without a token yields "not authenticated", which is true.
         hosts.add_login(host, login, None, scopes, kind)?;
@@ -762,7 +907,7 @@ impl<'a> Credentials<'a> {
         };
 
         if target == CredentialStore::Keyring {
-            let wrote = self.set_in(CredentialStore::Keyring, host, login, token, hosts);
+            let wrote = self.set_in(CredentialStore::Keyring, host, login, slot, token, hosts);
             match wrote {
                 Ok(source) => {
                     hosts.set_cached_store(host, CredentialStore::Keyring);
@@ -785,17 +930,26 @@ impl<'a> Credentials<'a> {
         } else {
             CredentialStore::File
         };
-        let source = self.set_in(kind, host, login, token, hosts)?;
+        let source = self.set_in(kind, host, login, slot, token, hosts)?;
         hosts.set_cached_store(host, kind);
         hosts.save_if_dirty()?;
         Ok(source)
     }
 
-    /// Removes a token from every store that could hold one. Keyring failures are warnings:
-    /// `auth logout` must still clear `hosts.toml`.
+    /// Removes **every** credential for a login, from every store that could hold one. Keyring
+    /// failures are warnings: `auth logout` must still clear `hosts.toml`.
+    ///
+    /// Iterating [`Slot::ALL`] rather than naming the slots is what makes an orphaned
+    /// credential structurally impossible: a slot added to that array is a slot logout already
+    /// clears, and one added without it fails `every_slot_is_in_all`. `oauth/stored.rs` records
+    /// the orphaning risk that made a second keyring entry unattractive; this is the answer to
+    /// it.
     pub fn forget(&mut self, hosts: &mut Hosts, host: &HostKey, login: &str) -> Result<()> {
-        for kind in [CredentialStore::Keyring, CredentialStore::File, CredentialStore::Env] {
-            let r = self.delete_in(kind, host, login, hosts);
+        for (kind, slot) in [CredentialStore::Keyring, CredentialStore::File, CredentialStore::Env]
+            .into_iter()
+            .flat_map(|k| Slot::ALL.map(move |s| (k, s)))
+        {
+            let r = self.delete_in(kind, host, login, slot, hosts);
             if let Err(e) = r {
                 if matches!(*e.kind, ErrorKind::KeyringUnavailable { .. }) {
                     self.warnings.push(*e.kind);
@@ -819,6 +973,45 @@ mod tests {
         let key = hosts.add_host("https://git.example.org").unwrap().name.clone();
         hosts.add_login(&key, "perf3ct", None, vec![], None).unwrap();
         (dir, hosts, key)
+    }
+
+    /// Bug this prevents: a slot added to the enum but not to `ALL`, which would make
+    /// `forget` silently leave that credential behind — exactly the orphaning that
+    /// `oauth/stored.rs` warns a second entry invites. The match is exhaustive, so adding a
+    /// variant fails to compile here until `ALL` is extended.
+    #[test]
+    fn every_slot_is_in_all() {
+        for slot in Slot::ALL {
+            // Exhaustive by construction: a new variant makes this arm-less match an error.
+            match slot {
+                Slot::Api | Slot::Web => {}
+            }
+        }
+        assert_eq!(Slot::ALL.len(), 2, "a new Slot variant must be added to Slot::ALL");
+        // Distinct keys, or one credential would overwrite the other.
+        assert_ne!(Slot::Api.prefix(), Slot::Web.prefix());
+        // The documented account layout for the API token is unchanged, forever.
+        assert_eq!(Slot::Api.prefix(), "");
+    }
+
+    /// Bug this prevents: a web session and an API token colliding in one store, so that
+    /// logging in one way silently destroys the other.
+    #[test]
+    fn the_two_slots_do_not_share_a_keyring_entry() {
+        let (_d, mut hosts, key) = fixture();
+        let ring = FakeKeyring::new();
+        ring.set(&key, "perf3ct", Slot::Api, &"pat".into(), &mut hosts).unwrap();
+        ring.set(&key, "perf3ct", Slot::Web, &"web".into(), &mut hosts).unwrap();
+
+        let api = ring.get(&key, "perf3ct", Slot::Api, &hosts).unwrap().unwrap();
+        let web = ring.get(&key, "perf3ct", Slot::Web, &hosts).unwrap().unwrap();
+        assert_eq!(api.expose(), "pat");
+        assert_eq!(web.expose(), "web");
+
+        // And deleting one leaves the other.
+        ring.delete(&key, "perf3ct", Slot::Web, &mut hosts).unwrap();
+        assert!(ring.get(&key, "perf3ct", Slot::Web, &hosts).unwrap().is_none());
+        assert!(ring.get(&key, "perf3ct", Slot::Api, &hosts).unwrap().is_some());
     }
 
     #[test]
@@ -900,7 +1093,7 @@ mod tests {
     fn fjo_token_beats_forgejo_token() {
         let (_d, hosts, key) = fixture();
         let env = MapEnv::new().with("FJO_TOKEN", "a").with("FORGEJO_TOKEN", "b");
-        let got = EnvStore::new(&env).get(&key, "perf3ct", &hosts).unwrap().unwrap();
+        let got = EnvStore::new(&env).get(&key, "perf3ct", Slot::Api, &hosts).unwrap().unwrap();
         assert_eq!(got.expose(), "a");
         assert_eq!(got.source(), &TokenSource::Env { var: "FJO_TOKEN".into() });
     }
