@@ -122,6 +122,11 @@ impl Session {
         me
     }
 
+    /// A second machine: its own configuration directory, nothing signed in.
+    fn fresh(tag: &str) -> Self {
+        Self { scratch: Scratch::new(tag) }
+    }
+
     fn run(&self, args: &[&str]) -> (Option<i32>, String, String) {
         self.run_stdin(args, None)
     }
@@ -190,7 +195,7 @@ fn password_or_skip(inst: &Instance) -> Option<&'static str> {
 #[test]
 fn the_api_has_no_projects_endpoint_but_the_web_session_reaches_one() {
     let inst = instance_or_skip!();
-    cover!(porcelain: ["auth login", "web"]);
+    cover!(porcelain: ["auth login"]);
     let Some(pass) = password_or_skip(inst) else { return };
 
     let repo = TestRepo::create_initialized(inst, "web-session");
@@ -299,7 +304,7 @@ fn a_board_round_trips_through_the_porcelain() {
 #[test]
 fn a_dead_session_is_renewed_silently_from_the_remember_token() {
     let inst = instance_or_skip!();
-    cover!(porcelain: ["auth login", "web"]);
+    cover!(porcelain: ["auth login"]);
     let Some(pass) = password_or_skip(inst) else { return };
 
     let repo = TestRepo::create_initialized(inst, "remint");
@@ -335,7 +340,7 @@ fn a_dead_session_is_renewed_silently_from_the_remember_token() {
 #[test]
 fn a_dead_remember_token_asks_for_a_password_rather_than_looping() {
     let inst = instance_or_skip!();
-    cover!(porcelain: ["auth login", "web"]);
+    cover!(porcelain: ["auth login"]);
     let Some(pass) = password_or_skip(inst) else { return };
 
     let repo = TestRepo::create_initialized(inst, "expired");
@@ -362,7 +367,7 @@ fn a_dead_remember_token_asks_for_a_password_rather_than_looping() {
 #[test]
 fn a_raw_json_move_is_accepted_without_any_csrf_token() {
     let inst = instance_or_skip!();
-    cover!(porcelain: ["web"]);
+    cover!(porcelain: ["project create", "project card add", "project view"]);
     let Some(pass) = password_or_skip(inst) else { return };
 
     let repo = TestRepo::create_initialized(inst, "rawmove");
@@ -407,4 +412,139 @@ fn a_raw_json_move_is_accepted_without_any_csrf_token() {
         Some(0),
         "a JSON move with no CSRF token should be accepted\nstdout: {out}\nstderr: {err}"
     );
+}
+
+/// The board's lifecycle verbs, and every column verb, driven against a real server.
+///
+/// One test rather than six because each needs the same board built first, and a board is four
+/// requests to stand up. The `coverage-check` ratchet counts leaves driven, not tests written.
+#[test]
+fn a_boards_state_and_its_columns_can_be_changed_and_removed() {
+    let inst = instance_or_skip!();
+    cover!(porcelain: [
+        "project close",
+        "project reopen",
+        "project column edit",
+        "project column move",
+        "project column delete",
+        "project list"
+    ]);
+    let Some(pass) = password_or_skip(inst) else { return };
+
+    let repo = TestRepo::create_initialized(inst, "lifecycle");
+    let s = Session::login(inst, "lifecycle", pass);
+    let r = repo.flag();
+    let repo_flag: [&str; 2] = [r[0].as_str(), r[1].as_str()];
+
+    let run = |args: &[&str]| {
+        let mut full = args.to_vec();
+        full.extend_from_slice(&repo_flag);
+        let (code, out, err) = s.run(&full);
+        assert_eq!(code, Some(0), "`fjo {}` failed\nstdout: {out}\nstderr: {err}", args.join(" "));
+        out
+    };
+
+    run(&["project", "create", "Ops", "--from-template", "basic-kanban"]);
+
+    // Columns: rename, recolour, reorder, remove.
+    run(&["project", "column", "edit", "Ops", "Backlog", "--title", "Icebox", "--hex", "#c320f6"]);
+    let json = run(&["project", "view", "Ops", "--json"]);
+    let board: serde_json::Value = serde_json::from_str(&json).expect("a board");
+    let icebox = board["columns"]
+        .as_array()
+        .expect("columns")
+        .iter()
+        .find(|c| c["title"] == "Icebox")
+        .unwrap_or_else(|| panic!("the rename should have taken:\n{json}"));
+    assert_eq!(icebox["color"], "#c320f6", "the colour should have taken too:\n{json}");
+
+    run(&["project", "column", "move", "Ops", "Icebox", "--last"]);
+    let json = run(&["project", "view", "Ops", "--json"]);
+    let board: serde_json::Value = serde_json::from_str(&json).expect("a board");
+    let titles: Vec<&str> = board["columns"]
+        .as_array()
+        .expect("columns")
+        .iter()
+        .filter_map(|c| c["title"].as_str())
+        .collect();
+    assert_eq!(titles.last(), Some(&"Icebox"), "--last should put it at the end: {titles:?}");
+
+    // Icebox is the renamed Backlog, which is the board's DEFAULT column. Forgejo will not
+    // delete that one, and answers a bare 500 rather than saying so, so fjo refuses first.
+    let (code, _, err) = s.run(&[
+        "project",
+        "column",
+        "delete",
+        "Ops",
+        "Icebox",
+        "--yes",
+        repo_flag[0],
+        repo_flag[1],
+    ]);
+    assert_ne!(code, Some(0), "deleting the default column must be refused");
+    assert!(
+        err.contains("default column"),
+        "and the refusal should explain why rather than relay a bare 500: {err}"
+    );
+
+    // A non-default column deletes normally.
+    run(&["project", "column", "delete", "Ops", "Done", "--yes"]);
+    let json = run(&["project", "view", "Ops", "--json"]);
+    assert!(!json.contains("\"Done\""), "the column should be gone:\n{json}");
+
+    // Closing must not make a board unreachable -- the rule `fjo milestone` set.
+    run(&["project", "close", "Ops"]);
+    let closed = run(&["project", "list", "-s", "closed"]);
+    assert!(closed.contains("Ops"), "a closed board should still be listed:\n{closed}");
+    let open = run(&["project", "list"]);
+    assert!(!open.contains("Ops"), "and not among the open ones:\n{open}");
+
+    run(&["project", "reopen", "Ops"]);
+    let open = run(&["project", "list"]);
+    assert!(open.contains("Ops"), "reopening should bring it back:\n{open}");
+}
+
+/// A session survives a round trip through `export` and `import`, which is the CI story.
+///
+/// The interesting assertion is the last one: the imported session must actually *work*, not
+/// merely be stored. An export that produced something `import` accepts but Forgejo does not is
+/// the failure this is for.
+#[test]
+fn a_session_can_be_exported_and_imported_on_another_machine() {
+    let inst = instance_or_skip!();
+    cover!(porcelain: ["auth export", "auth import", "auth status"]);
+    let Some(pass) = password_or_skip(inst) else { return };
+
+    let repo = TestRepo::create_initialized(inst, "transfer");
+    let from = Session::login(inst, "transfer-from", pass);
+
+    // stdout is piped here, so the terminal guard does not fire and --force is not needed.
+    let (code, doc, err) = from.run(&["auth", "export", "--web"]);
+    assert_eq!(code, Some(0), "export failed: {err}");
+    assert!(doc.contains("web-session"), "export should emit a session document: {doc}");
+    assert!(
+        err.to_lowercase().contains("full-account"),
+        "the warning belongs on stderr, where it cannot corrupt the pipe: {err}"
+    );
+
+    // A second machine: its own config directory, and no sign-in of its own.
+    let to = Session::fresh("transfer-to");
+    let (code, _, err) = to.run_stdin(
+        &["auth", "login", "--host", &inst.base_url, "--login", &inst.user, "--with-token"],
+        Some(&inst.token),
+    );
+    assert_eq!(code, Some(0), "seeding the host entry failed: {err}");
+
+    let (code, out, err) = to.run_stdin(&["auth", "import", "--web"], Some(doc.trim()));
+    assert_eq!(code, Some(0), "import failed\nstdout: {out}\nstderr: {err}");
+
+    // It is reported...
+    let (_, status, _) = to.run(&["auth", "status"]);
+    assert!(status.contains("Web session:"), "auth status should report it:\n{status}");
+    assert!(!status.contains("Web session: none"), "and not as absent:\n{status}");
+
+    // ...and, the part that matters, it authenticates a private repo.
+    let (code, out, err) = to.run(&["web", "GET", &format!("{}/projects", repo.slug()), "-i"]);
+    assert_eq!(code, Some(0), "the imported session should work\nstdout: {out}\nstderr: {err}");
+    assert!(out.contains("200"), "expected the board page:\n{out}");
 }

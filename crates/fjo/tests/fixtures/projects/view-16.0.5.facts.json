@@ -9,6 +9,7 @@
       "title": "Backlog",
       "color": null,
       "sorting": 0,
+      "default": true,
       "cards": [
         {
           "number": 3,
@@ -22,6 +23,7 @@
       "title": "To Do",
       "color": null,
       "sorting": 1,
+      "default": false,
       "cards": [
         {
           "number": 2,
@@ -35,6 +37,7 @@
       "title": "In Progress",
       "color": null,
       "sorting": 2,
+      "default": false,
       "cards": []
     },
     {
@@ -42,6 +45,7 @@
       "title": "Done",
       "color": null,
       "sorting": 3,
+      "default": false,
       "cards": []
     },
     {
@@ -49,6 +53,7 @@
       "title": "Review",
       "color": "#1f883d",
       "sorting": 4,
+      "default": false,
       "cards": [
         {
           "number": 1,

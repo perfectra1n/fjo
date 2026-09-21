@@ -253,8 +253,37 @@ pub fn reordered(columns: &[super::parse::Column], moving: i64, to: Move<'_>) ->
     Ok(ids)
 }
 
-pub async fn delete_column(rt: &mut Runtime, scope: &Scope, id: i64, column: i64) -> Result<()> {
-    expect_ok(rt, Method::DELETE, &scope.column(id, column), WebBody::None).await
+pub async fn delete_column(
+    rt: &mut Runtime,
+    scope: &Scope,
+    id: i64,
+    column: &super::parse::Column,
+) -> Result<()> {
+    // Checked here rather than left to the server. Forgejo refuses this with a bare
+    // `errors.New`, which `ctx.ServerError` renders as a 500 with no message -- so a user who
+    // tried it got "500 Internal Server Error" for a mistake they could have fixed instantly.
+    if column.default {
+        return Err(Error::new(ErrorKind::Usage(format!(
+            "{:?} is the board's default column, where issues land when no column is given, and \
+             Forgejo will not delete it. Make another column the default first.",
+            column.title
+        ))));
+    }
+    let sent = expect_ok(rt, Method::DELETE, &scope.column(id, column.id), WebBody::None).await;
+    // Forgejo answers this refusal with a 500 carrying no message, so if one arrives anyway --
+    // the `default` flag above is read from an absence in the template and may not survive every
+    // layout -- say what it almost certainly means rather than relaying "500".
+    sent.map_err(|e| {
+        if e.to_string().contains("500") {
+            return Error::new(ErrorKind::Usage(format!(
+                "Forgejo refused to delete {:?} and gave no reason (it answers a 500 here). The \
+                 usual cause is that this is the board's default column, which it will not \
+                 delete; make another column the default first.",
+                column.title
+            )));
+        }
+        e
+    })
 }
 
 /// Put issues on a board. They land in its default column.
@@ -331,6 +360,7 @@ mod tests {
                 title: (*t).to_owned(),
                 color: None,
                 sorting: i as i64,
+                default: i == 0,
                 cards: Vec::new(),
             })
             .collect()

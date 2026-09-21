@@ -53,6 +53,15 @@ pub struct Column {
     /// only the first is normal.
     pub color: Option<String>,
     pub sorting: i64,
+    /// Whether this is the board's default column — where issues land when added with no column.
+    ///
+    /// Derived from the **absence** of the "set as default" action: the template renders
+    /// `…/{id}/default` for every column except the one that already is it. Reading an absence
+    /// is uncomfortable, but it is what the template exposes, and the alternative is worse —
+    /// Forgejo refuses to delete the default column with a bare `errors.New`, which
+    /// `ctx.ServerError` turns into a **500 with no message**. Without this a user gets
+    /// "500 Internal Server Error" for something that is entirely their answerable mistake.
+    pub default: bool,
     pub cards: Vec<Card>,
 }
 
@@ -178,11 +187,14 @@ fn parse_columns(html: &str) -> Result<Vec<Column>> {
             .map(|t| decode_entities(t.trim()))
             .ok_or_else(|| rotted("a column's title"))?;
 
+        // See `Column::default`: the action is rendered for every column but the default one.
+        let default = !chunk.contains(&format!("/{id}/default\""));
         columns.push(Column {
             id,
             title,
             color: colour_of(open_tag),
             sorting,
+            default,
             cards: cards_in(chunk)?,
         });
     }
@@ -367,6 +379,18 @@ mod tests {
     fn a_card_that_is_not_a_board_is_skipped_rather_than_invented() {
         let html = r##"<li class="milestone-card"><a href="/fjotest/r/milestones/1">1.0</a></li>"##;
         assert_eq!(parse_index(html).expect("parses").len(), 0);
+    }
+
+    /// The default column is the one WITHOUT a "set as default" action, which is the only way
+    /// the template says so. Getting this backwards would let `column delete` send a request
+    /// Forgejo answers with an unexplained 500.
+    #[test]
+    fn the_default_column_is_the_one_the_template_offers_no_default_action_for() {
+        let html = include_str!("../../../tests/fixtures/projects/view-16.0.5.html");
+        let board = parse_board(html).expect("parses");
+        let defaults: Vec<&str> =
+            board.columns.iter().filter(|c| c.default).map(|c| c.title.as_str()).collect();
+        assert_eq!(defaults, ["Backlog"], "exactly one column is the default");
     }
 
     /// Absence of a colour and an unreadable colour are different, and only the first is normal.

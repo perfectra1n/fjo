@@ -464,9 +464,15 @@ async fn cmd_column(rt: &mut Runtime, globals: &GlobalOpts, c: &ColumnCmd) -> Re
             let scope = Scope::resolve(rt, globals, a.scope.owner.as_deref())?;
             let found = ops::find(rt, &scope, &a.project, None).await?;
             let board = ops::view(rt, &scope, found.id).await?;
-            let column = ops::column_of(&board, &a.column)?;
+            let column_id = ops::column_of(&board, &a.column)?;
+            let column = board
+                .columns
+                .iter()
+                .find(|c| c.id == column_id)
+                .ok_or_else(|| usage("that column vanished from the board"))?
+                .clone();
             confirm(a.yes, &format!("delete column {:?} from {:?}?", a.column, board.title))?;
-            ops::delete_column(rt, &scope, found.id, column).await?;
+            ops::delete_column(rt, &scope, found.id, &column).await?;
             println!("✓ deleted column {:?}", a.column);
             Ok(())
         }
