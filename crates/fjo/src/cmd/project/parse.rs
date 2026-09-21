@@ -70,6 +70,14 @@ pub struct Card {
     pub title: String,
 }
 
+/// One board as the index page lists it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ProjectRef {
+    pub id: i64,
+    pub title: String,
+    pub closed: bool,
+}
+
 // --------------------------------------------------------------------------- the hooks
 //
 // Every string the template contributes, in one place, so a template change is a diff in this
@@ -81,6 +89,8 @@ const COLUMN_TITLE: &str = r#"project-column-title-label">"#;
 const CARD_ID: &str = r#"data-issue=""#;
 const CARD_TITLE: &str = r#"class="issue-card-title"#;
 const PROJECT_ID: &str = r#"data-project=""#;
+const INDEX_CARD: &str = r#"<li class="milestone-card">"#;
+const INDEX_LINK: &str = r#"<a class="muted tw-break-anywhere" href=""#;
 
 /// Read a board out of the page Forgejo rendered for it.
 pub fn parse_board(html: &str) -> Result<Board> {
@@ -99,6 +109,40 @@ pub fn parse_board(html: &str) -> Result<Board> {
         .ok_or_else(|| rotted("the board's id"))?;
 
     Ok(Board { id, title, columns })
+}
+
+/// Read the boards out of `/{owner}/{repo}/projects`.
+///
+/// The index is a separate template from the board itself (`projects/list.tmpl`), so it gets its
+/// own function rather than a flag on [`parse_board`] — they share no markup beyond the id
+/// living in a URL.
+///
+/// State comes from *which* action link the template rendered, not from a class: an open board
+/// offers `…/close` and a closed one offers `…/open`. That is a `{{if .IsClosed}}` in the
+/// template, so it is exactly as reliable as the field itself.
+pub fn parse_index(html: &str) -> Result<Vec<ProjectRef>> {
+    let mut out = Vec::new();
+    for card in html.split(INDEX_CARD).skip(1) {
+        let href = match between(card, INDEX_LINK, "\"") {
+            Some(h) => h,
+            // A `milestone-card` with no project link is not a board row. Skipping is right
+            // here (unlike a card with no title, which would under-report a board): the class
+            // is shared with the milestone list, so a stray match is expected, not corruption.
+            None => continue,
+        };
+        let Some(id) =
+            href.trim_end_matches('/').rsplit('/').next().and_then(|n| n.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        let title = between(card, &format!("{INDEX_LINK}{href}\">"), "</a>")
+            .map(|t| decode_entities(t.trim()))
+            .ok_or_else(|| rotted("a board's title"))?;
+        // `…/open` offered means it is currently closed, and vice versa.
+        let closed = card.contains(&format!("data-url=\"{href}/open\""));
+        out.push(ProjectRef { id, title, closed });
+    }
+    Ok(out)
 }
 
 fn parse_columns(html: &str) -> Result<Vec<Column>> {
@@ -262,6 +306,51 @@ mod tests {
             board.columns.iter().any(|c| c.cards.is_empty()),
             "and at least one empty column, which must parse as empty rather than fail"
         );
+    }
+
+    /// The index page.
+    ///
+    /// **Weaker evidence than the board test above, and worth knowing why.** That one runs
+    /// against a page captured from the pinned image; this markup is assembled from
+    /// `templates/projects/list.tmpl` at v16.0.5 instead, because no index page was captured.
+    /// So it pins that this code reads the template as written, not that the template renders
+    /// this. The live integration test is what closes that gap.
+    fn index_page() -> String {
+        // Two boards, one open and one closed, which is the distinction with no class to read:
+        // an open board offers `…/close` and a closed one offers `…/open`. `r##` because the
+        // template's own `href="#"` would close an `r#` literal.
+        r##"<ul class="project list">
+        <li class="milestone-card">
+          <h3><a class="muted tw-break-anywhere" href="/fjotest/r/projects/3">Roadmap</a></h3>
+          <a class="link-action flex-text-inline" href data-url="/fjotest/r/projects/3/close">Close</a>
+          <a class="delete-button" href="#" data-url="/fjotest/r/projects/3/delete">Delete</a>
+        </li>
+        <li class="milestone-card">
+          <h3><a class="muted tw-break-anywhere" href="/fjotest/r/projects/4">Ship &amp; tell</a></h3>
+          <a class="link-action flex-text-inline" href data-url="/fjotest/r/projects/4/open">Open</a>
+        </li>
+        </ul>"##
+            .to_owned()
+    }
+
+    #[test]
+    fn the_index_yields_each_board_with_its_id_and_state() {
+        let got = parse_index(&index_page()).expect("parses");
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(got[0], ProjectRef { id: 3, title: "Roadmap".to_owned(), closed: false });
+        assert_eq!(got[1].id, 4);
+        // Entity-decoded here too.
+        assert_eq!(got[1].title, "Ship & tell");
+        // It offers `/open`, so it is currently closed.
+        assert!(got[1].closed, "a board offering /open must be reported as closed");
+    }
+
+    /// Bug this prevents: the `milestone-card` class is shared with the milestone list, so a
+    /// page with a card that is not a board must not produce a phantom entry.
+    #[test]
+    fn a_card_that_is_not_a_board_is_skipped_rather_than_invented() {
+        let html = r##"<li class="milestone-card"><a href="/fjotest/r/milestones/1">1.0</a></li>"##;
+        assert_eq!(parse_index(html).expect("parses").len(), 0);
     }
 
     /// Absence of a colour and an unreadable colour are different, and only the first is normal.

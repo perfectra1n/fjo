@@ -172,6 +172,22 @@ async fn execute(
     let body = body_for(args, &parsed, &method)?;
     let path = substitute(&raw_path, rt, globals)?;
 
+    let m: Method = method.parse().map_err(|_| usage(format!("{method} is not an HTTP method")))?;
+    let resp = request(rt, m, &path, body).await?;
+    write_response(rt, globals, args, &resp)
+}
+
+/// One authenticated web request, with the whole session lifecycle around it.
+///
+/// This is the single implementation of the mint/retry/persist rule described in the module
+/// comment, and both `fjo web` and `fjo project` go through it. Two copies of a retry rule are
+/// two places for it to drift, and that rule *is* the reliability story.
+pub(crate) async fn request(
+    rt: &mut Runtime,
+    method: Method,
+    path: &str,
+    body: WebBody,
+) -> Result<WebResponse> {
     let client = rt.web_client()?;
     let mut cred = rt
         .load_web_credential()?
@@ -179,23 +195,20 @@ async fn execute(
 
     warn_if_expiring(&cred);
 
-    // No session yet is normal -- a credential is stored the moment it is created, and its
-    // session may since have been dropped. Mint one rather than sending a request with no
-    // cookie, which would take the lapsed path anyway one round trip later.
+    // No session yet is normal: a credential is stored the moment it is created, and its session
+    // may since have been dropped. Minting now rather than sending a cookie-less request, which
+    // would take the lapsed path anyway one round trip later.
     if cred.session.is_none() {
         cred = renew(rt, &client, cred).await?;
     }
 
-    let resp = send(&client, &method, &path, body.clone(), &cred).await?;
-    let resp = if session::is_lapsed(&resp) {
-        // Exactly one retry. See the module comment.
-        let cred = renew(rt, &client, cred).await?;
-        send(&client, &method, &path, body, &cred).await?
-    } else {
-        resp
-    };
-
-    write_response(rt, globals, args, &resp)
+    let resp = send(&client, method.clone(), path, body.clone(), &cred).await?;
+    if !session::is_lapsed(&resp) {
+        return Ok(resp);
+    }
+    // Exactly one retry. See the module comment.
+    let cred = renew(rt, &client, cred).await?;
+    send(&client, method, path, body, &cred).await
 }
 
 /// Mint a session and write it down *before* it is used.
@@ -207,7 +220,7 @@ async fn renew(rt: &mut Runtime, client: &WebClient, cred: WebCredential) -> Res
 
 async fn send(
     client: &WebClient,
-    method: &str,
+    method: Method,
     path: &str,
     body: WebBody,
     cred: &WebCredential,
@@ -216,8 +229,7 @@ async fn send(
         Some(s) => vec![Cookie::new(SESSION_COOKIE, s.clone())],
         None => Vec::new(),
     };
-    let m: Method = method.parse().map_err(|_| usage(format!("{method} is not an HTTP method")))?;
-    client.send(m, path, body, &cookies).await
+    client.send(method, path, body, &cookies).await
 }
 
 /// One line, once, when the only unrecoverable failure is approaching.
