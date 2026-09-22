@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.2.5](https://github.com/perfectra1n/fjo/compare/v0.2.4...v0.2.5) (2026-09-22)
+
+
+### Features
+
+* **auth,project:** report the web session in auth status; column edit and move ([bc806e6](https://github.com/perfectra1n/fjo/commit/bc806e6cc64a82263943e9b34a8b6c313b4f5467))
+* **auth:** export and import a web session, for reuse in CI ([c5306fc](https://github.com/perfectra1n/fjo/commit/c5306fc5ffa4172f9e484e6d879ef392f0a91596))
+* **auth:** fjo auth login --with-password, the sign-in that yields a session ([8bbf001](https://github.com/perfectra1n/fjo/commit/8bbf001ac19d33c9b410605710037199f672fb6b))
+* layer 0 — a web session for the routes Forgejo has no API for, and fjo project ([62bd526](https://github.com/perfectra1n/fjo/commit/62bd526bd114fd3a786ac3a23cff74558bfdfdbc))
+* **project:** read a Forgejo board out of the page it renders ([aad93a3](https://github.com/perfectra1n/fjo/commit/aad93a323e527cc321553823d3b316c6da4fdcb3))
+* **project:** wire up the fjo project command group ([ee2a345](https://github.com/perfectra1n/fjo/commit/ee2a3454efc70becf0db6597c96537041a4b6fe6))
+* **web:** a cookie-authenticated session for Forgejo's web-only routes ([b00d371](https://github.com/perfectra1n/fjo/commit/b00d371f1373a1aa59c0c811cc31a5bba94849cc))
+* **web:** fjo web, the layer-0 escape hatch ([4e268c0](https://github.com/perfectra1n/fjo/commit/4e268c06187ef7ff09036ff56d475dee09502d9c))
+
+
+### Bug Fixes
+
+* **web:** take the session issued AFTER regeneration, not before it ([34237c1](https://github.com/perfectra1n/fjo/commit/34237c1d4da96cf3677be1bd4b7ef19ead97c5a8))
+
+
+### Documentation
+
+* **web:** design layer 0, a cookie-authenticated web session and fjo project ([06bed4c](https://github.com/perfectra1n/fjo/commit/06bed4c452d994c76eb2675694b1310deb2e6af8))
+* **web:** document layer 0, and correct two facts live testing disproved ([cd65bed](https://github.com/perfectra1n/fjo/commit/cd65bedb7b3e019687e43bad01c2d5630d70725e))
+* **web:** specify auth export/import for reusing a session in CI ([f64ad87](https://github.com/perfectra1n/fjo/commit/f64ad872fb447c74a29b20061c85f02fe2723c52))
+
+
+### Tests
+
+* **project:** drive every new leaf live, and refuse deleting the default column ([d654622](https://github.com/perfectra1n/fjo/commit/d654622fbad4bbdcc46fa6bfb5ecc9f481d3c805))
+* **web:** pin the CI path, that an exported session survives the env var ([7588c38](https://github.com/perfectra1n/fjo/commit/7588c38ec584350fb7f538c94cfc842b2726368f))
+
 ## [0.2.4](https://github.com/perfectra1n/fjo/compare/v0.2.3...v0.2.4) (2026-09-19)
 
 
