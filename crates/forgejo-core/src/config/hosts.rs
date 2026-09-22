@@ -216,11 +216,23 @@ pub struct Login {
     /// older build saves the file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// The web-session credential document, when the file store holds it.
+    ///
+    /// Separate from `token` because the two authenticate different things and neither can
+    /// substitute for the other: `token` is sent as `Authorization` to `/api/v1`, and this is a
+    /// cookie sent to the web root, which is the only way to reach a route Forgejo never gave an
+    /// API (see `forgejo_core::web`). A login may hold one, both, or neither.
+    ///
+    /// Carries the same caveat as `kind`: `Login` is a typed struct with no catch-all, so an
+    /// older `fjo` that saves this file **drops this field**. The consequence is one re-login,
+    /// not a corrupt file, and `auth status` reports the slot as empty rather than broken.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_secret")]
+    pub web_session: Option<SecretString>,
 }
 
 impl Login {
     pub fn new(user: impl Into<String>) -> Self {
-        Self { user: user.into(), token: None, scopes: Vec::new(), kind: None }
+        Self { user: user.into(), token: None, scopes: Vec::new(), kind: None, web_session: None }
     }
 }
 
@@ -232,6 +244,7 @@ impl std::fmt::Debug for Login {
         f.debug_struct("Login")
             .field("user", &self.user)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("web_session", &self.web_session.as_ref().map(|_| "<redacted>"))
             .field("scopes", &self.scopes)
             .field("kind", &self.kind)
             .finish()
@@ -539,6 +552,31 @@ impl Hosts {
     // --------------------------------------------------------------------------- logins
 
     /// Adds or updates a login. The first login on a host becomes its active one.
+    /// Write (or clear) the web-session document for a login that already exists.
+    ///
+    /// Separate from [`Hosts::add_login`] rather than a fifth parameter on it: that function is
+    /// about establishing an identity and its API token, and every one of its existing callers
+    /// would have to pass a `None` for a slot it has no opinion about.
+    ///
+    /// Returns `false` when the login is not present, which the caller turns into its own error;
+    /// creating one here would let a failed web login leave an identity behind.
+    pub fn set_web_session(
+        &mut self,
+        key: &HostKey,
+        user: &str,
+        session: Option<SecretString>,
+    ) -> bool {
+        let Some(host) = self.data.hosts.iter_mut().find(|h| &h.name == key) else {
+            return false;
+        };
+        let Some(login) = host.logins.iter_mut().find(|l| l.user == user) else {
+            return false;
+        };
+        login.web_session = session;
+        self.dirty = true;
+        true
+    }
+
     pub fn add_login(
         &mut self,
         key: &HostKey,
@@ -569,6 +607,7 @@ impl Hosts {
                     token,
                     scopes,
                     kind: kind.map(str::to_owned),
+                    web_session: None,
                 });
                 host.logins.sort_by(|a, b| a.user.cmp(&b.user));
             }
@@ -1078,10 +1117,16 @@ mod tests {
 
     #[test]
     fn login_debug_never_prints_the_token() {
-        let l =
-            Login { user: "u".into(), token: Some("s3cr3t".into()), scopes: vec![], kind: None };
+        let l = Login {
+            user: "u".into(),
+            token: Some("s3cr3t".into()),
+            scopes: vec![],
+            kind: None,
+            web_session: Some("c00k1e".into()),
+        };
         let s = format!("{l:?}");
         assert!(!s.contains("s3cr3t"), "{s}");
+        assert!(!s.contains("c00k1e"), "{s}");
         assert!(s.contains("redacted"), "{s}");
     }
 }

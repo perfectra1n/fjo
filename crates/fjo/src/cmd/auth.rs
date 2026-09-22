@@ -29,6 +29,8 @@ mod status;
 mod switch;
 mod token;
 mod web_login;
+mod web_password;
+mod web_transfer;
 
 use clap::{Args as ClapArgs, Subcommand};
 use forgejo_core::Result;
@@ -81,6 +83,10 @@ pub enum Cmd {
     Switch(switch::Args),
     /// Print the stored token, for scripting
     Token(token::Args),
+    /// Print a web session, to reuse it elsewhere (e.g. in CI)
+    Export(web_transfer::ExportArgs),
+    /// Store a web session exported from another machine
+    Import(web_transfer::ImportArgs),
     /// Configure git to authenticate with your fjo token
     SetupGit(setup_git::Args),
     /// git's credential-helper protocol, for `auth setup-git`
@@ -99,6 +105,8 @@ pub fn run(globals: &GlobalOpts, args: &Args) -> Result<()> {
         Cmd::Status(a) => status::run(globals, a),
         Cmd::Switch(a) => switch::run(globals, a),
         Cmd::Token(a) => token::run(globals, a),
+        Cmd::Export(a) => web_transfer::export(globals, a),
+        Cmd::Import(a) => web_transfer::import(globals, a),
         Cmd::SetupGit(a) => setup_git::run(globals, a),
         Cmd::GitCredential(a) => git_credential::run(globals, a),
     }

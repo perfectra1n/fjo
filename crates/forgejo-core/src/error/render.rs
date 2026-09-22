@@ -248,6 +248,12 @@ pub fn headline(kind: &ErrorKind) -> String {
         NoHostConfigured => "no Forgejo host configured".to_owned(),
         UnknownHost { given, .. } => format!("host {given} is not configured"),
         NotAuthenticated { host } => format!("you are not logged in to {host}"),
+        WebSessionMissing { host } => format!("no web session for {host}"),
+        WebSessionExpired { host } => format!("your web session for {host} has expired"),
+        WebLoginFailed { host, .. } => format!("{host} rejected the sign-in"),
+        WebAuthnRequired { host } => {
+            format!("the account on {host} requires WebAuthn, which needs a browser")
+        }
         TokenRejected { host, .. } => format!("{host} refused your token (HTTP 401)"),
         InsufficientScope { .. } => "token is missing a required scope (HTTP 403)".to_owned(),
         TwoFactorRequired { host } => format!("{host} requires a two-factor code"),
@@ -735,6 +741,63 @@ fn advise(kind: &ErrorKind, ctx: &RequestCtx) -> Advice {
             .todo(Line::note(
                 "in CI, set FJO_TOKEN or FORGEJO_TOKEN instead of logging in.",
             )),
+
+        // ------------------------------------------------------------------ web session
+        //
+        // Deliberately not folded into NotAuthenticated. That error's whole remedy is a token,
+        // and a token cannot reach these routes at all — Forgejo answers one with the same 303
+        // to /user/login that it gives an anonymous request. Sending someone to create a token
+        // would be sending them to do work that cannot possibly help.
+        WebSessionMissing { host } => a
+            .fact("host", host)
+            .todo(Line::text(
+                "this is a web-only route, which needs a signed-in session rather than a token.",
+            ))
+            .todo(Line::step(1, format!("fjo auth login --host {host} --with-password")))
+            .todo(Line::note(
+                "in CI, set FJO_WEB_SESSION to a session document instead of logging in.",
+            )),
+
+        WebSessionExpired { host } => a
+            .fact("host", host)
+            .todo(Line::text(
+                "the sign-in that renews it has lapsed, been revoked, or followed a password \
+                 change.",
+            ))
+            .todo(Line::step(1, format!("fjo auth login --host {host} --with-password")))
+            .todo(Line::note(
+                "web sessions are renewed automatically; this means the remember token itself \
+                 is gone.",
+            )),
+
+        WebLoginFailed { host, reason } => {
+            let a = a.fact("host", host);
+            // The server's own words when it gave any, because Forgejo distinguishes a wrong
+            // password from a disabled account from a login source that forbids passwords, and
+            // re-deriving that here would be guessing at which one happened.
+            let a = match reason {
+                Some(r) => a.fact("server said", r),
+                None => a,
+            };
+            a.todo(Line::text("check the username and password, then try again."))
+                .todo(Line::step(1, format!("fjo auth login --host {host} --with-password")))
+                .todo(Line::note(
+                    "a token is not a password here; this route wants the one you type into the \
+                     web UI.",
+                ))
+        }
+
+        WebAuthnRequired { host } => a
+            .fact("host", host)
+            .todo(Line::text(
+                "WebAuthn cannot be completed without a browser, so this account cannot sign in \
+                 from the command line. Enrol TOTP alongside it, then:",
+            ))
+            .todo(Line::step(1, format!("fjo auth login --host {host} --with-password --otp 123456")))
+            .todo(Line::note(
+                "or use a dedicated account for automation, with TOTP or no second factor.",
+            ))
+            .todo(Line::note(format!("both are configured at {host}/user/settings/security"))),
 
         // The same 401, from the same place, with two different remedies. Which one depends on
         // what was actually presented, which is why `RequestCtx` carries the credential kind.
@@ -1539,6 +1602,10 @@ mod tests {
             NoHostConfigured => "NoHostConfigured",
             UnknownHost { .. } => "UnknownHost",
             NotAuthenticated { .. } => "NotAuthenticated",
+            WebSessionMissing { .. } => "WebSessionMissing",
+            WebSessionExpired { .. } => "WebSessionExpired",
+            WebLoginFailed { .. } => "WebLoginFailed",
+            WebAuthnRequired { .. } => "WebAuthnRequired",
             TokenRejected { .. } => "TokenRejected",
             OauthNotSupported { .. } => "OauthNotSupported",
             OauthAuthorizationDenied { .. } => "OauthAuthorizationDenied",
@@ -1637,6 +1704,16 @@ mod tests {
             NoHostConfigured,
             UnknownHost { given: "codeberg.org".into(), known: vec!["git.example.org".into()] },
             NotAuthenticated { host: "git.example.org".into() },
+            WebSessionMissing { host: "git.example.org".into() },
+            WebSessionExpired { host: "git.example.org".into() },
+            // Both shapes: the server's message is the useful half when there is one, and its
+            // absence must not produce advice with an empty fact line.
+            WebLoginFailed {
+                host: "git.example.org".into(),
+                reason: Some("Username or password is incorrect.".into()),
+            },
+            WebLoginFailed { host: "git.example.org".into(), reason: None },
+            WebAuthnRequired { host: "git.example.org".into() },
             TokenRejected {
                 host: "git.example.org".into(),
                 login: Some("perf3ct".into()),

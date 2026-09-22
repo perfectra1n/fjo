@@ -8,7 +8,7 @@ use forgejo_core::error::{Result, TokenSource};
 use forgejo_core::types::Scope;
 
 use super::common::{self, Setup};
-use super::web_login;
+use super::{web_login, web_password};
 use crate::cmd::support;
 use crate::global::GlobalOpts;
 use crate::output::Term;
@@ -49,6 +49,13 @@ pub struct Args {
     /// Log in through your browser instead of pasting a token
     #[arg(long, conflicts_with_all = ["with_token", "token"])]
     pub web: bool,
+
+    /// Sign in with a password, for the web-only routes (`fjo web`, `fjo project`)
+    ///
+    /// Yields a session rather than a token. Forgejo's web routes accept no token at all, so
+    /// this is the only way to reach the features it never gave an API.
+    #[arg(long, conflicts_with_all = ["with_token", "token", "web"])]
+    pub with_password: bool,
 
     /// Print the authorization URL instead of opening a browser, and paste the reply back
     #[arg(long, requires = "web")]
@@ -106,6 +113,25 @@ pub fn run(globals: &GlobalOpts, args: &Args) -> Result<()> {
         let entry = setup.hosts.add_host(&host_input)?;
         (entry.url.clone(), entry.token_settings_url())
     };
+
+    if args.with_password {
+        if !args.scopes.is_empty() {
+            support::note(
+                &term,
+                "note: --scopes is ignored for --with-password; a web session is not scoped",
+            );
+        }
+        return web_password::run(
+            setup,
+            web_password::Ctx {
+                key,
+                url,
+                interactive,
+                otp: globals.otp.as_deref(),
+                login: globals.login.as_deref(),
+            },
+        );
+    }
 
     if args.web {
         if !args.scopes.is_empty() {
@@ -292,6 +318,7 @@ mod tests {
             insecure_storage: false,
             scopes: Vec::new(),
             web: false,
+            with_password: false,
             no_browser: false,
             client_id: None,
             timeout: 120,

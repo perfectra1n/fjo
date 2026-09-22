@@ -13,5 +13,6 @@ pub mod error;
 pub mod http;
 pub mod oauth;
 pub mod types;
+pub mod web;
 
 pub use error::{Error, ErrorKind, Result};

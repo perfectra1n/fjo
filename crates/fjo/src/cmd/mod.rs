@@ -37,6 +37,7 @@ pub mod notification;
 pub mod org;
 pub mod package;
 pub mod pr;
+pub mod project;
 pub mod quota;
 pub mod reaction;
 pub mod release;
@@ -95,6 +96,9 @@ pub enum Porcelain {
     /// Milestones
     #[command(name = "milestone")]
     Milestone(milestone::Args),
+    /// Project boards (kanban)
+    #[command(name = "project")]
+    Project(project::Args),
     /// Releases and their assets
     #[command(name = "release")]
     Release(release::Args),
@@ -188,6 +192,7 @@ impl Porcelain {
             Self::Issue(a) => issue::run(globals, a),
             Self::Label(a) => label::run(globals, a),
             Self::Milestone(a) => milestone::run(globals, a),
+            Self::Project(a) => project::run(globals, a),
             Self::Release(a) => release::run(globals, a),
             Self::Run(a) => run::run(globals, a),
             Self::Workflow(a) => workflow::run(globals, a),
