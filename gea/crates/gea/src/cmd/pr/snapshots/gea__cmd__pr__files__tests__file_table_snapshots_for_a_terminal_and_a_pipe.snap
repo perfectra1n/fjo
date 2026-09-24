@@ -1,0 +1,13 @@
+---
+source: crates/gea/src/cmd/pr/files.rs
+expression: report
+---
+== tty
+FILE        STATUS    +    -
+src/lib.rs  modified  +24  -3
+README.md   added     +10  -0
+old.txt     deleted   +0   -42
+== piped
+src/lib.rs	modified	+24	-3
+README.md	added	+10	-0
+old.txt	deleted	+0	-42

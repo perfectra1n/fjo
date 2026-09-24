@@ -1,0 +1,14 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::KeyringUnavailable { cause: KeyringCause::NoBackend },\nRequestCtx::default())"
+---
+error: OS keyring is unavailable
+
+  cause: no credential backend answered (on Linux, usually no D-Bus session)
+
+what to do:
+  unlock or enable the keyring, or use one of these alternatives:
+  1. gea auth login --host git.example.org --insecure-storage  (a 0600 file)
+  2. GEA_TOKEN=<token> gea auth status  (environment only)
+  note: set GEA_CREDENTIAL_STORE to env, file, or keyring to select a
+        storage backend.

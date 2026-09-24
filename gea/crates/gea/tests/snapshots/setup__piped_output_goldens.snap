@@ -1,0 +1,18 @@
+---
+source: crates/gea/tests/setup.rs
+expression: report
+---
+== gea config list
+browser		default
+color	auto	default
+credential_store	keyring	default
+editor	hx	config
+oauth_client_id		default
+pager		default
+prompt	enabled	default
+
+== gea alias list
+prs	pr list
+
+== gea auth status --json host,login,authenticated,scopes
+[{"host":"git.example.org","login":"perf3ct","authenticated":false,"scopes":["read:repository","write:issue"]}]

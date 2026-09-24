@@ -1,0 +1,9 @@
+---
+source: crates/gea/src/cmd/package.rs
+expression: "render_list(&testing::term(), &packages())"
+---
+Showing 2 packages
+
+NAME     VERSION  TYPE       LINKED REPO  CREATED
+mycrate  1.2.3    cargo      acme/thing   -
+web      sha-abc  container  -            -

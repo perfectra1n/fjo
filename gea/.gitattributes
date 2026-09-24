@@ -1,0 +1,8 @@
+# Generated code: collapse in review by default. Use `git diff --text` to see it.
+crates/*/src/generated/** linguist-generated=true -diff
+
+# The vendored spec is data, not source.
+spec/*.json    linguist-vendored=true -diff
+spec/*.tmpl    linguist-vendored=true -diff
+
+* text=auto eol=lf

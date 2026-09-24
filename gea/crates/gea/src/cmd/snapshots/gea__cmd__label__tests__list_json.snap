@@ -1,0 +1,5 @@
+---
+source: crates/gea/src/cmd/label.rs
+expression: text(&buf)
+---
+[{"name":"bug","color":"e11d21"},{"name":"ci","color":"1d76db"}]

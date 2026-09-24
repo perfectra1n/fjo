@@ -1,0 +1,16 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::Validation\n{\n    fields:\n    vec![FieldError\n    { field: Some(\"title\".into()), message: \"can't be blank\".into() },\n    FieldError\n    {\n        field: Some(\"assignees\".into()), message:\n        \"user does not exist [name: nope]\".into()\n    },], server_message: None,\n}, c)"
+---
+error: the server rejected the values in this request (HTTP 422)
+
+  request:   POST /api/v1/repos/perf3ct/gea/issues
+  title:     can't be blank
+  assignees: user does not exist [name: nope]
+
+what to do:
+  correct the rejected values listed above.
+  1. correct the values and retry
+  2. gea raw search issue  (find the endpoint and its flags)
+  note: the server may require a field that the API specification marks
+        optional.

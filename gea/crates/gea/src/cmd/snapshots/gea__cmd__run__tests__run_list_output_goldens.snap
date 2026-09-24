@@ -1,0 +1,15 @@
+---
+source: crates/gea/src/cmd/run.rs
+expression: report
+---
+== human/tty
+Showing 2 of 7 runs
+
+STATUS   TITLE            WORKFLOW     BRANCH  EVENT              ID  NUMBER  AGE
+queued   add the emitter  ci.yml       main    push               9   2
+failure  fix the table    release.yml          workflow_dispatch  8   1
+== human/piped
+queued	add the emitter	ci.yml	main	push	9	2	
+failure	fix the table	release.yml		workflow_dispatch	8	1	
+== json/piped
+[{"id":9,"status":"queued","conclusion":""},{"id":8,"status":"completed","conclusion":"failure"}]

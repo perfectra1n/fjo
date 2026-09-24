@@ -1,0 +1,16 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::ChecksFailed\n{\n    slug: None, pr: \"4212\".into(), failed:\n    vec![FailedCheck::new(\"lint\", None)],\n}, RequestCtx::default())"
+---
+error: a check on pull request 4212 failed
+
+  pull request: 4212
+  failed:       lint
+
+what to do:
+  inspect the failed checks listed above.
+  1. no URL was published; check the logs in the service that runs these
+     checks
+  2. gea pr checks 4212 --web  (the same checks in a browser)
+  note: checks may come from external services. For Gitea Actions, use gea
+        run list.

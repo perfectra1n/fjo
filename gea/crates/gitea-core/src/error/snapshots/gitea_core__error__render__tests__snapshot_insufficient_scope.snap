@@ -1,0 +1,18 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::InsufficientScope\n{\n    host: \"git.example.org\".into(), needed: vec![\"write:issue\".into()], have:\n    Some(vec![\"read:repository\".into(), \"read:issue\".into()]), settings_url:\n    \"https://git.example.org/user/settings/applications\".into(),\n}, ctx())"
+---
+error: token is missing a required scope (HTTP 403)
+
+  request:    POST /api/v1/repos/perf3ct/gea/issues
+  needs:      write:issue
+  token has:  read:repository, read:issue
+  token from: the OS keyring, entry gea:git.example.org
+
+what to do:
+  create a token with the required scopes; existing token scopes cannot be
+  changed.
+  1. create a token with write:issue at
+     https://git.example.org/user/settings/applications
+  2. gea auth login --host git.example.org
+  note: Gitea scopes use read:<area> and write:<area>.

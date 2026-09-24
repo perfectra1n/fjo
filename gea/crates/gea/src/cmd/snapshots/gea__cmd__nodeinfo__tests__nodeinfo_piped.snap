@@ -1,0 +1,6 @@
+---
+source: crates/gea/src/cmd/nodeinfo.rs
+assertion_line: 540
+expression: "render_overview(&Term::piped(), \"git.example.org\", &version(),\nSome(&settings()))"
+---
+gitea	1.27.3	50

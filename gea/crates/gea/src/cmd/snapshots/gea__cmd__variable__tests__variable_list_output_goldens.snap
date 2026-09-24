@@ -1,0 +1,13 @@
+---
+source: crates/gea/src/cmd/variable.rs
+expression: report
+---
+== human/tty
+NAME        VALUE
+REGISTRY    ghcr.io
+DEPLOY_ENV  staging
+== human/piped
+REGISTRY	ghcr.io
+DEPLOY_ENV	staging
+== json/piped
+[{"name":"REGISTRY","data":"ghcr.io"},{"name":"DEPLOY_ENV","data":"staging"}]

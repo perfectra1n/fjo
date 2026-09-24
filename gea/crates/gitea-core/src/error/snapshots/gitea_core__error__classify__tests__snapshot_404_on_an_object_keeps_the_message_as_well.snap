@@ -1,0 +1,16 @@
+---
+source: crates/gitea-core/src/error/classify.rs
+expression: "rendered(404, &json(), br#\"{\"message\":\"pull request 4212 has been deleted\"}\"#,\n&c)"
+---
+error: there is no pull request 4212 (HTTP 404)
+
+  request:      GET /api/v1/repos/perf3ct/gea/pulls/4212
+  repository:   perf3ct/gea  (found)
+  pull request: 4212
+  server says:  pull request 4212 has been deleted
+
+what to do:
+  check the pull request identifier and list the available resources:
+  1. gea pr list --state all -R perf3ct/gea
+  note: most issue and pull request paths use the number shown in the web
+        UI, not the database ID.

@@ -1,0 +1,22 @@
+---
+source: crates/gea/src/cmd/repo/view.rs
+expression: "render(&repo(), Some(readme), &Term::tty(80))"
+---
+them/proj  (public)
+A thing that does things
+
+default branch      main
+language            Rust
+stars               12
+forks               3
+open issues         4
+open pull requests  1
+topics              cli, gitea
+
+  proj
+  
+  Does things.
+  
+      proj --help
+
+View this repository on the web: https://git.example.org/them/proj

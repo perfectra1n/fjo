@@ -1,0 +1,13 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::Conflict\n{\n    server_message:\n    \"The pull request is not mergeable: base branch has been updated\".into(),\n}, c)"
+---
+error: request conflicts with the current state (HTTP 409)
+
+  request:     POST /api/v1/repos/perf3ct/gea/pulls/12/merge
+  server says: The pull request is not mergeable: base branch has been updated
+
+what to do:
+  resolve the conflict described in the server message before retrying.
+  1. gea api -X POST repos/perf3ct/gea/pulls/12/merge  (inspect the request response)
+  2. correct the reported conflict, then retry

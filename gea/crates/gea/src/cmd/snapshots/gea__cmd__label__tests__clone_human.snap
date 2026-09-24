@@ -1,0 +1,6 @@
+---
+source: crates/gea/src/cmd/label.rs
+expression: text(&buf)
+---
+Copied 1 label from gitea/gitea to perf3ct/gea
+Left bug alone because it already exists (pass --overwrite to replace it)

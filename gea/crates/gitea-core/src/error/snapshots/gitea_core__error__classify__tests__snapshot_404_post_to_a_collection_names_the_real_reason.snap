@@ -1,0 +1,17 @@
+---
+source: crates/gitea-core/src/error/classify.rs
+expression: "rendered(404, &json(),\nbr#\"[\"could not find 'no-such-branch' to be a commit, branch or tag, or the branch does not exist\"]\"#,\n&create_pull_ctx())"
+---
+error: referenced resource not found in perf3ct/gea (HTTP 404)
+
+  request:     POST /api/v1/repos/perf3ct/gea/pulls
+  repository:  perf3ct/gea  (found)
+  server says: could not find 'no-such-branch' to be a commit, branch or tag, or the branch does not exist
+
+what to do:
+  this request has no pull request identifier. Check referenced branch, tag, or
+  user names.
+  1. correct the value named in the server message, then retry
+  2. gea api repos/perf3ct/gea/branches --jq '.[].name'
+  3. gea api repos/perf3ct/gea/tags --jq '.[].name'
+  note: when creating a pull request, check --head and --base.

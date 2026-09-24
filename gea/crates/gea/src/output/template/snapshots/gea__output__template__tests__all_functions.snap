@@ -1,0 +1,16 @@
+---
+source: crates/gea/src/output/template/mod.rs
+expression: out
+---
+truncate:   [add the w…]
+truncate-p: [add the w…]
+join:       [bug,ui]
+pluck:      [["bug","ui"]]
+color:      [<ESC>[1m<ESC>[32mopen<ESC>[0m]
+autocolor:  [<ESC>[32mopen<ESC>[0m]
+autocolor2: [<ESC>[36mopen<ESC>[0m]
+hyperlink:  [<ESC>]8;;https://forge.example/o/r/pulls/1<ESC>\add the widget subsystem, which is quite a long title<ESC>]8;;<ESC>\]
+timefmt:    [2024-06-01]
+printf:     [#1 open (1%)]
+printf-p:   [<ESC>[32m#1<ESC>[0m]
+tablerow:   []1  open

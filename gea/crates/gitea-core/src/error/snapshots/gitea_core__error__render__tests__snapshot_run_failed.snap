@@ -1,0 +1,19 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::RunFailed\n{\n    slug: Some(\"perf3ct/gea\".into()), run: \"918\".into(), conclusion:\n    \"failure\".into(), failed_jobs: vec![\"test (ubuntu-latest)\".into()], url:\n    Some(\"https://git.example.org/perf3ct/gea/actions/runs/918\".into()),\n}, c)"
+---
+error: workflow run 918 ended in failure
+
+  request:     GET /api/v1/repos/perf3ct/gea/actions/runs/918
+  run:         918
+  ended in:    failure
+  repository:  perf3ct/gea
+  failed jobs: test (ubuntu-latest)
+  web:         https://git.example.org/perf3ct/gea/actions/runs/918
+
+what to do:
+  inspect the workflow logs to find the cause.
+  1. gea run view 918 -R perf3ct/gea --log-failed  (only the steps that failed)
+  2. gea run logs 918 -R perf3ct/gea  (full logs)
+  note: cancelled or timed-out runs may not have started. Check runner
+        availability with gea run runners.

@@ -1,0 +1,11 @@
+---
+source: crates/gea/src/cmd/repo/list.rs
+expression: report
+---
+== tty
+NAME      DESCRIPTION  VISIBILITY  UPDATED
+me/alpha  a thing      public
+me/beta   a thing      private
+== piped
+me/alpha	a thing	public	
+me/beta	a thing	private

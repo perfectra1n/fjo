@@ -1,0 +1,6 @@
+---
+source: crates/gea/src/cmd/deploy_key.rs
+expression: out
+---
+1	ci	read-only	SHA256:aa
+2	release	read-write	SHA256:bb

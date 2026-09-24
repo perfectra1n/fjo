@@ -1,0 +1,7 @@
+---
+source: crates/gea/src/cmd/block.rs
+assertion_line: 243
+expression: "String::from_utf8(buf).unwrap()"
+---
+spammer	Spam Bot
+troll

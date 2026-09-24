@@ -1,0 +1,19 @@
+[package]
+name = "gitea-model"
+version = "0.1.0"
+description = "Types for the Gitea API, generated from the Gitea OpenAPI specification"
+keywords = ["gitea", "gitea", "api", "types"]
+categories = ["api-bindings"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+gitea-core.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

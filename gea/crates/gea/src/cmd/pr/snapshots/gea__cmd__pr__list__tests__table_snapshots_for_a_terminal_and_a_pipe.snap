@@ -1,0 +1,11 @@
+---
+source: crates/gea/src/cmd/pr/list.rs
+expression: report
+---
+== tty
+NUMBER  TITLE     BRANCH   STATE   UPDATED
+#3      change 3  feature  open
+#1      change 1  feature  merged
+== piped
+#3	change 3	feature	open	
+#1	change 1	feature	merged

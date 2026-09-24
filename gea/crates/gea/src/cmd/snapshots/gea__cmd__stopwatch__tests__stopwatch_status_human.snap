@@ -1,0 +1,9 @@
+---
+source: crates/gea/src/cmd/stopwatch.rs
+expression: "render_status(&testing::term(), &w)"
+---
+them/proj#42  Make the thing faster
+elapsed  1h 25m
+started  -
+
+Not yet recorded. Save with `gea stopwatch stop`.

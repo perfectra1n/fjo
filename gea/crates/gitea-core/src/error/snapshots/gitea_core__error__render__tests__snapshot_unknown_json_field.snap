@@ -1,0 +1,14 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::UnknownJsonField\n{\n    given: \"titel\".into(), available:\n    vec![\"number\".into(), \"title\".into(), \"state\".into(), \"url\".into()],\n    suggest: Some(\"title\".into()),\n}, RequestCtx::default())"
+---
+error: unknown --json field: titel
+
+  asked for:    titel
+  did you mean: title
+  available:    number, title, state, url
+
+what to do:
+  use --json for top-level fields and --jq for nested fields.
+  1. gea pr list --json  (list available fields)
+  2. gea pr list --jq '.[].head.ref'  (select a nested field)

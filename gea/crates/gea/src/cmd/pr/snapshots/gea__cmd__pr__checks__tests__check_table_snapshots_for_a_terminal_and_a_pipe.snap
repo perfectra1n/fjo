@@ -1,0 +1,13 @@
+---
+source: crates/gea/src/cmd/pr/checks.rs
+expression: report
+---
+== tty
+CHECK  STATE    AGE  DETAILS
+build  success       https://ci.example.org/build
+test   failure       https://ci.example.org/test
+lint   pending       https://ci.example.org/lint
+== piped
+build	success		https://ci.example.org/build
+test	failure		https://ci.example.org/test
+lint	pending		https://ci.example.org/lint

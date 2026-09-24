@@ -1,0 +1,14 @@
+---
+source: crates/gea/src/cmd/nodeinfo.rs
+assertion_line: 536
+expression: "render_overview(&testing::term(), \"git.example.org\", &version(),\nSome(&settings()))"
+---
+git.example.org
+
+software      gitea 1.27.3
+
+api limits
+  max_response_items          50  every `limit` is clamped to this, silently
+  default_paging_num          30  page size when none is asked for
+  default_git_trees_per_page  1000  entries per page of a git tree
+  default_max_blob_size       10 MiB  above this, file contents are omitted

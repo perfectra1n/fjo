@@ -1,0 +1,16 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::AgitRefused\n{\n    refspec: \"HEAD:refs/for/main/fix-parser\".into(), remedy:\n    AgitRemedy::ForcePush, stderr:\n    \"remote: Gitea: user does not have permission\\n\\\n                     ! [remote rejected] HEAD -> refs/for/main/fix-parser (non-fast-forward)\".into(),\n}, RequestCtx::default())"
+---
+error: the AGit push to HEAD:refs/for/main/fix-parser was refused
+
+  refspec:  HEAD:refs/for/main/fix-parser
+  git says: remote: Gitea: user does not have permission
+            ! [remote rejected] HEAD -> refs/for/main/fix-parser (non-fast-forward)
+
+what to do:
+  amended or rebased commits require a force push to update the AGit pull
+  request.
+  1. gea pr create --agit --force-push
+  note: keep the same topic to update this pull request; a new topic
+        creates another.

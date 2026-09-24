@@ -1,0 +1,13 @@
+---
+source: crates/gea/src/cmd/notification.rs
+expression: report
+---
+== human/tty
+ID  STATE   REPOSITORY  TYPE   SUBJECT                 UPDATED
+12  unread  acme/anvil  issue  Anvils fall too slowly
+13  pinned  acme/anvil  pull   Add a parachute
+== human/piped
+12	unread	acme/anvil	issue	Anvils fall too slowly	
+13	pinned	acme/anvil	pull	Add a parachute	
+== json/piped
+[{"id":12,"unread":true,"pinned":false},{"id":13,"unread":true,"pinned":true}]

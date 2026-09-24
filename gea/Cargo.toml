@@ -1,0 +1,144 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/gitea-core",
+    "crates/gitea-model",
+    "crates/gitea-client",
+    "crates/gea-raw",
+    "crates/gea",
+    "crates/gea-itest",
+    "crates/xtask",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+license = "AGPL-3.0-only"
+repository = "https://github.com/perfectra1n/gea"
+authors = ["perf3ct"]
+
+[workspace.dependencies]
+# --- internal ---
+gitea-core = { version = "0.1.0", path = "crates/gitea-core" }
+gitea-model = { version = "0.1.0", path = "crates/gitea-model" }
+gitea-client = { version = "0.1.0", path = "crates/gitea-client" }
+gea-raw = { version = "0.1.0", path = "crates/gea-raw" }
+
+# --- serde / data ---
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_path_to_error = "0.1"
+toml = "1.0"
+bytes = "1"
+
+# --- http / async ---
+# default-features = false keeps OpenSSL out of the build; rustls only. Note reqwest 0.13
+# renamed the `rustls-tls` feature to `rustls`. `rustls-native-certs` reads the OS trust
+# store, which self-hosted instances behind a corporate CA depend on.
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls", "rustls-native-certs", "json", "stream", "multipart", "gzip", "charset",
+    "http2", "system-proxy",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-std", "process", "time"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+futures = "0.3"
+http = "1"
+
+# --- cli ---
+# `string` lets clap accept owned `String` for ids and long flags. Layer 2 computes both at
+# runtime from the generated metadata table, and without this feature it would have to
+# `Box::leak` every one of them.
+clap = { version = "4.6", features = ["derive", "wrap_help", "env", "string"] }
+clap_complete = "4.6"
+clap_mangen = "0.3"
+anstyle = "1"
+anstream = "1"
+terminal_size = "0.4"
+unicode-width = "0.2"
+indicatif = "0.18"
+# `fuzzy` is off because it pulls in `fuzzy-matcher`, unreleased since 2020 and banned in
+# deny.toml. We do our own ranking in `gea raw search` anyway, so inquire's fuzzy filter
+# would be a second, worse matcher for no benefit.
+inquire = { version = "0.9", default-features = false, features = [
+    "macros", "crossterm", "one-liners", "editor",
+] }
+open = "5"
+
+# --- time ---
+jiff = { version = "0.2", features = ["serde"] }
+
+# --- secrets / config ---
+secrecy = "0.10"
+zeroize = "1"
+# keyring 4.x split every backend into its own crate. The `default` feature is `v1`, which
+# target-gates to apple-native on macOS, windows-native on Windows, and zbus-secret-service
+# on other unix. Deliberately NOT linux-keyutils: the kernel keyring does not survive a
+# reboot, which would silently log users out.
+keyring = "4"
+etcetera = "0.11"
+
+# --- crypto ---
+# Both are needed only by the OAuth2 PKCE flow, and on Linux both are already linked into the
+# binary through keyring -> secret-service, so the cost there is zero. xtask uses sha2 too, for
+# the spec lockfile digests.
+sha2 = "0.11"
+# `fill` is the whole of the API we use. `rand` would add rand_core, rand_chacha, ppv-lite86 and
+# zerocopy for a distribution layer we do not want.
+getrandom = "0.4"
+
+# --- errors ---
+thiserror = "2"
+
+# --- jq ---
+jaq-core = "3"
+jaq-json = "2"
+jaq-std = "3"
+
+# --- codegen (xtask only) ---
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "3", features = ["full", "parsing", "printing"] }
+prettyplease = "0.3"
+heck = "0.5"
+
+# --- dev / test ---
+# Pinned exactly: the itest harness depends on how `get_host()` resolves the daemon address
+# (see crates/gea-itest/src/lib.rs), which is behaviour, not API, and a minor bump could
+# change it without changing the signature. `blocking` provides the synchronous `Container`
+# the harness uses; the `http_wait` feature is deliberately off — our own probe loop reports
+# *why* a health check failed, which `HttpWaitStrategy` does not.
+testcontainers = { version = "=0.28.0", features = ["blocking"] }
+insta = { version = "1", features = ["json", "yaml"] }
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+
+[profile.dev.package.gitea-model]
+debug = false
+
+[profile.dev.package.gitea-client]
+debug = false
+
+# Every setting here was measured against `mise run budget-check`'s three numbers, not
+# assumed. From the previous profile (opt-level 3, thin LTO) at 19,068,392 bytes:
+#
+#   lto = "fat"        -1,225,488   mostly .rodata/.eh_frame dedup, not .text
+#   opt-level = "s"    -5,643,648   the big one; `.text` 14.70 MB -> 9.38 MB
+#   codegen-units = 1  -1,344,272   (vs the default 16, measured at this opt-level)
+#   panic = "abort"    -2,127,744   (vs "unwind"; there is no catch_unwind in the tree)
+#
+# `opt-level = "z"` was measured too and rejected: it reaches 10,774,104 bytes, another
+# 1.4 MB, but costs ~29% on the heaviest CPU-bound path (`gea completion bash`, which
+# builds the whole command tree) against ~8% for "s". "s" already clears the 15 MB budget
+# with 2.8 MB of headroom, so the extra megabyte is not worth a quarter of the throughput.
+#
+# Both startup budgets were re-measured after each change and neither regressed past noise:
+# `--version` 1.09 -> 1.21 ms against a 25 ms budget, `raw ... --help` 0.56 -> 0.65 ms
+# against 40 ms (hyperfine -N, 3 warmups, 30 runs). An opt-level that traded startup for
+# size would undo layer 2's lazy subtree construction, so these are checked, not assumed.
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

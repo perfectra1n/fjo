@@ -1,0 +1,10 @@
+---
+source: crates/gea/src/cmd/admin/user.rs
+expression: out
+---
+Showing 3 accounts
+
+LOGIN  EMAIL   ROLE   STATE                        LAST LOGIN
+root   root@x  admin  ok
+ada    ada@x   user   inactive
+eve    eve@x   user   login-prohibited+restricted

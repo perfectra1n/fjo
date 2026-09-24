@@ -1,0 +1,18 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::Connect\n{\n    host: \"git.example.org\".into(), port: 443, cause:\n    \"tcp connect error: Connection refused (os error 111)\".into(),\n    looks_like_plaintext: false, scheme: \"https\".into(),\n}, RequestCtx\n{\n    host: Some(\"git.example.org\".into()), method: Some(\"GET\".into()), path:\n    Some(\"/api/v1/user\".into()), ..RequestCtx::default()\n})"
+---
+error: cannot connect to git.example.org
+
+  request: GET /api/v1/user
+  host:    git.example.org
+  port:    443
+  cause:   tcp connect error: Connection refused (os error 111)
+
+what to do:
+  the hostname resolved, but the connection failed.
+  1. test the same address with curl:
+     curl -sS -o /dev/null -w '%{http_code}\n' https://git.example.org:443/api/v1/version
+  2. if the port is wrong, log in with the correct port (example: 3000):
+     gea auth login --host https://git.example.org:3000
+  note: check whether a firewall or VPN is blocking the connection.

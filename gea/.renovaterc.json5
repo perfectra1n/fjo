@@ -1,0 +1,75 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  // The shared home-operations preset supplies the whole policy: config:recommended,
+  // GitHub Action digest pinning, semantic commits and type/* labels, the dependency
+  // dashboard, and lockfile maintenance. It is referenced as `github>` rather than
+  // `local>` because this repo lives outside the home-operations org — `local>` means
+  // "the platform this repo is on", so it would resolve here too, but naming the
+  // platform states the cross-org dependency instead of leaving it to be inferred.
+  // Renovate runs as the cloud-hosted Mend app, so there is no workflow in this repo.
+  // The app finds this file on its own and skips onboarding because it already exists.
+  extends: ["github>home-operations/renovate-config"],
+
+  customManagers: [
+    {
+      // rust-toolchain.toml has no native Renovate manager, and `.mise/config.toml`
+      // does. Without this, Renovate would bump the mise pin alone and leave
+      // rust-toolchain.toml behind — which is exactly the mismatch .mise/config.toml
+      // warns about ("Bump both together — a mismatch is silent, because rustup
+      // honours the toolchain file and mise honours this one"). Adding Renovate
+      // without this rule would manufacture that bug rather than find it.
+      customType: "regex",
+      managerFilePatterns: ["/^rust-toolchain\\.toml$/"],
+      matchStrings: ["channel = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
+      depNameTemplate: "rust",
+      packageNameTemplate: "rust-lang/rust",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^(?<version>\\d+\\.\\d+\\.\\d+)$",
+    },
+  ],
+
+  packageRules: [
+    {
+      description: "Auto-merge non-major updates, but only after every CI check passes",
+      matchUpdateTypes: ["minor", "patch", "digest", "lockFileMaintenance"],
+      automerge: true,
+    },
+    {
+      description: "zer0ver: 0.x minors can break at any time, don't automerge them",
+      matchUpdateTypes: ["minor"],
+      matchCurrentVersion: "/^v?0\\./",
+      automerge: false,
+    },
+    {
+      // Both files pin the same toolchain and must move in one commit. The bump is
+      // also not mechanical: CONTRIBUTING.md is explicit that changing the pinned
+      // toolchain requires re-running `cargo xtask codegen` in the SAME commit,
+      // because rustfmt's output moves under ~400 generated files and
+      // `mise run codegen-check` then fails. That is a human step, so this never
+      // automerges however green the checks look.
+      description: "Rust toolchain: rust-toolchain.toml and the mise pin move together, by hand",
+      matchDepNames: ["rust"],
+      groupName: "Rust toolchain",
+      groupSlug: "rust-toolchain",
+      automerge: false,
+      addLabels: ["needs-codegen"],
+    },
+    {
+      // These three are pinned precisely so a new upstream release cannot turn CI red
+      // on an unrelated PR — see the comments in .mise/config.toml. Automerging them
+      // would hand that failure mode straight back: cargo-deny ships new advisory-db
+      // schemas and lint defaults, and cargo-nextest owns the per-test timeouts that
+      // .config/nextest.toml uses as a gate. The bump is fine; it just wants eyes.
+      description: "Gate tooling is pinned to keep CI deterministic — review, never automerge",
+      matchManagers: ["mise"],
+      matchDepNames: [
+        "aqua:EmbarkStudios/cargo-deny",
+        "aqua:sharkdp/hyperfine",
+        "aqua:nextest-rs/nextest/cargo-nextest",
+      ],
+      groupName: "CI gate tooling",
+      groupSlug: "ci-gate-tooling",
+      automerge: false,
+    },
+  ],
+}

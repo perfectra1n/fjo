@@ -1,0 +1,129 @@
+# cargo-nextest configuration. `mise run test` and CI both go through this file;
+# the runner itself is pinned in .mise/config.toml so a nextest release cannot
+# change what the gate means on an unrelated PR.
+#
+# Why nextest rather than `cargo test`: this workspace has ~1300 tests spread
+# over 28 test binaries, and `cargo test` runs the BINARIES one after another —
+# the parallelism stops at the binary boundary. nextest runs every test in its
+# own process and schedules all of them against one thread pool, which is the
+# difference between a serial walk through 28 binaries and a single fan-out.
+#
+# The second reason is the one that actually motivated this: a per-test clock.
+# `cargo test` has no timeout at all, so a test that hangs hangs the whole run
+# with no output and no name — which is exactly what a pagination bug did here
+# once, and what a test-harness health check did for 180 seconds more recently.
+# `slow-timeout` below turns both of those into a line naming the test.
+#
+# Doctests are the one thing nextest does NOT run (upstream #16). They have not
+# been dropped: `mise run test-doc` runs them and CI runs it as its own step.
+
+[profile.default]
+# The hermetic suite is fast — the slowest single test here is ~1.5s (an
+# assert_cmd test that spawns the real `gea` binary), and the whole suite
+# finishes in a few seconds. 15s is therefore ~10x headroom over the slowest
+# thing that legitimately exists, with enough slack left for a contended CI
+# runner, while still being short enough that a hang is reported in seconds
+# rather than minutes.
+#
+# `terminate-after = 2` means: print SLOW (with the test's NAME) at 15s, then
+# kill it at 30s and fail the run. That is the whole point — a hang must end as
+# a named failure, never as a run that never returns. The one value sized to a
+# genuinely slow test is the gea-itest override below, NOT this number: a
+# global timeout stretched to fit the slowest thing in the workspace would stop
+# catching hangs in the other 1300 tests.
+slow-timeout = { period = "15s", terminate-after = 2 }
+
+# crates/gea-itest boots a real Gitea container and shares ONE instance per
+# PROCESS (a `OnceLock` in crates/gea-itest/src/lib.rs), and every boot first
+# calls `reap_stale()`, which force-removes every container carrying the
+# `gea-itest` label. Under `cargo test` that is exactly right: one container
+# per test BINARY, and the reap only ever collects corpses from a previous run.
+#
+# Under nextest, which runs every test in its own process, the same code means
+# one container per TEST — and each new test's reap kills the container the
+# tests already running are talking to. Measured, not assumed: before the
+# override below existed, `cargo nextest run --workspace` left 11+
+# `gea-itest-<pid>` containers up at once and failed 8 tests, in a suite that
+# is green under `cargo test`.
+#
+# So the integration suite keeps its own runner: `mise run itest` →
+# `cargo xtask itest` → `cargo test --package gea-itest`, six containers
+# instead of twenty-plus, on the process model the harness was written for.
+# Filtering it out here (rather than passing `--exclude` from the mise task)
+# means a bare `cargo nextest run --workspace` is safe for anyone who types it
+# directly, and it makes `mise run test` actually hermetic — which its
+# description has always claimed and `cargo test --workspace` never delivered,
+# since it booted six Giteas on any machine with Docker.
+#
+# Be clear about the cost: a default-filter is NOT mentioned in nextest's
+# summary (it prints "N tests run: N passed, 0 skipped" and the filtered tests
+# appear nowhere). `mise run test` therefore echoes a line pointing at
+# `mise run itest`, so the exclusion is visible where a human reads it. Nothing
+# stopped running: `mise run itest` runs all of them and CI's `integration` job
+# already invoked it before this change.
+default-filter = 'not package(gea-itest)'
+
+# If you deliberately override that (`cargo nextest run --workspace
+# --ignore-default-filter`), these are the terms it has to run on. Every test
+# pays a container boot, so it needs a much longer clock than the hermetic
+# default, and it belongs to the bounded group below.
+[[profile.default.overrides]]
+filter = 'package(gea-itest)'
+# Measured against `cargo test -p gea-itest` with a warm image: a whole test
+# binary (boot + migrate + its tests) is 1-5s. The number that is NOT bounded by
+# that measurement is a cold runner's `docker pull` of the Gitea image, which
+# is tens of seconds and is paid by whichever test boots first. 60s clears that
+# comfortably; killing at 180s still bounds a wedged container, which is the
+# case this file exists for. Note this is ~4x the hermetic period and 6x its
+# kill — exactly the reason it is an override and not the global value.
+slow-timeout = { period = "60s", terminate-after = 3 }
+test-group = 'gitea-container'
+
+[test-groups]
+# Four Giteas at a time.
+#
+# This used to be 1, and had to be: `reap_stale()` in crates/gea-itest swept
+# every container carrying the `gea-itest` label, so under nextest's
+# process-per-test model each new boot deleted the server a running test was
+# talking to — 11+ live containers and 8 failures, measured.
+#
+# That is fixed at the source rather than worked around here. A container is now
+# labelled with the pid that started it and is reaped only when that process is
+# gone (or when it is old enough that no run could still hold it), so concurrent
+# boots no longer collide. Note this is OUR fix, not something testcontainers
+# brought: the Rust implementation ships no Ryuk sidecar at 0.28 — cleanup is
+# the per-container `Drop` guard, which never runs for the `OnceLock`-held
+# instance, so label reaping still has to exist.
+#
+# Measured on this branch, `cargo nextest run -p gea-itest
+# --ignore-default-filter`, 32 tests, warm image: 39.7s at 1, 11.9s at 4, 7.1s
+# at 8 — all green, twice each at 4 and 8. It is capped rather than unbounded
+# because the scarce resource is now real: one Gitea per test, at roughly
+# 200MB resident, and 32 at once would be ~6GB on a runner that has other
+# things to do. Four is a 3.3x speedup for ~800MB. Raise it deliberately, with
+# a number the runner can actually carry.
+gitea-container = { max-threads = 4 }
+
+[profile.ci]
+# Selected by `NEXTEST_PROFILE=ci` in .gitea/workflows/ci.yml, so CI keeps
+# invoking the same `mise run test` task rather than a second command line.
+# Inherits everything above — the default-filter and the gea-itest override
+# included (verified with `cargo nextest show-config test-groups --profile ci`).
+# Only the CI-specific behaviour is restated.
+#
+# fail-fast off: a CI run should report every failure it found, not the first
+# one. The default's fail-fast is right locally (stop, fix, re-run) and wrong
+# here, where each round trip costs a full push.
+fail-fast = false
+# No retries. Every test reachable from this profile is hermetic — no network,
+# no container, no shared state — so a flake is a bug in the test, and a retry
+# would hide it. (kopiur retries its e2e profile because that suite is stateful
+# against a shared cluster; nothing in this profile has that excuse.)
+retries = 0
+# Runners are slower and noisier than a dev box; double the clock rather than
+# have a green suite go red on scheduling jitter. Still a 60s hard kill.
+slow-timeout = { period = "30s", terminate-after = 2 }
+# Print failures as they happen AND again at the end, so the actionable part is
+# not buried a thousand lines up a CI log.
+failure-output = "immediate-final"
+final-status-level = "fail"

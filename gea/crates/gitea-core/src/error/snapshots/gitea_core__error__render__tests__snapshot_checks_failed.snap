@@ -1,0 +1,18 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::ChecksFailed\n{\n    slug: Some(\"perf3ct/gea\".into()), pr: \"4212\".into(), failed:\n    vec![FailedCheck::new(\"build / test (pull_request)\",\n    Some(\"https://ci.example.org/runs/9\".into())),\n    FailedCheck::new(\"lint\", None),],\n}, c)"
+---
+error: 2 checks on pull request 4212 failed
+
+  request:      GET /api/v1/repos/perf3ct/gea/commits/abc123/status
+  pull request: 4212
+  repository:   perf3ct/gea
+  failed:       build / test (pull_request) — https://ci.example.org/runs/9
+                lint
+
+what to do:
+  inspect the failed checks listed above.
+  1. open each failed check's URL for details
+  2. gea pr checks 4212 -R perf3ct/gea --web  (the same checks in a browser)
+  note: checks may come from external services. For Gitea Actions, use gea
+        run list.

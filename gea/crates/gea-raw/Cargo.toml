@@ -1,0 +1,19 @@
+[package]
+name = "gea-raw"
+version = "0.1.0"
+description = "Layer-2 engine: builds clap commands at runtime from generated Gitea API metadata"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+gitea-core.workspace = true
+gitea-client.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

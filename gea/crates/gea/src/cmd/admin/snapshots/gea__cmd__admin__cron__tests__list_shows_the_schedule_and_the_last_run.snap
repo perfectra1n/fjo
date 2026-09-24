@@ -1,0 +1,9 @@
+---
+source: crates/gea/src/cmd/admin/cron.rs
+expression: "String::from_utf8(buf).unwrap()"
+---
+Showing 2 scheduled tasks
+
+TASK            SCHEDULE    RUNS  LAST                  NEXT
+update_mirrors  @every 10m  12    2024-05-01T10:00:00Z  2024-05-01T10:10:00Z
+git_gc_repos    @every 72h  1     2024-04-30T02:00:00Z  2024-05-03T02:00:00Z

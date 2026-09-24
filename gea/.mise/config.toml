@@ -1,0 +1,706 @@
+# mise tasks + tooling for gea. `mise tasks` lists them; `mise run <task>`.
+# Mise is the source of truth for tools and tasks in developer shells AND in CI:
+# .gitea/workflows/ci.yml invokes `mise run <task>` rather than restating the
+# commands, so the two cannot drift. Change a gate here and CI follows.
+
+[tools]
+# Kept in lockstep with rust-toolchain.toml, which stays the source of truth for
+# anyone running bare `cargo` without mise. Bump both together — a mismatch is
+# silent, because rustup honours the toolchain file and mise honours this one.
+rust = { version = "1.98.1", components = "rustfmt,clippy" }
+# deny.toml is checked in and `mise run deny` is a CI gate; pin the checker so a
+# new advisory-db schema or lint default cannot turn CI red on an unrelated PR.
+"aqua:EmbarkStudios/cargo-deny" = "0.20.2"
+# Used only by `budget-check`. Worth the pin: the startup budgets are single-digit
+# milliseconds, which is exactly the regime where shell `time` measures its own
+# fork overhead instead of the program.
+"aqua:sharkdp/hyperfine" = "1.20.0"
+# The test runner for `mise run test` (see .config/nextest.toml for the profiles
+# and why each timeout is the number it is). Pinned for the same reason as
+# cargo-deny: the per-test timeouts are a gate, and a nextest release that moves
+# a default must not be able to turn CI red on an unrelated PR.
+"aqua:nextest-rs/nextest/cargo-nextest" = "0.9.140"
+
+# aws-lc-sys (reqwest -> rustls, which defaults to the aws-lc-rs provider) compiles
+# AWS-LC's C sources with cmake. Needed only by the dist targets, but pinned here
+# for the same reason as everything else in this block: a release must not pick up
+# a different cmake than the one a developer reproduced it with. The musl C
+# compiler cmake drives is `musl-gcc`, an apt package -- the one tool in the dist
+# path mise cannot own. See tasks.dist-build.
+"aqua:Kitware/CMake" = "3.31.6"
+
+[env]
+CARGO_TERM_COLOR = "always"
+RUST_BACKTRACE = "1"
+
+# ---------------------------------------------------------------------------
+# Build, test, lint
+# ---------------------------------------------------------------------------
+
+[tasks.build]
+description = "Compile the whole workspace (debug, locked deps)"
+run = "cargo build --workspace --locked"
+
+[tasks.build-release]
+description = "Compile the release binary the size/startup budgets are measured against"
+run = "cargo build --release --locked"
+
+[tasks.test]
+description = "Hermetic unit + golden test suite (no network, no Docker)"
+run = """
+set -eu
+# nextest, not `cargo test`: 28 test binaries, and `cargo test` runs the
+# BINARIES serially, so most of the suite sits idle waiting its turn. The
+# bigger reason is the per-test clock — `cargo test` has no timeout, so a hung
+# test hangs the run with no name and no output (a pagination bug did exactly
+# that here). nextest's slow-timeout reports the offender BY NAME and then
+# kills it. Profiles and timeout values: .config/nextest.toml.
+#
+# This task is now genuinely hermetic, which it was not before: the nextest
+# default profile filters out `gea-itest`, whose harness shares one Gitea
+# container per PROCESS (and reaps every other one on boot), so under nextest
+# it would boot — and mutually destroy — one container per test. They did not
+# stop running: `mise run itest` runs them on the process model they were
+# written for, and CI's `integration` job already did exactly that.
+cargo nextest run --workspace --locked
+echo "note: the crates/gea-itest integration tests are not in this gate; run 'mise run itest' (needs Docker)."
+"""
+
+[tasks.test-doc]
+description = "Doctests (nextest cannot run these, so they get their own gate)"
+run = """
+set -eu
+# nextest does not run doctests and has no plan to (nextest-rs/nextest#16):
+# libtest's doctest runner is a separate, non-JSON path it cannot drive. So
+# switching `test` to nextest would have silently stopped running them.
+#
+# There is exactly one live doctest today — the `no_run`/compile example on
+# `gitea-client`'s crate root — plus two `ignore`d ones. One is still worth a
+# gate: gitea-client is a PUBLISHED crate, so that example is the first code
+# a user of the library copies, and a compile-checked example is the only thing
+# keeping it honest as the generated client is regenerated under it.
+cargo test --doc --workspace --locked
+"""
+
+[tasks.clippy]
+description = "Clippy across the workspace and all targets, warnings are errors"
+run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
+
+[tasks.fmt]
+description = "Format the workspace in place"
+run = "cargo fmt --all"
+
+[tasks.fmt-check]
+description = "Verify formatting without changing files (CI gate)"
+run = "cargo fmt --all --check"
+
+[tasks.deny]
+description = "Supply-chain + license audit against deny.toml"
+run = "cargo deny check"
+
+[tasks.docs]
+description = "Build the published crates' rustdoc; any warning is an error"
+env = { RUSTDOCFLAGS = "-D warnings" }
+run = "cargo doc --no-deps --locked -p gitea-core -p gitea-model -p gitea-client"
+
+# ---------------------------------------------------------------------------
+# Codegen
+# ---------------------------------------------------------------------------
+
+[tasks.codegen]
+description = "Regenerate the committed generated trees from the vendored Swagger spec"
+run = "cargo xtask codegen"
+
+[tasks.update-spec]
+description = "Vendor the Gitea Swagger spec at a release tag into spec/ (args: --version vX.Y.Z)"
+run = "cargo xtask update-spec"
+
+[tasks.spec-diff]
+description = "Markdown report of how an upstream spec differs from another (args: --tag vX | --branch gitea | --file p, optionally --baseline-tag vY)"
+run = '''
+set -eu
+# Exit status 3 means "they differ" — distinct from 1 so that
+# .github/workflows/spec-drift.yaml can branch on drift versus a real failure.
+# Run daily there twice: vendored against the latest release tag (bump PR), and
+# the latest release tag against the `gitea` branch (tracking issue) — the
+# second is the one that reports only what upstream has NOT released yet.
+# Run here to answer "what changed upstream" before a bump, e.g.
+#   mise run spec-diff -- --tag v16.0.5
+#   mise run spec-diff -- --baseline-tag v16.0.5 --branch gitea
+cargo xtask spec-diff "$@"
+'''
+
+[tasks.codegen-check]
+description = "Fail if the committed generated trees are stale or hand-edited (CI drift guard)"
+run = '''
+set -eu
+# Regenerates into a temp dir and diffs. This is the entire reason 42k lines of
+# generated code can be committed and still trusted: a hand-edit under
+# `src/generated/` fails the build instead of surviving until the next spec bump
+# silently reverts it.
+cargo xtask codegen --check
+'''
+
+[tasks.itest]
+description = "Integration suite against a real Gitea — boots a throwaway Gitea container in Docker"
+run = '''
+set -eu
+# Needs a working Docker daemon: xtask boots a disposable Gitea matching the
+# vendored spec's version, runs the suite against it, and tears it down. These
+# are the only tests that prove the SERVER agrees with the spec we generated
+# from; everything else proves we agree with ourselves. No --allow-skip: a run
+# that silently skipped is a green tick that proved nothing.
+cargo xtask itest
+'''
+
+# ---------------------------------------------------------------------------
+# Ratchets. See docs/ratchets.md for the why, and for how to drain one.
+#
+# Every ratchet here is a COUNT BUDGET, not a threshold sized to the worst
+# offender, so a new offender fails immediately even while the legacy ones are
+# still being paid down. Two rules follow, and both are load-bearing:
+#   * over budget FAILS, and the message says how to fix the code — never how
+#     to raise the budget;
+#   * under budget PRINTS A NOTE telling you to ratchet the budget down. That
+#     second half is the only thing that stops a ratchet from rotting into a
+#     number nobody has looked at since the day it was written.
+# ---------------------------------------------------------------------------
+
+[tasks.panic-check]
+description = "Ratchet gate: fail if the count of panicking constructs in shipping code grows"
+run = '''
+set -eu
+# RATCHET: `unwrap()` / `expect(` / `panic!` / `todo!` / `unimplemented!` in
+# non-test, non-generated code under crates/ must never GROW.
+#
+# gea's entire value proposition is its error taxonomy: one renderer, a
+# three-part shape (what failed / why / what to do), and a test asserting that
+# EVERY ErrorKind variant's rendering contains a "what to do" section with a
+# literal runnable command. A panic bypasses all of it and hands the user a Rust
+# backtrace instead — the one output shape the taxonomy promises never to emit.
+#
+# Not theoretical here: commit 0c2fcc7 shipped three clap panics, because clap
+# answers a duplicate long name with a panic rather than an error, so a table
+# typo in layer 2 becomes a backtrace on every single invocation.
+#
+# `.mise/scan.py` scrubs comments and string literals first (so a doc-comment
+# example is not counted as code) and excludes `generated/`, `tests/`
+# directories, `#[cfg(test)]` items, `#[cfg(test)] mod x;` file-modules, and the
+# `gea-itest` crate — a `publish = false` container harness whose unwraps fail a
+# test loudly, which is what you want there. See docs/ratchets.md.
+BUDGET=43
+COUNT=$(python3 .mise/scan.py panic)
+echo "==> panicking constructs in shipping code: $COUNT (budget: $BUDGET)"
+if [ "$COUNT" -gt "$BUDGET" ]; then
+  echo "error: panicking constructs grew ($COUNT > $BUDGET)." >&2
+  echo "Run 'python3 .mise/scan.py panic --list' to locate them." >&2
+  echo "Return an ErrorKind, or make the invalid state unrepresentable." >&2
+  echo "Do not raise BUDGET." >&2
+  exit 1
+fi
+if [ "$COUNT" -lt "$BUDGET" ]; then
+  echo "note: panics dropped below the budget; lower BUDGET to $COUNT in .mise/config.toml"
+fi
+'''
+
+[tasks.exit-check]
+description = "Ratchet gate: fail if std::process::exit is called outside main.rs"
+run = '''
+set -eu
+# RATCHET: calls to `std::process::exit` outside crates/gea/src/main.rs must
+# never GROW, and the target is zero.
+#
+# main.rs owns the exit code because the ErrorKind exit-code table is a public
+# contract: 0/1/2/4 matching gh, plus 5 not-found, 6 network, 7 server,
+# 8 rate-limited, 130 SIGINT. A `process::exit` anywhere else hard-codes a
+# number beside that table, so the code a calling script observes stops being
+# the one the taxonomy documents — and because it never unwinds, it also skips
+# the pager flush and the grouped unknown-field note on the way out.
+#
+# It reached zero the hard way: crates/gea/src/cmd/pr/checks.rs (Verdict::Failed)
+# was the last such call and is now an ErrorKind, so the budget is 0 and this is
+# a "stays drained" gate rather than a "drain it" one. The exit code for a failed
+# check run is decided in the same table as every other exit code.
+BUDGET=0
+COUNT=$(python3 .mise/scan.py exit)
+echo "==> std::process::exit outside main.rs: $COUNT (budget: $BUDGET)"
+if [ "$COUNT" -gt "$BUDGET" ]; then
+  echo "error: process::exit calls grew ($COUNT > $BUDGET)." >&2
+  echo "Run 'python3 .mise/scan.py exit --list' to locate them." >&2
+  echo "Return an ErrorKind and let main.rs set the exit code. Do not raise BUDGET." >&2
+  exit 1
+fi
+if [ "$COUNT" -lt "$BUDGET" ]; then
+  echo "note: exits dropped below the budget; lower BUDGET to $COUNT in .mise/config.toml"
+fi
+'''
+
+[tasks.support-check]
+description = "Ratchet gate: fail if more non-admin modules reach into cmd/admin/support"
+run = '''
+set -eu
+# RATCHET: files outside crates/gea/src/cmd/admin/ that import
+# `crate::cmd::admin::support` must never GROW, and the target is ZERO.
+#
+# `support` is general-purpose output plumbing (Emit/Json and the test helpers)
+# that happens to live inside the admin command group. Every module that reaches
+# into it writes an edge into the dependency graph that says "topics depend on
+# administration", "webhooks depend on administration", "reactions depend on
+# administration" — none of which is true, and all of which a reader of the
+# module tree then has to un-learn.
+#
+# The cause was mechanical, not a design choice: cmd/mod.rs was frozen while six
+# agents worked in parallel, so nobody could add a shared module without
+# colliding, and the nearest already-existing home won. Eleven modules ended up
+# reaching in; the plumbing now lives at crates/gea/src/cmd/support/ and the
+# count is 0. This gate exists so the next frozen-file scramble cannot quietly
+# recreate the same edge.
+BUDGET=0
+COUNT=$(python3 .mise/scan.py support)
+echo "==> non-admin modules importing cmd::admin::support: $COUNT (budget: $BUDGET)"
+if [ "$COUNT" -gt "$BUDGET" ]; then
+  echo "error: reach-ins to cmd::admin::support grew ($COUNT > $BUDGET)." >&2
+  echo "Run 'python3 .mise/scan.py support --list' to locate them." >&2
+  echo "Move shared helpers to cmd/support/ and update the imports. Do not raise BUDGET." >&2
+  exit 1
+fi
+if [ "$COUNT" -lt "$BUDGET" ]; then
+  echo "note: reach-ins dropped below the budget; lower BUDGET to $COUNT in .mise/config.toml"
+fi
+'''
+
+[tasks.zero-check]
+description = "Ratchet gate: fail if zero values written into omittable request-body fields grow"
+run = '''
+set -eu
+# RATCHET: values that mean "the user said nothing" must never be written INTO a
+# request-body field whose `Option` exists to omit it. Target zero, and it is
+# at zero.
+#
+# A generated request-body model spells a not-required field `Option<T>` with
+# `skip_serializing_if = "Option::is_none"`, so a field nobody set is left out
+# of the JSON entirely. That is not a style choice — it is the fix for a
+# data-loss defect (b62c3d1), where every PATCH was a full overwrite that
+# blanked whatever the user had not mentioned. A call site that writes
+# `Some(x.unwrap_or_default())` hands the model the exact zero value the
+# `Option` existed to omit, and the overwrite comes straight back.
+#
+# The live symptom was `gea repo fork` answering `500 name is empty`: the call
+# site turned "no --fork-name" into `Some("")`. It was 14 files and ~40 call
+# sites, and NO test caught it, because none could — `FakeTransport` accepts any
+# body, so only an assertion on the SHAPE of the request (`sent.get("name")
+# .is_none()`) can fail, and almost none exist. That is a class the suite is
+# structurally blind to, which is what a ratchet is for.
+#
+# The scan is type-scoped, not a grep. A grep for `unwrap_or_default` would
+# flag `GlobalOpts { json: Some(String::new()) }`, `ResolveOptions`, and query
+# clamps like `Some(i32::try_from(limit).unwrap_or(i32::MAX))`, and a gate with
+# false positives is worse than no gate — the first person it inconveniences
+# deletes it. So the set of fields that can be wrong is DERIVED from the
+# generated models: a field counts only if it really carries
+# `skip_serializing_if`, and only a value in RESULT position counts. A
+# read-modify-write fallback (`unwrap_or_else(|| current.x.clone())`), a
+# meaningful one (a release name falling back to its tag), an explicit empty
+# list on a create, and an explicit `Some(0)` quota limit are all left alone,
+# because none of them substitutes a zero for "unset".
+#
+# The selftest runs first and is not optional. It pins 23 expression fixtures —
+# every spelling the real bug was found in, and every look-alike in this tree
+# that must not count — plus proof that a `///` example and a `#[cfg(test)]`
+# fixture are scrubbed rather than counted, and proof that the scan still fires
+# on a planted defect in that same file. A classifier nobody has seen fail is
+# not known to work.
+BUDGET=0
+python3 .mise/scan.py selftest
+COUNT=$(python3 .mise/scan.py zero)
+echo "==> zero values in omittable request-body fields: $COUNT (budget: $BUDGET)"
+if [ "$COUNT" -gt "$BUDGET" ]; then
+  echo "error: zero-valued request-body fields grew ($COUNT > $BUDGET)." >&2
+  echo "Run 'python3 .mise/scan.py zero --list' to locate them." >&2
+  echo "Pass optional fields through unchanged so unset values are omitted." >&2
+  echo "If a fallback is required, use the current or intended value, not a zero default." >&2
+  echo "Do not raise BUDGET." >&2
+  exit 1
+fi
+if [ "$COUNT" -lt "$BUDGET" ]; then
+  echo "note: zero-valued body fields dropped below the budget; lower BUDGET to $COUNT in .mise/config.toml"
+fi
+'''
+
+[tasks.complexity]
+description = "Report every function above the cognitive-complexity threshold (clippy.toml; advisory)"
+run = '''
+set -eu
+echo "==> functions above the cognitive-complexity threshold (see clippy.toml)"
+cargo clippy --workspace --all-targets --locked -q -- -W clippy::cognitive_complexity 2>&1 \
+  | grep -A2 'cognitive complexity of' \
+  | grep -E 'cognitive complexity of|-->' \
+  || echo "no functions exceed the threshold"
+'''
+
+[tasks.complexity-check]
+description = "Ratchet gate: fail if the count of over-threshold functions grows"
+run = '''
+set -eu
+# RATCHET: the count of functions above the cognitive-complexity threshold
+# (clippy.toml, 25) must never GROW. This is a count budget with an
+# aspirational per-function threshold — not a permissive threshold sized to
+# the worst offender — so a NEW overly-complex function fails immediately
+# even while the legacy offenders are still being paid down. Refactored one
+# under the threshold? Lower BUDGET to match (the task reminds you).
+BUDGET=1
+COUNT=$(cargo clippy --workspace --all-targets --locked -q -- -W clippy::cognitive_complexity 2>&1 \
+  | grep -A1 'cognitive complexity of' | grep -oE '[-]{2}> [^ ]+' | sort -u | wc -l)
+echo "==> functions above the cognitive-complexity threshold: $COUNT (budget: $BUDGET)"
+if [ "$COUNT" -gt "$BUDGET" ]; then
+  echo "error: cognitive-complexity offenders grew ($COUNT > $BUDGET)." >&2
+  echo "Run 'mise run complexity' to locate them." >&2
+  echo "Simplify the functions or extract testable helpers. Do not raise BUDGET." >&2
+  exit 1
+fi
+if [ "$COUNT" -lt "$BUDGET" ]; then
+  echo "note: offenders dropped below the budget; lower BUDGET to $COUNT in .mise/config.toml"
+fi
+'''
+
+[tasks.budget-check]
+description = "Ratchet gate: fail if startup latency or release binary size regresses"
+depends = ["build-release"]
+run = '''
+set -eu
+# RATCHET: three numbers that encode a design decision, not a preference.
+#
+# Layer 2 binds ~506 operations with clap's BUILDER api over a `const` table and
+# builds each subtree LAZILY, precisely because clap's derive path would
+# construct all ~3,000 args on every single invocation — including
+# `gea --version`, which needs none of them. That decision is invisible in the
+# source: nothing stops someone reintroducing an eager build, and nothing would
+# fail except the clock. These budgets are how it fails.
+#
+# `--version` is the no-subtree case and `raw repo create-pull-request --help`
+# is the one-subtree case; together they separate "startup got slower" from
+# "subtree construction got slower". Binary size is the third face of the same
+# decision: ~42k generated lines with zero generics and no macros-with-logic, so
+# nothing monomorphises per call site.
+#
+# The two latency budgets are the plan's stated contract, NOT a number fitted to
+# this machine: measured here they are ~1.0 ms and ~0.6 ms, so the headroom is
+# roughly 20x and the ratchet-down note below fires on every green run. That is
+# the ratchet working, not noise — it is asking for a tightening that needs CI
+# variance data to pick safely (a budget fitted to a fast dev laptop is how a
+# gate goes red for the first person whose runner is busy). Tighten it with that
+# data and the note stops.
+#
+# SIZE_BUDGET was genuine debt and is now paid: the binary was 19.07 MB against
+# the plan's 15 MB aspiration, and the release profile brought it to 12.20 MB
+# (opt-level "s" -5.6 MB, fat LTO -1.2 MB, over what codegen-units=1 and
+# panic=abort were already saving). opt-level "z" would give another 1.4 MB and
+# was rejected: it costs ~29% on the heaviest CPU-bound path against ~8% for
+# "s", which is a bad trade once the budget is met.
+#
+# Where the bytes actually are, measured by symbol rather than assumed — because
+# the plan guessed wrong and so did this comment. The generated client binds all
+# 506 operations in 89,856 bytes of .text. clap's DERIVE glue for the 238
+# hand-written porcelain commands costs 1,054,228, one symbol of which
+# (augment_subcommands) is 135,644 on its own. The "zero generics, zero
+# macros-with-logic" rule held perfectly in the generated half; it was never
+# applied to the hand-written half. So if this gate goes red, look at layer 3
+# first, not at gitea-client.
+VERSION_BUDGET_MS=25
+HELP_BUDGET_MS=40
+SIZE_BUDGET=12582912   # 12 MiB; measured 12198872, so ~384 KiB of headroom
+
+BIN=target/release/gea
+CSV=$(mktemp)
+trap 'rm -f "$CSV"' EXIT
+fail=0
+
+bench() { # <label> <budget-ms> <command line>
+  label=$1; budget=$2; cmd=$3
+  # -N runs without a shell: at ~1 ms per invocation, hyperfine's own shell
+  # calibration is larger than the thing being measured.
+  hyperfine -N --warmup 3 --runs 30 --style none --export-csv "$CSV" "$cmd" >/dev/null
+  ms=$(awk -F, 'NR==2 {printf "%.2f", $2 * 1000}' "$CSV")
+  printf '==> %-26s %8s ms (budget %s ms)\n' "$label" "$ms" "$budget"
+  if awk -v m="$ms" -v b="$budget" 'BEGIN { exit !(m > b) }'; then
+    echo "error: $label got slower ($ms ms > $budget ms)." >&2
+    echo "Check for eager command-tree construction or new work on the startup path." >&2
+    echo "Restore lazy loading rather than raising the budget." >&2
+    fail=1
+  elif awk -v m="$ms" -v b="$budget" 'BEGIN { exit !(m * 5 < b) }'; then
+    suggest=$(awk -v m="$ms" 'BEGIN { printf "%d", (m * 4) + 1 }')
+    echo "note: $label has >5x headroom; consider lowering its budget (~${suggest} ms) in .mise/config.toml"
+  fi
+}
+
+bench 'gea --version'      "$VERSION_BUDGET_MS" "$BIN --version"
+bench 'gea raw ... --help' "$HELP_BUDGET_MS"    "$BIN raw repo create-pull-request --help"
+
+bytes=$(stat -c%s "$BIN")
+printf '==> %-26s %8s bytes (budget %s)\n' 'release binary' "$bytes" "$SIZE_BUDGET"
+if [ "$bytes" -gt "$SIZE_BUDGET" ]; then
+  echo "error: the release binary grew ($bytes > $SIZE_BUDGET bytes)." >&2
+  echo "Inspect which code increased the binary size:" >&2
+  echo "  cargo bloat --release --crates" >&2
+  echo "Reduce the added code or dependencies rather than raising SIZE_BUDGET." >&2
+  fail=1
+# Only nag on a real MiB-scale win: the binary wobbles by a few KiB between
+# builds, and a note that fires on wobble is a note nobody reads.
+elif [ "$((SIZE_BUDGET - bytes))" -gt 1048576 ]; then
+  echo "note: the binary shrank; lower SIZE_BUDGET to $bytes in .mise/config.toml"
+fi
+
+exit "$fail"
+'''
+
+# ---------------------------------------------------------------------------
+
+[tasks.coverage-check]
+description = "Ratchet gate: fail if untested raw operations or porcelain commands grow"
+run = '''
+set -eu
+# RATCHET: the number of commands NEVER driven against a real Gitea must not
+# GROW, and the target for both numbers is zero.
+#
+# Why this gate exists at all: CONTRIBUTING.md's "Verification is uneven" note
+# says most porcelain groups have only been driven through FakeTransport and
+# insta snapshots, never against a server -- so a green `mise run test` is not
+# evidence that the wire format is right. That sentence described a fact nobody
+# could measure. This measures it.
+#
+# Two planes, deliberately gated differently:
+#   * contract -- every one of the 506 operations had its composed request
+#     checked against its own metadata (crates/gea/tests/raw_contract.rs). That
+#     test is a LOOP over OPS, so coverage is complete by construction and any
+#     gap means an operation was added to a skip list. Hard failure at one.
+#   * live -- the operation was driven against a real Gitea. Genuine debt, so
+#     a count budget that drains.
+#
+# The numbers are counted from journals the tests write AS THEY RUN, not from a
+# grep over the sources. That is the whole design: `instance_or_skip!` makes a
+# test return early and PASS when Docker is missing, so a source scan would
+# report full coverage over a suite that executed nothing. See
+# crates/gea-itest/src/coverage.rs.
+#
+# To drain one: `cargo xtask coverage-check --list` names what is uncovered.
+# Every porcelain leaf is driven live. The raw budget is the 11 operations the
+# Gitea port has not yet written live tests for (Actions reruns/attempts/job
+# and workflow reads need a run that actually executed; the rest are cheap and
+# just unwritten): ActionsGetWorkflow, getWorkflowJob, getWorkflowRunAttempt,
+# listWorkflowRunAttemptJobs, rerunFailedWorkflowRun, rerunWorkflowJob,
+# getCurrentToken, deleteCurrentToken, orgDeleteRepos,
+# repoUpdateBranchProtectionPriories, userCheckUserBlock.
+#
+# This budget drains to zero by writing those tests, never by raising it.
+RAW_BUDGET=11
+PORCELAIN_BUDGET=0
+# Start from an empty directory. A journal is named after the pid that wrote
+# it, so stale ones from an earlier run would ACCUMULATE rather than be
+# overwritten -- and a stale contract journal would keep crediting an operation
+# that a spec bump has since removed. `xtask itest` clears only `live-*` (it
+# must not delete the hermetic half's output), so the full wipe belongs here.
+rm -rf target/gea-coverage
+# The hermetic half first -- it writes the porcelain inventory and the contract
+# journal that the ratchet reads, and it needs no Docker.
+GEA_COVERAGE_DIR="$PWD/target/gea-coverage" cargo test --locked -p gea \
+  --test porcelain_inventory --test raw_contract
+# Then the live half, which records what it drove.
+cargo xtask itest
+cargo xtask coverage-check --raw-budget "$RAW_BUDGET" --porcelain-budget "$PORCELAIN_BUDGET"
+'''
+
+[tasks.ratchets]
+description = "Every ratchet gate, in one go"
+# coverage-check is deliberately NOT here: it needs Docker, and `mise run
+# ratchets` is the fast text-scan gate a developer runs constantly. CI runs it
+# as part of the integration job instead.
+depends = ["panic-check", "exit-check", "support-check", "zero-check", "complexity-check"]
+
+[tasks.ci]
+description = "The full local gate, in CI's order: format, ratchets, lint, build, test, drift, docs, audit, budgets"
+# Sequential `mise run` steps rather than `depends`, which mise would schedule in
+# parallel: every one of these is a cargo invocation and they would spend the run
+# queueing on the package-cache lock anyway. Ordered cheapest-and-loudest first,
+# so a 3-second text scan tells you what is wrong before a release build does.
+run = [
+  "mise run fmt-check",
+  "mise run panic-check",
+  "mise run exit-check",
+  "mise run support-check",
+  "mise run zero-check",
+  "mise run clippy",
+  "mise run complexity-check",
+  "mise run build",
+  "mise run test",
+  "mise run test-doc",
+  "mise run codegen-check",
+  "mise run docs",
+  "mise run deny",
+  "mise run budget-check",
+]
+
+# ---------------------------------------------------------------------------
+# Distribution
+# ---------------------------------------------------------------------------
+# release.yaml drives these instead of calling cargo itself. It previously called
+# cargo directly, arguing that a release is "plain cargo build" and that adding
+# mise would put a third name on the 1.98.1 pin. But .mise/config.toml already
+# pins 1.98.1 alongside rust-toolchain.toml, so mise was never a third name -- and
+# the real cost of the split was that the release path was the one path no
+# developer could run locally. `mise run dist-build` is now the same command in
+# both places.
+
+[tasks.dist-build]
+description = "Release-build one distribution target (TARGET=<rustc triple>)"
+# bash, not the platform default. mise runs a task body in the OS's default
+# shell, which on Windows is cmd.exe -- where `set -eu` parses as "print the
+# variable -eu" and the task dies with "Environment variable -eu not defined".
+# The workflow step's `shell: bash` does not help: it governs how `mise run` is
+# invoked, not the shell mise then spawns for the body. Git Bash is on PATH on
+# windows runners, so naming bash explicitly makes these tasks behave the same
+# on all three platforms.
+shell = "bash -c"
+run = '''
+set -eu
+: "${TARGET:?set TARGET to a rustc target triple, e.g. x86_64-unknown-linux-musl}"
+
+rustup target add "$TARGET"
+
+case "$TARGET" in
+  *-linux-musl)
+    # musl needs exactly one variable set, and setting a second one breaks it.
+    #
+    # SET -- a C compiler targeting musl. aws-lc-sys (reqwest -> rustls, which
+    # defaults to the aws-lc-rs provider) compiles AWS-LC's C sources, so a musl
+    # Rust std alone is not enough. `musl-gcc` comes from the `musl-tools` apt
+    # package: mise has no backend for system libc toolchains, so this is the
+    # documented seam where the release environment is not fully described by
+    # this file.
+    #
+    # DO NOT SET -- the linker. Pointing CARGO_TARGET_<TRIPLE>_LINKER at musl-gcc
+    # looks like the obvious companion to CC and quietly ruins the artifact. gcc
+    # links dynamically unless told otherwise, so the output carries an
+    # /lib/ld-musl-x86_64.so.1 interpreter. Such a binary runs on Alpine and
+    # nowhere else, which inverts the entire purpose of the musl build: it exists
+    # for hosts whose glibc is below the gnu floor, and those hosts have no musl
+    # loader at all. Adding `-C target-feature=+crt-static` does NOT rescue it.
+    #
+    # Left alone, Rust links musl self-contained and emits static-pie. Measured,
+    # not assumed: with the linker override `file` reports "dynamically linked";
+    # without it, "static-pie linked", and that binary runs unmodified on
+    # debian:12. `mise run dist-verify` is the gate that keeps it that way.
+    command -v musl-gcc >/dev/null 2>&1 || {
+      echo "error: musl-gcc not found. Install it: apt-get install -y musl-tools" >&2
+      exit 1
+    }
+    export "CC_$(echo "$TARGET" | tr - _)=musl-gcc"
+    ;;
+esac
+
+cargo build --release --locked -p gea --target "$TARGET"
+'''
+
+[tasks.dist-verify]
+description = "Assert a built dist artifact is linked the way its target promises (TARGET=<triple>)"
+# See tasks.dist-build for why this is not the platform default shell.
+shell = "bash -c"
+run = '''
+set -eu
+: "${TARGET:?set TARGET to a rustc target triple}"
+bin="target/$TARGET/release/gea"
+[ -f "$bin" ] || { echo "error: $bin not found; run dist-build first" >&2; exit 1; }
+
+case "$TARGET" in
+  *-linux-musl)
+    # A musl artifact that is not static is worse than no musl artifact: install.sh
+    # hands it to exactly the hosts that cannot run it.
+    if file "$bin" | grep -q 'dynamically linked'; then
+      echo "error: $bin is dynamically linked; musl artifacts must be static." >&2
+      file "$bin" >&2
+      exit 1
+    fi
+    echo "dist-verify: $bin is statically linked"
+    ;;
+  *-linux-gnu)
+    mise run glibc-floor-check
+    ;;
+  *)
+    echo "dist-verify: no linkage assertions for $TARGET"
+    ;;
+esac
+'''
+
+[tasks.glibc-floor-check]
+description = "Ratchet gate: fail if a gnu dist build requires a newer glibc than the floor"
+# See tasks.dist-build for why this is not the platform default shell.
+shell = "bash -c"
+run = '''
+set -eu
+: "${TARGET:?set TARGET to a rustc target triple}"
+
+# RATCHET: the floor is a distribution promise, not a preference.
+#
+# A gnu binary records the highest glibc symbol version it references, and a host
+# with an older glibc cannot exec it at all -- it dies with a GLIBC_x.yz symbol
+# error before main(). The floor is therefore set by whichever runner builds the
+# artifact, which makes it the kind of decision that changes silently: someone
+# bumps ubuntu-22.04 to ubuntu-24.04 for an unrelated reason and every RHEL 9 and
+# Debian 12 user loses the download, with nothing in CI failing to say so.
+#
+# 2.35 is ubuntu-22.04's glibc, and ubuntu-22.04 is the oldest runner GitHub
+# still offers -- so this floor is a fact about the build environment, not a
+# target anyone picked. It covers Ubuntu 22.04+, Debian 12+ and Fedora 36+.
+#
+# It does NOT cover RHEL/Rocky/Alma 9 or Amazon Linux 2023, which ship glibc
+# 2.34. Measured, not assumed: running install.sh's detection inside
+# rockylinux:9 resolves to musl. Those hosts take the static musl artifact and
+# work fine, which is the whole reason both flavours are built -- the gnu floor
+# cannot be lowered to reach them, so the fallback has to.
+#
+# Lowering this is therefore not possible today. Raising it by accident is, and
+# that is what this gate is for.
+#
+# install.sh hardcodes the same two numbers to decide gnu vs musl. They must move
+# together or the installer will hand gnu binaries to hosts that cannot run them.
+FLOOR_MAJOR=2
+FLOOR_MINOR=35
+
+case "$TARGET" in
+  *-linux-gnu) ;;
+  *) echo "glibc-floor-check: $TARGET is not a gnu target, nothing to check"; exit 0 ;;
+esac
+
+bin="target/$TARGET/release/gea"
+[ -f "$bin" ] || { echo "error: $bin not found; run dist-build first" >&2; exit 1; }
+
+highest=$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sort -V -u | tail -1)
+[ -n "$highest" ] || { echo "error: no GLIBC_ version symbols found in $bin" >&2; exit 1; }
+
+v=${highest#GLIBC_}; maj=${v%%.*}; rest=${v#*.}; min=${rest%%.*}
+echo "glibc-floor-check: $bin requires at most $highest (floor ${FLOOR_MAJOR}.${FLOOR_MINOR})"
+
+if [ "$maj" -gt "$FLOOR_MAJOR" ] || { [ "$maj" -eq "$FLOOR_MAJOR" ] && [ "$min" -gt "$FLOOR_MINOR" ]; }; then
+  echo "error: $bin requires $highest, above the ${FLOOR_MAJOR}.${FLOOR_MINOR} floor." >&2
+  echo "       The build runner's glibc is newer than the floor this project promises." >&2
+  echo "       Build on an older runner, or raise the floor here AND in install.sh." >&2
+  exit 1
+fi
+'''
+
+[tasks.dist-completions]
+description = "Generate the shell completions bundled into every release archive"
+# See tasks.dist-build for why this is not the platform default shell.
+shell = "bash -c"
+run = '''
+set -eu
+out="${OUT_DIR:-dist/completions}"
+mkdir -p "$out"
+# Generated once, not once per target: completions are plain text and identical
+# on every platform. This also keeps the build matrix from ever needing to RUN
+# the binary it just produced, which it could not do for x86_64-apple-darwin
+# (built on an arm64 runner) or for either musl target on a glibc runner.
+for shell in bash zsh fish powershell elvish; do
+  cargo run --locked -q -p gea -- completion "$shell" > "$out/gea.$shell"
+done
+ls -la "$out"
+'''

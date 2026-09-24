@@ -1,0 +1,5 @@
+---
+source: crates/gea/src/cmd/times/mod.rs
+expression: "testing::as_json(Fields::Local(TOTAL_FIELDS), \"duration,entries,seconds\",\ntotal_value(&entries()))"
+---
+{"duration":"1h 40m","entries":2,"seconds":6000}

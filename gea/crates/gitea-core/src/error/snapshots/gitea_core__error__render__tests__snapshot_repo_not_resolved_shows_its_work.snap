@@ -1,0 +1,16 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::RepoNotResolved\n{\n    tried:\n    vec![Attempt::new(\"-R/--repo\", \"not given\"),\n    Attempt::new(\"GEA_REPO / GITEA_REPO\", \"not set\"),\n    Attempt::new(\"git config remote.*.gea-resolved\", \"no value\"),\n    Attempt::new(\"remote name scoring\",\n    \"no remote matched a configured host\"),],\n}, RequestCtx::default())"
+---
+error: could not determine the repository
+
+  tried: -R/--repo — not given
+         GEA_REPO / GITEA_REPO — not set
+         git config remote.*.gea-resolved — no value
+         remote name scoring — no remote matched a configured host
+
+what to do:
+  specify a repository or save a default for this checkout.
+  1. gea <command> -R owner/name
+  2. gea repo set-default  (remember it for this checkout)
+  note: -R also accepts host/owner/name and a full URL.

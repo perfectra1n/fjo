@@ -1,0 +1,15 @@
+---
+source: crates/gitea-core/src/error/classify.rs
+expression: "rendered(422, &json(),\nbr#\"{\"errors\":[\"title is empty\",\"body is longer than 65535 characters\"]}\"#,\n&ctx())"
+---
+error: the server rejected the values in this request (HTTP 422)
+
+  request:     GET /api/v1/repos/perf3ct/gea/pulls/4212
+  server says: title is empty; body is longer than 65535 characters
+
+what to do:
+  correct the rejected values listed above.
+  1. correct the values and retry
+  2. gea raw search issue  (find the endpoint and its flags)
+  note: the server may require a field that the API specification marks
+        optional.

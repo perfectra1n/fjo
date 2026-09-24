@@ -1,0 +1,52 @@
+---
+source: crates/gea/src/output/mod.rs
+expression: report
+---
+== bare / tty
+[
+  {
+    "number": 1,
+    "title": "add a thing",
+    "state": "open",
+    "body": "long body"
+  },
+  {
+    "number": 22,
+    "title": "fix a thing",
+    "state": "closed",
+    "body": "another"
+  }
+]
+== bare / piped
+[{"number":1,"title":"add a thing","state":"open","body":"long body"},{"number":22,"title":"fix a thing","state":"closed","body":"another"}]
+== --json / tty
+[
+  {
+    "number": 1,
+    "state": "open"
+  },
+  {
+    "number": 22,
+    "state": "closed"
+  }
+]
+== --json / piped
+[{"number":1,"state":"open"},{"number":22,"state":"closed"}]
+== --jq / tty
+add a thing
+fix a thing
+== --jq / piped
+add a thing
+fix a thing
+== --template / tty
+1   open
+22  closed
+== --template / piped
+1	open
+22	closed
+== --json + --template / tty
+1   open
+22  closed
+== --json + --template / piped
+1	open
+22	closed

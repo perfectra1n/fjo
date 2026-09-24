@@ -1,0 +1,15 @@
+---
+source: crates/gitea-core/src/error/classify.rs
+expression: "rendered(405, &json(),\nbr#\"{\"message\":\"Please try again later: the head branch is out of date with the base branch\"}\"#,\n&c)"
+---
+error: operation unavailable in the current state of pull request 4212
+
+  request:     POST /api/v1/repos/perf3ct/gea/pulls/4212/merge
+  resource:    pull request 4212
+  server says: Please try again later: the head branch is out of date with the base branch
+
+what to do:
+  the current state prevents this operation. Check the server message above.
+  1. gea api -X POST repos/perf3ct/gea/pulls/4212/merge  (read the current state)
+  2. resolve the reported state conflict, then retry
+  note: changing token scopes does not resolve a state conflict.

@@ -1,0 +1,29 @@
+[package]
+name = "gitea-client"
+version = "0.1.0"
+description = "Complete Gitea API client, generated from the Gitea OpenAPI specification"
+keywords = ["gitea", "gitea", "api", "client", "sdk"]
+categories = ["api-bindings"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# A blocking mirror of the generated client. Roughly doubles generated output, so it is
+# off by default and the `gea` binary never enables it.
+sync = ["reqwest/blocking"]
+
+[dependencies]
+gitea-core.workspace = true
+gitea-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+bytes.workspace = true
+reqwest.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

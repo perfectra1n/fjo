@@ -1,0 +1,66 @@
+{
+  "project": {
+    "id": 2,
+    "title": "Fixture Kanban Board"
+  },
+  "columns": [
+    {
+      "id": 5,
+      "title": "Backlog",
+      "color": null,
+      "sorting": 0,
+      "default": true,
+      "cards": [
+        {
+          "number": 3,
+          "id": 3,
+          "title": "Third issue for backlog"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "To Do",
+      "color": null,
+      "sorting": 0,
+      "default": false,
+      "cards": [
+        {
+          "number": 2,
+          "id": 2,
+          "title": "Second issue plain title"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "In Progress",
+      "color": null,
+      "sorting": 0,
+      "default": false,
+      "cards": []
+    },
+    {
+      "id": 8,
+      "title": "Done",
+      "color": null,
+      "sorting": 0,
+      "default": false,
+      "cards": []
+    },
+    {
+      "id": 9,
+      "title": "Review",
+      "color": "#1f883d",
+      "sorting": 1,
+      "default": false,
+      "cards": [
+        {
+          "number": 1,
+          "id": 1,
+          "title": "Fix <script> & \"quotes\""
+        }
+      ]
+    }
+  ]
+}

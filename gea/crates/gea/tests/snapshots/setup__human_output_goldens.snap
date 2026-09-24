@@ -1,0 +1,39 @@
+---
+source: crates/gea/tests/setup.rs
+expression: report
+---
+== gea auth status
+git.example.org (https://git.example.org)
+  X Failed to log in to git.example.org account perf3ct
+  - Reason: you are not logged in to git.example.org
+  - Active account: true
+  - Credential store: hosts.toml (mode 0600)
+  - Token kept in: nowhere gea can find one
+  - Web session: none (run `gea auth login --with-password` for gea project)
+  - Token: hidden; use `gea auth token` to print it
+  - Token scopes: read:repository, write:issue
+
+== gea config list
+KEY               VALUE    SOURCE
+browser                    default
+color             auto     default
+credential_store  keyring  default
+editor            hx       config
+oauth_client_id            default
+pager                      default
+prompt            enabled  default
+
+== gea config list --host git.example.org
+KEY               VALUE    SOURCE
+browser                    default
+color             auto     default
+credential_store  keyring  default
+editor            hx       config
+oauth_client_id            default
+pager             cat      host
+prompt            enabled  default
+
+== gea alias list
+NAME  EXPANSION
+co    pr checkout $1
+prs   pr list --json number,title

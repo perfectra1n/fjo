@@ -1,0 +1,13 @@
+---
+source: crates/gea/src/cmd/team.rs
+expression: report
+---
+== human/tty
+ID  NAME    PERMISSION  UNITS                   ALL REPOS  DESCRIPTION
+1   Owners  owner       repo.code               yes        the org's owners
+7   Dev     write       repo.code, repo.issues
+== human/piped
+1	Owners	owner	repo.code	yes	the org's owners
+7	Dev	write	repo.code, repo.issues		
+== json/piped
+[{"id":1,"name":"Owners","permission":"owner"},{"id":7,"name":"Dev","permission":"write"}]

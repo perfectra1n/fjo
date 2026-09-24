@@ -1,0 +1,5 @@
+---
+source: crates/gea/src/cmd/stopwatch.rs
+expression: "render_status(&Term::piped(), &w)"
+---
+them/proj#42	5100	Make the thing faster

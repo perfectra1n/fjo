@@ -1,0 +1,6 @@
+---
+source: crates/gea/src/cmd/mirror.rs
+assertion_line: 730
+expression: "testing::as_json(MIRROR_FIELDS,\n\"remote_name,remote_address,interval,sync_on_commit\",\nporcelain::json_of(&mirrors()).unwrap())"
+---
+[{"remote_name":"remote_mirror_abc123","remote_address":"https://github.com/me/proj.git","interval":"8h0m0s","sync_on_commit":true},{"remote_name":"remote_mirror_def456","remote_address":"https://codeberg.org/me/proj.git","interval":"10m0s","sync_on_commit":false}]

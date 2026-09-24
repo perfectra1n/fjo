@@ -1,0 +1,16 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::ChecksPending\n{\n    slug: Some(\"perf3ct/gea\".into()), pr: \"4212\".into(), pending:\n    vec![\"build / test (pull_request)\".into(), \"lint\".into()],\n}, c)"
+---
+error: checks are pending on pull request 4212
+
+  request:       GET /api/v1/repos/perf3ct/gea/commits/abc123/status
+  pull request:  4212
+  repository:    perf3ct/gea
+  still running: build / test (pull_request), lint
+
+what to do:
+  wait for the pending checks to finish.
+  1. gea pr checks 4212 -R perf3ct/gea  (run it again in a minute)
+  2. or enable automatic merge: gea pr merge 4212 -R perf3ct/gea --auto
+  note: pending checks return exit code 8. Rate limits also use this code.

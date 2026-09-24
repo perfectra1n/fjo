@@ -1,0 +1,6 @@
+---
+source: crates/gea/src/cmd/issue/ops.rs
+expression: text(&buf)
+---
+#42 is now blocked by #7
+#42 now blocks #9

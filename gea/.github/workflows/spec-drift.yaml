@@ -1,0 +1,502 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Spec drift
+#
+# Watches upstream Gitea's Swagger spec so a change in the API reaches this repo
+# as a report or a pull request rather than as a bug from a user on a newer server.
+#
+# The question every report has to answer first is *has upstream released this yet*,
+# because the answer decides what you do about it:
+#
+#   released    upstream cut a tag containing the change. There is something to do
+#               today: take the bump pull request, which carries the regenerated code.
+#
+#   unreleased  the change exists only on upstream's development branch. There is
+#               nothing to do today, but a response shape that moved on main is the
+#               deserialization failure of the next release, so it is worth seeing.
+#
+# Three jobs:
+#
+#   resolve         names the two upstream refs once — the latest release tag and the
+#                   head of the `main` branch — so both jobs below agree on them and
+#                   the "refusing to downgrade a major" guard lives in one place.
+#
+#   upstream-main   the unreleased half. Diffs the latest RELEASE against the `main`
+#                   BRANCH, so its report contains only what no release has. Goes into
+#                   one tracking issue, rewritten in place and closed when the branch
+#                   stops being ahead. Nothing is bumped, because there is no tag yet.
+#
+#   latest-release  the released half. Diffs the vendored spec against the newest release
+#                   TAG. Any difference — or a newer tag with an identical spec — opens
+#                   (or refreshes) a pull request that runs `update-spec` and `codegen`,
+#                   so the generated diff IS the review.
+#
+# A tag whose spec is byte-identical to the vendored one is still a bump: lock.toml, the
+# canonical file name and the itest image all carry the version. That pull request is
+# labelled version-only, because otherwise its ~250-file diff — every generated file's
+# `@generated ... from spec/gitea-X.Y.Z.json` header line, and nothing else — reads as
+# a large API change when no type, field or command moved.
+#
+# Both use `cargo xtask spec-diff`, whose exit status is the branch point: 0 is
+# "identical", 3 is "drift", anything else is a real failure and fails the job.
+#
+# The `mise run` steps follow ci.yaml's rule: commands live in .mise/config.toml,
+# so `mise run spec-diff -- --branch main` on a laptop is the same invocation.
+#
+# Tokens. Everything below works with GITHUB_TOKEN, with one well-known catch:
+# GitHub does not start workflows for a pull request GITHUB_TOKEN created, so the
+# bump PR arrives with no CI until someone pushes to it or closes and reopens it.
+# Setting a `SPEC_BOT_TOKEN` repository secret (a fine-grained PAT with contents
+# and pull-requests write on this repo) lifts that; the `||` below falls back to
+# GITHUB_TOKEN when the secret is absent, so nothing breaks without it.
+
+on:
+  schedule:
+    # Daily, off the hour so it does not queue behind everyone else's 06:00 cron.
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+
+jobs:
+  resolve:
+    name: Resolve the upstream refs
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      latest: ${{ steps.refs.outputs.latest }}
+      vendored: ${{ steps.refs.outputs.vendored }}
+      main_sha: ${{ steps.refs.outputs.main_sha }}
+      main_short: ${{ steps.refs.outputs.main_short }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # GitHub's `releases/latest` is the newest non-prerelease, non-draft release,
+      # which is what a user installing Gitea today gets. Gitea keeps backporting to
+      # older 1.x lines, so the newest release by date could in principle be one of
+      # those; the tag is sanity-checked to be at least the vendored version before
+      # either job below does anything with it. Every Gitea release is 1.x, so that
+      # comparison is a version sort, not a major-number check.
+      - name: Resolve the latest release and the main branch head
+        id: refs
+        run: |
+          set -euo pipefail
+
+          latest="$(curl --silent --show-error --fail --proto =https --tlsv1.2 \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            https://api.github.com/repos/go-gitea/gitea/releases/latest \
+            | jq -r '.tag_name')"
+          if ! [[ "$latest" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::latest release tag '$latest' is not a vX.Y.Z tag"; exit 1
+          fi
+
+          vendored="$(sed -n 's/^tag = "\(.*\)"$/\1/p' spec/lock.toml)"
+          if [ -z "$vendored" ]; then
+            echo "::error::could not read tag from spec/lock.toml"; exit 1
+          fi
+
+          newest="$(printf '%s\n%s\n' "${latest#v}" "${vendored#v}" | sort -V | tail -n 1)"
+          if [ "$newest" != "${latest#v}" ]; then
+            echo "::error::latest release $latest is older than vendored $vendored; refusing to downgrade"
+            exit 1
+          fi
+
+          main_sha="$(curl --silent --show-error --fail --proto =https --tlsv1.2 \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            https://api.github.com/repos/go-gitea/gitea/branches/main \
+            | jq -r '.commit.sha')"
+
+          {
+            echo "latest=${latest}"
+            echo "vendored=${vendored}"
+            echo "main_sha=${main_sha}"
+            echo "main_short=${main_sha:0:10}"
+          } >> "$GITHUB_OUTPUT"
+          echo "latest=$latest vendored=$vendored main=${main_sha:0:10}"
+
+  upstream-main:
+    name: Diff the latest release against gitea main
+    needs: resolve
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+
+      # Two diffs, because the pair of them is the answer to "is this main or a release".
+      #
+      #   released.md    vendored -> latest release tag. What a bump would bring in. The
+      #                  `latest-release` job below is already opening a pull request for
+      #                  exactly this; it is repeated here so the issue can state it.
+      #   unreleased.md  latest release tag -> `main` branch. What exists upstream and
+      #                  in no release. This is the early warning, and it is the thing
+      #                  this issue tracks.
+      - name: Diff released and unreleased
+        id: diff
+        env:
+          LATEST: ${{ needs.resolve.outputs.latest }}
+        run: |
+          set -euo pipefail
+
+          # Sets $drift. Not a command substitution on purpose: `mise run` writes to stdout,
+          # which would end up in the captured value, and an `exit` inside `$(...)` would only
+          # leave the subshell. 0 identical, 3 drift, anything else is a real failure.
+          drift=
+          run_diff() {
+            set +e
+            mise run spec-diff -- "$@"
+            local code=$?
+            set -e
+            case "$code" in
+              0) drift=false ;;
+              3) drift=true ;;
+              *) echo "::error::spec-diff failed with exit code $code"; exit "$code" ;;
+            esac
+          }
+
+          run_diff --tag "$LATEST" --out released.md
+          released="$drift"
+          run_diff --baseline-tag "$LATEST" --branch main --out unreleased.md
+          unreleased="$drift"
+
+          {
+            echo "released=${released}"
+            echo "unreleased=${unreleased}"
+            echo "released_summary=$(sed -n 's/^\*\*Summary:\*\* \(.*\)\.$/\1/p' released.md)"
+            echo "unreleased_summary=$(sed -n 's/^\*\*Summary:\*\* \(.*\)\.$/\1/p' unreleased.md)"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Released (vendored -> \`$LATEST\`)"
+            cat released.md
+            echo
+            echo "## Unreleased (\`$LATEST\` -> \`gitea\` branch)"
+            cat unreleased.md
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "released=$released unreleased=$unreleased"
+
+      # One issue, found by label, rewritten on every run so the body is always the
+      # current state and the edit history is the changelog. It tracks the UNRELEASED
+      # half: released drift already has a pull request, and having both open for the
+      # same change is noise. So it closes the first run upstream's branch stops being
+      # ahead of upstream's own latest release — that is the moment the preview becomes
+      # somebody's bump pull request instead.
+      - name: Open, update or close the tracking issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RELEASED: ${{ steps.diff.outputs.released }}
+          UNRELEASED: ${{ steps.diff.outputs.unreleased }}
+          RELEASED_SUMMARY: ${{ steps.diff.outputs.released_summary }}
+          UNRELEASED_SUMMARY: ${{ steps.diff.outputs.unreleased_summary }}
+          LATEST: ${{ needs.resolve.outputs.latest }}
+          VENDORED: ${{ needs.resolve.outputs.vendored }}
+          MAIN_SHA: ${{ needs.resolve.outputs.main_sha }}
+          MAIN_SHORT: ${{ needs.resolve.outputs.main_short }}
+        with:
+          script: |
+            const fs = require('fs');
+            const label = 'spec-drift';
+            const env = process.env;
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const title =
+              `Upstream API spec drift: gitea main is ahead of ${env.LATEST} (vendored ${env.VENDORED})`;
+
+            // addLabels creates a missing label on the fly; create() does not.
+            try {
+              await github.rest.issues.createLabel({
+                owner, repo, name: label, color: 'c2e0c6',
+                description: 'Automated: upstream Gitea has unreleased API spec changes',
+              });
+            } catch (e) {
+              if (e.status !== 422) throw e;
+            }
+
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', labels: label, per_page: 100,
+            });
+            const existing = open.find(i => !i.pull_request);
+
+            if (env.UNRELEASED !== 'true') {
+              if (existing) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: existing.number,
+                  body: `The \`gitea\` branch @ \`${env.MAIN_SHORT}\` no longer has anything that `
+                    + `\`${env.LATEST}\` does not ([run](${runUrl})). Nothing is unreleased any more. Closing.`,
+                });
+                await github.rest.issues.update({ owner, repo, issue_number: existing.number, state: 'closed' });
+                core.info(`closed #${existing.number}`);
+              } else {
+                core.info('nothing unreleased and no open issue — nothing to do');
+              }
+              return;
+            }
+
+            // Nest a report under our own heading: drop its H1, push the rest down a level.
+            const nest = (file) => fs.readFileSync(file, 'utf8')
+              .replace(/^# Gitea API spec drift\n+/, '')
+              .replace(/^(#{2,})/gm, '#$1')
+              .trim();
+
+            const released = env.RELEASED === 'true'
+              ? `**${env.RELEASED_SUMMARY}.** These are in \`${env.LATEST}\` and not in the vendored `
+                + `\`${env.VENDORED}\`. There is a \`spec-bump\` pull request open for them, and merging `
+                + `it is what brings them in. They are *not* listed below.`
+              : `**None.** \`${env.LATEST}\` and the vendored \`${env.VENDORED}\` describe the same API, `
+                + `so every change listed below is unreleased.`;
+
+            const body = [
+              `Generated by [Spec drift](${runUrl}) on ${new Date().toISOString().slice(0, 10)}. `
+                + 'This issue is rewritten on every run; do not edit the body.',
+              '',
+              '| | ref | compared with | result |',
+              '|---|---|---|---|',
+              `| Latest release | \`${env.LATEST}\` | vendored \`${env.VENDORED}\` | `
+                + `${env.RELEASED === 'true' ? env.RELEASED_SUMMARY : 'identical'} |`,
+              `| \`main\` branch | [\`${env.MAIN_SHORT}\`](https://github.com/go-gitea/gitea/commit/${env.MAIN_SHA}) `
+                + `| latest release \`${env.LATEST}\` | ${env.UNRELEASED_SUMMARY} |`,
+              '',
+              '## Released — already shipped by upstream',
+              '',
+              released,
+              '',
+              '## Unreleased — on `gitea` main only',
+              '',
+              `**${env.UNRELEASED_SUMMARY}.** Everything below exists on upstream's development branch `
+                + `and in no Gitea release. **There is nothing to do about it today** — no tag means `
+                + 'nothing to vendor. It is here because a response shape that moves on main is the '
+                + 'deserialization failure of the next release, and this is the notice.',
+              '',
+              nest('unreleased.md'),
+            ].join('\n');
+
+            const cap = 60000; // issue bodies are capped at 65536 characters
+            const capped = body.length > cap
+              ? body.slice(0, cap) + '\n\n…(truncated; the full report is in the run summary)\n'
+              : body;
+
+            if (existing) {
+              await github.rest.issues.update({ owner, repo, issue_number: existing.number, title, body: capped });
+              core.info(`updated #${existing.number}`);
+            } else {
+              const created = await github.rest.issues.create({ owner, repo, title, body: capped, labels: [label] });
+              core.info(`opened #${created.data.number}`);
+            }
+
+  latest-release:
+    name: Diff against the latest release
+    needs: resolve
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+
+      - name: Diff the vendored spec against the latest release
+        id: diff
+        env:
+          LATEST: ${{ needs.resolve.outputs.latest }}
+          VENDORED: ${{ needs.resolve.outputs.vendored }}
+        run: |
+          set -euo pipefail
+          set +e
+          mise run spec-diff -- --tag "$LATEST" --out report.md
+          code=$?
+          set -e
+          case "$code" in
+            0) drift=false ;;
+            3) drift=true ;;
+            *) echo "::error::spec-diff failed with exit code $code"; exit "$code" ;;
+          esac
+          # A newer tag with a byte-identical spec is still a bump: lock.toml, the
+          # canonical file name and the itest image all carry the version.
+          if [ "$drift" = true ] || [ "$LATEST" != "$VENDORED" ]; then
+            bump=true
+          else
+            bump=false
+          fi
+          echo "drift=${drift}" >> "$GITHUB_OUTPUT"
+          echo "bump=${bump}" >> "$GITHUB_OUTPUT"
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          echo "drift=$drift bump=$bump"
+
+      # The same three commands CONTRIBUTING.md gives a human, with two differences.
+      # `--no-verify`: the counts in stats.rs are for one version, so on a bump
+      # spec-stats fails by design until a human re-derives them — that step goes in
+      # the PR checklist instead. And if codegen refuses because a command name
+      # moved or an endpoint vanished, it is retried with the accept flags and the
+      # PR is marked breaking, because a PR with the rename report in it is more
+      # useful than a red job with the rename report in a log.
+      - name: Vendor the spec and regenerate
+        id: regen
+        if: steps.diff.outputs.bump == 'true'
+        env:
+          TAG: ${{ needs.resolve.outputs.latest }}
+          DRIFT: ${{ steps.diff.outputs.drift }}
+        run: |
+          set -euo pipefail
+          mise run update-spec -- --version "$TAG" --no-verify
+
+          # The integration job boots the image named here; a bump that leaves it
+          # behind tests the new spec against the old server.
+          version="${TAG#v}"
+          sed -i -E "/^pub const GITEA_IMAGE/ s|:[0-9]+\.[0-9]+\.[0-9]+\"|:${version}\"|" \
+            crates/gea-itest/src/lib.rs
+          grep -n '^pub const GITEA_IMAGE' crates/gea-itest/src/lib.rs
+
+          # EXPECTED_VERSION only. The counts beside it are an independent oracle —
+          # "if the numbers disagree, the loader is wrong, not the expectations" — so
+          # CI must never write them from the loader's own output; that would have the
+          # loader grade its own homework. When the API did not change there is no such
+          # risk: the two specs differ only in `info.version`, so every count is still
+          # verified against the same API and only the label saying which version
+          # verified them is stale. Bump that and the PR arrives green. `spec-stats`
+          # WITH verification is the proof, and the job fails if it does not agree.
+          if [ "$DRIFT" = false ]; then
+            sed -i -E "s/^(pub const EXPECTED_VERSION: &str = )\"[0-9.]+\";/\1\"${version}\";/" \
+              crates/xtask/src/stats.rs
+            grep -n '^pub const EXPECTED_VERSION' crates/xtask/src/stats.rs
+            cargo xtask spec-stats > stats.txt 2>&1
+          else
+            cargo xtask spec-stats --no-verify > stats.txt 2>&1 || true
+          fi
+
+          breaking=false
+          if ! mise run codegen 2> codegen.log; then
+            echo "::warning::codegen refused the new spec (renames or removals); retrying with the accept flags"
+            cat codegen.log
+            breaking=true
+            cargo xtask codegen --accept-renames --accept-removals 2>&1 | tee renames.txt
+          fi
+          echo "breaking=${breaking}" >> "$GITHUB_OUTPUT"
+
+      - name: Compose the pull request body
+        id: pr
+        if: steps.diff.outputs.bump == 'true'
+        env:
+          TAG: ${{ needs.resolve.outputs.latest }}
+          VENDORED: ${{ needs.resolve.outputs.vendored }}
+          DRIFT: ${{ steps.diff.outputs.drift }}
+          BREAKING: ${{ steps.regen.outputs.breaking }}
+        run: |
+          set -euo pipefail
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # The commit type is the honest one for what changed. A version-only bump adds
+          # no API surface, so it is a chore and release-please should cut a patch.
+          if [ "$DRIFT" = true ]; then
+            title="feat(spec): update Gitea API spec to ${TAG}"
+          else
+            title="chore(spec): bump vendored Gitea spec to ${TAG} (no API change)"
+          fi
+          echo "title=${title}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "Automated by [Spec drift](${run_url}): the vendored Gitea API spec is \`${VENDORED}\` and the latest release is \`${TAG}\`."
+            echo
+            # `.gitattributes` marks generated code and the vendored spec `-diff`, so both
+            # `git diff` and the GitHub review UI hide them by default. Anyone told to read
+            # the diff needs to be told that too, or they get "Binary files differ".
+            if [ "$DRIFT" = true ]; then
+              echo "**Upstream changed the API in this release.** The diff under \`crates/\` is the changelog for it; read it with \`git diff --text\`, since generated code is marked \`-diff\` in \`.gitattributes\`."
+            else
+              echo "> [!NOTE]"
+              echo "> **No API change.** \`${TAG}\` and \`${VENDORED}\` describe the same API. The two vendored specs differ by exactly one line — \`info.version\` — and \`spec-diff\` confirms it by canonicalizing both against the same version and finding nothing."
+              echo ">"
+              echo "> That makes this a version-only bump, and this is the whole of it:"
+              echo ">"
+              echo "> - \`spec/lock.toml\`, the canonical spec's file name, and its sha256 — which moves because \`info.version\` is inside the hashed bytes."
+              echo "> - Two lines of ordinary source: \`GITEA_IMAGE\` in \`crates/gea-itest/src/lib.rs\` and \`EXPECTED_VERSION\` in \`crates/xtask/src/stats.rs\`."
+              echo "> - Every generated file, each changed by the same two header lines naming the spec it came from, and nothing else."
+              echo ">"
+              echo "> So expect a few hundred changed files with no substance in them. \`.gitattributes\` marks them \`-diff\` and \`linguist-generated\`, so GitHub collapses them and \`git diff\` calls them binary; \`git diff --text\` shows the two header lines."
+            fi
+            echo
+            echo "This branch is rewritten on every run until it is merged or the tag moves on. Push fixes to it freely; the next run rebuilds on top of \`main\` and keeps the branch name."
+            echo
+            if [ "$BREAKING" = true ]; then
+              echo "> [!WARNING]"
+              echo "> \`cargo xtask codegen\` refused this spec because a command name moved or an endpoint disappeared. It was re-run with \`--accept-renames --accept-removals\`; the changelog-ready report is below. **Review \`spec/name-lock.toml\` before merging.**"
+              echo
+            fi
+            echo "## Before merging"
+            echo
+            if [ "$DRIFT" = true ]; then
+              echo "- [ ] Update \`EXPECTED_VERSION\` and the counts in \`crates/xtask/src/stats.rs\` from the table below, then run \`cargo xtask spec-stats\` — it must pass. Those counts are the loader's independent self-test and are the one thing this workflow will not write for you."
+              echo "- [ ] Read the diff under \`crates/\`: it is the API changelog for this release."
+            else
+              echo "- [ ] Nothing to re-derive in \`crates/xtask/src/stats.rs\`. The API is unchanged, so every independently-verified count still holds; only \`EXPECTED_VERSION\` — the label saying which version they were verified against — moved, and this run already moved it. \`cargo xtask spec-stats\` passed **with** verification below; that is the proof, and the job fails if it does not."
+              echo "- [ ] Skim \`git diff -- crates/ ':!*/generated/*'\` — it should be empty apart from \`GITEA_IMAGE\` and \`EXPECTED_VERSION\`."
+            fi
+            echo "- [ ] Confirm the \`Integration\` job booted \`docker.io/gitea/gitea:${TAG#v}\` (the constant in \`crates/gea-itest/src/lib.rs\` was updated here)."
+            if [ "$BREAKING" = true ]; then
+              echo "- [ ] Retitle this PR with a \`!\` (e.g. \`feat(spec)!: …\`) so release-please cuts a major, and copy the rename report into the changelog."
+            fi
+            echo
+            cat report.md
+            echo
+            if [ -s renames.txt ]; then
+              echo "## Accepted renames and removals"
+              echo
+              echo '```'
+              cat renames.txt
+              echo '```'
+              echo
+            fi
+            if [ "$DRIFT" = true ]; then
+              echo "## \`cargo xtask spec-stats --no-verify\`"
+            else
+              echo "## \`cargo xtask spec-stats\` (verified against the bumped \`EXPECTED_VERSION\`)"
+            fi
+            echo
+            echo '```'
+            cat stats.txt
+            echo '```'
+          } > pr-body.md
+          wc -c pr-body.md
+
+      - name: Open or update the bump pull request
+        if: steps.diff.outputs.bump == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ secrets.SPEC_BOT_TOKEN || github.token }}
+          # A fixed name per tag, so a second run for the same release updates the
+          # PR in place instead of opening a twin.
+          branch: spec/bump-${{ needs.resolve.outputs.latest }}
+          delete-branch: true
+          base: main
+          commit-message: |
+            ${{ steps.pr.outputs.title }}
+
+            Vendored by the spec-drift workflow: `cargo xtask update-spec --version
+            ${{ needs.resolve.outputs.latest }}` followed by `cargo xtask codegen`.
+          title: ${{ steps.pr.outputs.title }}
+          body-path: pr-body.md
+          labels: |
+            spec-bump
+            ${{ steps.diff.outputs.drift == 'true' && 'spec-api-change' || 'spec-version-only' }}
+            ${{ steps.regen.outputs.breaking == 'true' && 'breaking' || '' }}
+          # Never leave the workflow's scratch files in the commit.
+          add-paths: |
+            spec/
+            crates/
+            Cargo.lock

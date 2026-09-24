@@ -1,0 +1,80 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Release Please
+#
+# Owns the version, the CHANGELOG, the tag, and the GitHub Release. It does NOT
+# build anything — release.yaml still does that, and this workflow hands off to it
+# (see "Handing off" below).
+#
+# release-type is `simple`, not `rust`, and that is deliberate. release-please's
+# Rust strategy calls CargoToml on the workspace root, which throws outright on a
+# manifest with no [package] section ("is not a package manifest (might be a cargo
+# workspace)"). The root Cargo.toml here is purely virtual, so `rust` cannot run.
+# `simple` therefore keeps the release version in .release-please-manifest.json and
+# leaves every crate at its own version — the same arrangement kopiur uses.
+#
+# The consequence is that crates/gea/Cargo.toml no longer tracks the release, so
+# release.yaml's verify job reads the manifest file instead. `gea --version` still
+# reports the crate version, which will lag the tag until the crates are published
+# and there is a reason for them to agree.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      # Required by the handoff below: createWorkflowDispatch is an Actions write.
+      actions: write
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Handing off to release.yaml.
+      #
+      # GitHub deliberately refuses to start a workflow from an event raised by
+      # GITHUB_TOKEN, to stop workflows triggering themselves. So the tag and the
+      # release created above reach nothing: release.yaml's `on: push: tags` never
+      # fires, and neither would `on: release: published`. Switching to a PAT is
+      # not a dependable fix either — tag-push triggers have been reported to stay
+      # dead even with one.
+      #
+      # workflow_dispatch and repository_dispatch are the two documented exceptions,
+      # so we dispatch release.yaml explicitly. Dispatching at the tag ref makes
+      # GITHUB_REF_NAME resolve to the tag inside that run, which is what its verify
+      # job and its `gea-${GITHUB_REF_NAME}-<target>` archive naming already expect —
+      # so release.yaml needs no change on account of this.
+      #
+      # kopiur solves the same problem with a GitHub App token and
+      # `on: release: published`. That is the tidier shape, and this repo can move to
+      # it whenever an App is installed here; it has no app credentials today, and
+      # this route needs none.
+      - name: Trigger the release build
+        if: ${{ steps.release.outputs.release_created }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release.yaml',
+              ref: '${{ steps.release.outputs.tag_name }}',
+            });

@@ -1,0 +1,9 @@
+---
+source: crates/gea/src/cmd/times/mod.rs
+expression: "render_list(&testing::term(), &times, false)"
+---
+Showing 2 entries
+
+ID  ISSUE  TIME   USER   WHEN
+7   #42    1h25m  alice  -
+8   #42    15m    bob    -
