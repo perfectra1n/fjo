@@ -239,7 +239,7 @@ fn repo_fork_without_a_name() {
 #[test]
 fn pr_create_fill_reads_git() {
     let inst = instance_or_skip!();
-    cover!(porcelain: ["pr create"], hits: ["repoGet", "repoCreatePullRequest"]);
+    cover!(porcelain: ["pr create"], hits: ["repoGet", "repoGetBranch", "repoCreatePullRequest"]);
     let repo = TestRepo::create_initialized(inst, "pr-fill");
     let scratch = Scratch::new("prfill");
     repo.clone_to(scratch.path());

@@ -55,7 +55,7 @@ use std::path::PathBuf;
 
 use clap::Args as ClapArgs;
 use forgejo_client::Api;
-use forgejo_core::context::git::{AgitPush, AgitRef, GitCtx};
+use forgejo_core::context::git::{AgitPush, AgitRef, FetchSpec, GitCtx};
 use forgejo_core::types::RepoSlug;
 use forgejo_core::{Error, ErrorKind, Result};
 use forgejo_model::{CreatePullRequestOption, PullRequest, PullReviewRequestOptions};
@@ -186,8 +186,23 @@ pub fn run(globals: &GlobalOpts, args: &Args) -> Result<()> {
         // Resolved once: `--fill` needs it to find the base's remote-tracking ref, and `--agit`
         // needs it to know where to push.
         let remote = args.remote.clone().or(crate::cmd::repo::remote_for(&rt, &slug)?);
+        // `--fill` measures "my commits" against the base *as the server has it*. A local
+        // remote-tracking ref can be any amount behind, and every commit it is missing used to
+        // end up in the title and body (fjo#30). Asked for only when filling, for the same reason
+        // the default branch is only asked for when `--base` is missing.
+        let server_base = if args.fill || args.fill_first {
+            api.repo()
+                .get_branch(&slug.owner, &slug.name, &base)
+                .await?
+                .commit
+                .map(|commit| commit.id)
+                .filter(|id| !id.is_empty())
+        } else {
+            None
+        };
 
-        let draft = Draft::assemble(&rt, args, &slug, &base, remote.as_deref())?;
+        let draft =
+            Draft::assemble(&rt, args, &slug, &base, remote.as_deref(), server_base.as_deref())?;
 
         if args.web {
             return open_compare(&rt, &slug, &base, &head_for(&rt, args)?);
@@ -249,11 +264,26 @@ impl Draft {
         slug: &RepoSlug,
         base: &str,
         remote: Option<&str>,
+        server_base: Option<&str>,
     ) -> Result<Self> {
         let mut draft = if args.recover { load(rt, slug)? } else { Self::default() };
 
         if args.fill || args.fill_first {
-            let filled = fill(rt.git(), args, base, remote)?;
+            let range = fill_range(rt.git(), base, remote, server_base)?;
+            let filled = fill(rt.git(), args, &range.revs)?;
+            // Said out loud, so a fill that swept up commits the branch never had is visible
+            // before it becomes a merge commit's title.
+            let n = filled.commits;
+            support::note(
+                rt.term(),
+                &format!(
+                    "--fill: {n} commit{} in {}..HEAD, title {:?}",
+                    if n == 1 { "" } else { "s" },
+                    range.label,
+                    filled.draft.title
+                ),
+            );
+            let filled = filled.draft;
             if draft.title.is_empty() {
                 draft.title = filled.title;
             }
@@ -330,27 +360,25 @@ fn load(rt: &Runtime, slug: &RepoSlug) -> Result<Draft> {
 /// One commit means the title is its subject and the body its message — which is what everybody
 /// means by "just use my commit". Several commits mean the subjects become a list, because gluing
 /// four commit messages together produces something no human would have written.
-fn fill(git: &dyn GitCtx, args: &Args, base: &str, remote: Option<&str>) -> Result<Draft> {
-    let range = fill_range(git, base, remote)?;
+fn fill(git: &dyn GitCtx, args: &Args, range: &str) -> Result<Filled> {
+    let subjects = git.commit_subjects(range)?;
+    let commits = subjects.len();
 
-    if args.fill_first {
-        let first = git.first_commit_message(&range)?.ok_or_else(|| empty_range(&range))?;
-        return Ok(Draft { title: first.subject, body: first.body });
+    if args.fill_first || commits == 1 {
+        let first = git.first_commit_message(range)?.ok_or_else(|| empty_range(range))?;
+        return Ok(Filled { draft: Draft { title: first.subject, body: first.body }, commits });
     }
+    if commits == 0 {
+        return Err(empty_range(range));
+    }
+    let body = subjects.iter().map(|s| format!("* {s}")).collect::<Vec<_>>().join("\n") + "\n";
+    Ok(Filled { draft: Draft { title: subjects[0].clone(), body }, commits })
+}
 
-    let subjects = git.commit_subjects(&range)?;
-    match subjects.len() {
-        0 => Err(empty_range(&range)),
-        1 => {
-            let first = git.first_commit_message(&range)?.ok_or_else(|| empty_range(&range))?;
-            Ok(Draft { title: first.subject, body: first.body })
-        }
-        _ => {
-            let body =
-                subjects.iter().map(|s| format!("* {s}")).collect::<Vec<_>>().join("\n") + "\n";
-            Ok(Draft { title: subjects[0].clone(), body })
-        }
-    }
+/// What [`fill`] produced, and from how many commits.
+struct Filled {
+    draft: Draft,
+    commits: usize,
 }
 
 fn empty_range(range: &str) -> Error {
@@ -360,11 +388,55 @@ fn empty_range(range: &str) -> Error {
 }
 
 /// The revision range `--fill` reads: everything on HEAD that the base does not have.
+#[derive(Debug, PartialEq, Eq)]
+struct FillRange {
+    /// What git is asked for: `<base>..HEAD`.
+    revs: String,
+    /// The same base, as a person would name it.
+    label: String,
+}
+
+/// Where [`FillRange`] starts.
 ///
-/// `<remote>/<base>..HEAD` when a remote-tracking ref exists, because that is what the *server*
-/// will compare against. A local `<base>` is the fallback for a checkout that has never fetched,
-/// and it can be stale — which is exactly why it is second.
-fn fill_range(git: &dyn GitCtx, base: &str, remote: Option<&str>) -> Result<String> {
+/// With the server's base commit known — the normal case — the range starts **there**, because
+/// that is what the server will compare against. A remote-tracking ref is only a cache of it,
+/// and a stale one used to put every commit it was missing into the title and body (gea#2,
+/// fjo#30). If that commit is not in this checkout, the base is fetched once (and that is said
+/// on stderr); if it still is not here, `--fill` refuses rather than guess.
+///
+/// Without it, `<remote>/<base>` and then a local `<base>` — the old order, kept for the case
+/// the server did not report a commit.
+fn fill_range(
+    git: &dyn GitCtx,
+    base: &str,
+    remote: Option<&str>,
+    server: Option<&str>,
+) -> Result<FillRange> {
+    if let Some(sha) = server {
+        let short = &sha[..sha.len().min(10)];
+        // `^{commit}`, not the bare SHA: `rev-parse --verify` accepts any 40 hex digits without
+        // looking the object up, so the bare form would always say yes.
+        let commit = format!("{sha}^{{commit}}");
+        let found = FillRange { revs: format!("{sha}..HEAD"), label: format!("{base}@{short}") };
+        if git.rev_exists(&commit)? {
+            return Ok(found);
+        }
+        if let Some(remote) = remote {
+            support::warn(&format!(
+                "--fill: {base} is at {short} on the server and this checkout does not have it; \
+                 fetching {base} from {remote}"
+            ));
+            let fetch = FetchSpec::new(remote).with_refspec(base).quiet();
+            if git.fetch(&fetch).is_ok() && git.rev_exists(&commit)? {
+                return Ok(found);
+            }
+        }
+        return Err(Error::new(ErrorKind::Usage(format!(
+            "--fill needs {base} as the server has it ({short}) to know which commits are new, \
+             and this checkout does not have that commit; fetch {base}, or pass --title"
+        ))));
+    }
+
     let mut tried = Vec::new();
     if let Some(remote) = remote {
         tried.push(format!("{remote}/{base}"));
@@ -372,7 +444,7 @@ fn fill_range(git: &dyn GitCtx, base: &str, remote: Option<&str>) -> Result<Stri
     tried.push(base.to_owned());
     for candidate in &tried {
         if git.rev_exists(candidate)? {
-            return Ok(format!("{candidate}..HEAD"));
+            return Ok(FillRange { revs: format!("{candidate}..HEAD"), label: candidate.clone() });
         }
     }
     Err(Error::new(ErrorKind::Usage(format!(
@@ -755,5 +827,68 @@ mod tests {
                 .is_none(),
             "if CreatePullRequestOption gains a `draft` field, use it instead of the prefix"
         );
+    }
+
+    fn fill_args(extra: &[&str]) -> Args {
+        #[derive(clap::Parser)]
+        struct Harness {
+            #[command(flatten)]
+            args: Args,
+        }
+        let argv = ["fjo", "--fill"].into_iter().chain(extra.iter().copied());
+        <Harness as clap::Parser>::try_parse_from(argv).expect("valid flags").args
+    }
+
+    const SERVER: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// Bug this prevents (fjo#30, gea#2): `aaa/main` fetched once and 30 commits behind. The
+    /// server's base commit is in the checkout (it arrived through `origin`), so the range starts
+    /// there and the stale ref is never consulted.
+    #[test]
+    fn fill_starts_at_the_servers_base_commit_not_a_stale_remote_tracking_ref() {
+        let git = FakeGit::repo().with_rev("aaa/main").with_rev(&format!("{SERVER}^{{commit}}"));
+        let range = fill_range(&git, "main", Some("aaa"), Some(SERVER)).unwrap();
+        assert_eq!(range.revs, format!("{SERVER}..HEAD"));
+        assert!(git.action_starting_with(&["fetch"]).is_none(), "nothing to fetch");
+    }
+
+    /// The base advanced on the server and nothing here has seen it yet: fetch it once, then use it.
+    #[test]
+    fn fill_fetches_the_base_when_the_servers_commit_is_missing() {
+        let git = FakeGit::repo().with_rev("origin/main");
+        let err = fill_range(&git, "main", Some("origin"), Some(SERVER)).unwrap_err();
+        // The fake's fetch cannot make the commit appear, so this is the refusal — and the
+        // fetch was attempted first.
+        assert!(matches!(err.kind(), ErrorKind::Usage(m) if m.contains("pass --title")), "{err}");
+        let fetch = git.action_starting_with(&["fetch"]).expect("the base was fetched");
+        assert!(fetch.line().ends_with("origin main"), "{}", fetch.line());
+    }
+
+    /// Without a server commit to anchor to, the old order stands: remote-tracking, then local.
+    #[test]
+    fn without_a_server_commit_the_remote_tracking_ref_is_used() {
+        let git = FakeGit::repo().with_rev("origin/main").with_rev("main");
+        let range = fill_range(&git, "main", Some("origin"), None).unwrap();
+        assert_eq!(range.revs, "origin/main..HEAD");
+    }
+
+    /// End to end over the fake: a one-commit branch whose stale base ref sits 30 commits behind
+    /// gets that one commit's subject as its title, not the oldest of 31.
+    #[test]
+    fn a_one_commit_branch_is_titled_by_its_commit_whatever_the_stale_ref_says() {
+        let mut stale: Vec<(String, &str)> =
+            (1..=30).map(|n| (format!("chore(deps): update thing {n}"), "")).collect();
+        stale.push(("fix: the only commit".to_owned(), "the body"));
+        let stale: Vec<(&str, &str)> = stale.iter().map(|(s, b)| (s.as_str(), *b)).collect();
+        let git = FakeGit::repo()
+            .with_rev("aaa/main")
+            .with_rev(&format!("{SERVER}^{{commit}}"))
+            .with_log("aaa/main..HEAD", &stale)
+            .with_log(&format!("{SERVER}..HEAD"), &[("fix: the only commit", "the body")]);
+        let range = fill_range(&git, "main", Some("aaa"), Some(SERVER)).unwrap();
+        let filled = fill(&git, &fill_args(&[]), &range.revs).unwrap();
+        assert_eq!(filled.commits, 1);
+        assert_eq!(filled.draft.title, "fix: the only commit");
+        assert_eq!(filled.draft.body, "the body");
     }
 }
