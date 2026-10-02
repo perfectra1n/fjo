@@ -35,6 +35,7 @@ pub mod view;
 
 use clap::{Args as ClapArgs, Subcommand};
 use forgejo_client::Api;
+use forgejo_core::context::git::GitCtx;
 use forgejo_core::types::{RepoRef, RepoSlug};
 use forgejo_core::{Error, ErrorKind, Result};
 
@@ -154,22 +155,45 @@ pub fn split_owner(arg: &str) -> Option<(String, String)> {
 /// *repository the command is about* through git, and guessing `origin` is wrong in exactly the
 /// fork workflow those commands exist for.
 pub fn remote_for(rt: &Runtime, slug: &RepoSlug) -> Result<Option<String>> {
+    remote_in(rt.git(), rt.host(), slug)
+}
+
+/// [`remote_for`] against an explicit git and host, so it can be tested without a runtime.
+///
+/// When several remotes name the repository, the current branch's upstream wins over the first
+/// one `git remote -v` lists. That order is alphabetical, and an `aaa` remote fetched once and
+/// forgotten would otherwise be chosen over the `origin` the user pulls through — and its stale
+/// remote-tracking refs are what `pr create --fill` once measured "my commits" against.
+fn remote_in(
+    git: &dyn GitCtx,
+    host: &forgejo_core::config::HostKey,
+    slug: &RepoSlug,
+) -> Result<Option<String>> {
     use forgejo_core::context::remote_url;
     // A one-host key set: we only care whether the *path* names this repository, and which host
     // the command is about was already settled by resolution.
-    let keys = [rt.host().clone()];
+    let keys = [host.clone()];
     let wanted = slug.to_string();
-    for remote in rt.git().remotes()? {
-        for url in remote.urls() {
-            if let remote_url::Resolution::Matched { slug: found, .. } =
-                remote_url::resolve(url, &keys)
-                && found.to_string() == wanted
-            {
-                return Ok(Some(remote.name.clone()));
-            }
-        }
+    let names_it = |url: &str| {
+        matches!(
+            remote_url::resolve(url, &keys),
+            remote_url::Resolution::Matched { slug: found, .. } if found.to_string() == wanted
+        )
+    };
+    let matching: Vec<String> = git
+        .remotes()?
+        .into_iter()
+        .filter(|remote| remote.urls().any(names_it))
+        .map(|remote| remote.name)
+        .collect();
+    if matching.len() > 1
+        && let Some(branch) = git.current_branch()?
+        && let Some(upstream) = git.config_get(&format!("branch.{branch}.remote"))?
+        && matching.contains(&upstream)
+    {
+        return Ok(Some(upstream));
     }
-    Ok(None)
+    Ok(matching.into_iter().next())
 }
 
 #[cfg(test)]
@@ -182,5 +206,36 @@ mod tests {
         assert_eq!(split_owner("me/proj.git"), Some(("me".to_owned(), "proj".to_owned())));
         assert_eq!(split_owner("proj"), None);
         assert_eq!(split_owner("a/b/c"), None);
+    }
+
+    fn host() -> forgejo_core::config::HostKey {
+        forgejo_core::config::HostKey::parse("git.example.com").unwrap()
+    }
+
+    /// Bug this prevents (fjo#30, gea#2): two remotes on the same URL, and the alphabetically
+    /// first one — fetched once, never again — chosen over the upstream the branch tracks.
+    #[test]
+    fn the_branchs_upstream_wins_when_several_remotes_name_the_repository() {
+        let url = "https://git.example.com/me/proj.git";
+        let slug: RepoSlug = "me/proj".parse().unwrap();
+        let git = forgejo_core::context::git::FakeGit::repo()
+            .with_remote("aaa", url)
+            .with_remote("origin", url)
+            .with_branch("topic")
+            .with_config("branch.topic.remote", "origin");
+        assert_eq!(remote_in(&git, &host(), &slug).unwrap().as_deref(), Some("origin"));
+    }
+
+    /// An upstream that is some *other* repository — the fork a topic branch is pushed to —
+    /// says nothing about which remote names this one, so the first match still stands.
+    #[test]
+    fn an_upstream_on_another_repository_does_not_override_the_match() {
+        let slug: RepoSlug = "me/proj".parse().unwrap();
+        let git = forgejo_core::context::git::FakeGit::repo()
+            .with_remote("fork", "https://git.example.com/you/proj.git")
+            .with_remote("upstream", "https://git.example.com/me/proj.git")
+            .with_branch("topic")
+            .with_config("branch.topic.remote", "fork");
+        assert_eq!(remote_in(&git, &host(), &slug).unwrap().as_deref(), Some("upstream"));
     }
 }
