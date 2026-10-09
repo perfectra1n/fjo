@@ -1,0 +1,11 @@
+---
+source: crates/fjo/src/cmd/pr/checks.rs
+assertion_line: 771
+expression: out
+---
+CHECK        STATE    AGE  DETAILS
+jenkins      failure       https://ci.example.org/jenkins
+fork / test  failure       https://forgejo.example.org/someone/fork/actions/runs/7
+lint         success       https://ci.example.org/lint
+
+1 passed, 2 failed, 0 pending, 0 skipped

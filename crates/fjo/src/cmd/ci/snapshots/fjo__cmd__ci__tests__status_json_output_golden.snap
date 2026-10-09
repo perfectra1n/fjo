@@ -1,0 +1,49 @@
+---
+source: crates/fjo/src/cmd/ci/tests.rs
+assertion_line: 405
+expression: "json_of(&selected, \"id,index_in_repo,status,workflow_id,event\")"
+---
+[
+  {
+    "id": 6447,
+    "index_in_repo": 3628,
+    "status": "cancelled",
+    "workflow_id": "build.yml",
+    "event": "pull_request"
+  },
+  {
+    "id": 6442,
+    "index_in_repo": 3623,
+    "status": "failure",
+    "workflow_id": "ci.yml",
+    "event": "pull_request"
+  },
+  {
+    "id": 6446,
+    "index_in_repo": 3627,
+    "status": "running",
+    "workflow_id": "build.yml",
+    "event": "push"
+  },
+  {
+    "id": 6443,
+    "index_in_repo": 3624,
+    "status": "waiting",
+    "workflow_id": "claude-code-review.yml",
+    "event": "pull_request"
+  },
+  {
+    "id": 6445,
+    "index_in_repo": 3626,
+    "status": "skipped",
+    "workflow_id": "docs.yml",
+    "event": "pull_request"
+  },
+  {
+    "id": 6444,
+    "index_in_repo": 3625,
+    "status": "success",
+    "workflow_id": "pr-title.yml",
+    "event": "pull_request"
+  }
+]

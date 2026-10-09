@@ -1,0 +1,11 @@
+---
+source: crates/fjo/src/cmd/pr/checks.rs
+assertion_line: 787
+expression: out
+---
+CHECK       STATE    AGE  DETAILS
+ci / build  success       /them/proj/actions/runs/6441/jobs/0
+lint        success       https://ci.example.org/lint
+style       warning       https://ci.example.org/style
+
+3 passed, 0 failed, 0 pending, 0 skipped

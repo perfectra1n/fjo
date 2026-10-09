@@ -38,12 +38,14 @@ use std::io::Write;
 
 use clap::Args as ClapArgs;
 use forgejo_client::Api;
+use forgejo_core::context::{RepoContext, RepoSource};
 use forgejo_core::error::FailedCheck;
 use forgejo_core::types::RepoSlug;
 use forgejo_core::{Error, ErrorKind, Result};
 use forgejo_model::{CombinedStatus, CommitStatus};
 
 use super::common;
+use crate::cmd::run_ref::parse_run_url;
 use crate::cmd::support;
 use crate::global::GlobalOpts;
 use crate::output::Term;
@@ -116,11 +118,26 @@ pub fn run(globals: &GlobalOpts, args: &Args) -> Result<()> {
         let status = combined(&api, &found.slug, &sha).await?;
 
         if let support::machine::Wanted::Machine(m) = &wanted {
-            support::machine::emit(&rt, globals, m, support::to_value(&status)?)?;
+            write_report(
+                Some(m),
+                &status,
+                rt.term(),
+                &found,
+                false,
+                &mut support::writer(globals)?,
+                &mut std::io::sink(),
+            )?;
         } else {
-            let mut out = std::io::stdout().lock();
-            out.write_all(render(&status, rt.term()).as_bytes())?;
-            out.flush()?;
+            let scoped = needs_repo_flag(rt.repo(globals).ok(), &found.slug);
+            write_report(
+                None,
+                &status,
+                rt.term(),
+                &found,
+                scoped,
+                &mut std::io::stdout().lock(),
+                &mut std::io::stderr().lock(),
+            )?;
             if status.statuses.is_empty() {
                 support::empty_note(rt.term(), "checks");
             }
@@ -194,6 +211,43 @@ async fn status_for(api: &Api, found: &common::Found, wanted: bool) -> Option<Co
     }
     let sha = head_sha(&found.pr)?;
     combined(api, &found.slug, &sha).await.ok()
+}
+
+/// Write what `pr checks` prints: the document through `machine` when there is one, otherwise the
+/// table, the summary line and the `next:` hint.
+///
+/// One function for both paths so a test can hold the machine bytes against the human ones: the
+/// summary and the hint are human output only, and a script parsing `--json` must see exactly
+/// the document it always did.
+///
+/// Where the summary and hint go depends on the layout, the same switch that makes the table TSV:
+/// on a terminal they follow the table on `out`; piped, `out` stays pure TSV (`fjo pr checks |
+/// cut -f2` keeps working, as it does with `gh`) and they go to `err` instead, which an agent
+/// capturing both streams still reads.
+fn write_report(
+    machine: Option<&support::machine::Triad>,
+    status: &CombinedStatus,
+    term: &Term,
+    found: &common::Found,
+    scoped: bool,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<()> {
+    if let Some(m) = machine {
+        return m.render(support::to_value(status)?, term, out);
+    }
+    out.write_all(render(status, term).as_bytes())?;
+    let footer = footer(status, &found.slug, found.index(), scoped);
+    if term.tty {
+        out.write_all(footer.as_bytes())?;
+        out.flush()?;
+    } else {
+        out.flush()?;
+        // No blank separator line on stderr: there is no table above it to set the summary off from.
+        err.write_all(footer.trim_start_matches('\n').as_bytes())?;
+        err.flush()?;
+    }
+    Ok(())
 }
 
 /// The commit the checks are attached to.
@@ -319,6 +373,94 @@ pub(crate) fn render(status: &CombinedStatus, term: &Term) -> String {
         ]);
     }
     t.render_to_string()
+}
+
+/// How one check counts towards the summary line.
+///
+/// The same reading [`verdict`] uses, so the line can never disagree with the exit code:
+/// `failure`/`error` failed, `pending` or empty (queued) is pending, `skipped` is skipped, and
+/// everything else — `success`, `warning`, and any state a newer server invents — passed, because
+/// that is what `verdict` treats it as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tally {
+    Passed,
+    Failed,
+    Pending,
+    Skipped,
+}
+
+fn tally(check: &CommitStatus) -> Tally {
+    match check.status.as_str() {
+        "failure" | "error" => Tally::Failed,
+        "pending" | "" => Tally::Pending,
+        "skipped" => Tally::Skipped,
+        _ => Tally::Passed,
+    }
+}
+
+/// Whether a `next:` hint has to carry `-R owner/name` to reach the same repository.
+///
+/// It does unless the repository the hint would resolve on its own — from the checkout, `git
+/// config` or `$FJO_REPO` — is the one the pull request lives in. `-R` itself does not survive
+/// into the next command, and a pull request named by URL can live anywhere.
+fn needs_repo_flag(context: Option<&RepoContext>, slug: &RepoSlug) -> bool {
+    context.is_none_or(|ctx| matches!(ctx.source, RepoSource::Flag) || !same_repo(&ctx.slug, slug))
+}
+
+/// Whether a check is a Forgejo Actions run of `slug` — the only kind `fjo ci` can follow.
+///
+/// Parsed with the same function `RunRef` uses, so `pr checks` and `ci` cannot disagree about
+/// which URLs are runs. A run of a *different* repository (a fork's, or a reusable workflow
+/// elsewhere) is not this pull request's CI as `fjo ci <pr>` sees it.
+fn is_own_actions_run(check: &CommitStatus, slug: &RepoSlug) -> bool {
+    parse_run_url(&check.target_url).is_some_and(|u| same_repo(&u.slug, slug))
+}
+
+/// Forgejo's owner and repository names are case-insensitive: `Them/Proj` in a URL is `them/proj`.
+fn same_repo(a: &RepoSlug, b: &RepoSlug) -> bool {
+    a.owner.eq_ignore_ascii_case(&b.owner) && a.name.eq_ignore_ascii_case(&b.name)
+}
+
+/// What the human view prints after the table: the summary line and, when `fjo ci` can help,
+/// one `next:` line.
+///
+/// On a terminal this follows the table on stdout; piped, [`write_report`] sends it to stderr so
+/// stdout stays pure TSV. Printed before [`finish`] turns the verdict into an error, so a pending
+/// or failed run still shows it. Empty when there are no checks, which keeps that path's output
+/// as it was.
+///
+/// The hint is only for checks posted by this repository's Actions. A failure from external CI
+/// has nothing `fjo ci logs` could print, and pointing at it would send someone to an empty page.
+fn footer(status: &CombinedStatus, slug: &RepoSlug, pr: i64, scoped: bool) -> String {
+    if status.statuses.is_empty() {
+        return String::new();
+    }
+    let (mut passed, mut failed, mut pending, mut skipped) = (0, 0, 0, 0);
+    let (mut actions_failed, mut actions_pending) = (false, false);
+    for check in &status.statuses {
+        let t = tally(check);
+        match t {
+            Tally::Passed => passed += 1,
+            Tally::Failed => failed += 1,
+            Tally::Pending => pending += 1,
+            Tally::Skipped => skipped += 1,
+        }
+        let own = is_own_actions_run(check, slug);
+        actions_failed |= own && t == Tally::Failed;
+        actions_pending |= own && t == Tally::Pending;
+    }
+    let mut out =
+        format!("\n{passed} passed, {failed} failed, {pending} pending, {skipped} skipped\n");
+    let verb = if actions_failed {
+        "logs"
+    } else if actions_pending {
+        "watch"
+    } else {
+        return out;
+    };
+    let scope = if scoped { format!(" -R {slug}") } else { String::new() };
+    out.push_str(&format!("next: fjo ci {verb} {pr}{scope}\n"));
+    out
 }
 
 /// The check's name, which is `context` — `description` is prose about the run.
@@ -526,5 +668,187 @@ mod tests {
         // ...unless there is no context at all, in which case anything beats an empty cell.
         c.context = String::new();
         assert_eq!(display_name(&c), "finished in 4m");
+    }
+
+    /// A check posted by this repository's own Actions for a job of run number `run` — with the
+    /// path-only `target_url` Forgejo 16.0.5 really posts
+    /// (`/owner/name/actions/runs/<run number>/jobs/<job position>`, measured). The fixture used
+    /// to carry a full URL, which no Actions status has, and so hid that the parser required a
+    /// scheme and recognised no real check.
+    fn actions(context: &str, state: &str, run: i64) -> CommitStatus {
+        CommitStatus {
+            target_url: format!("/them/proj/actions/runs/{run}/jobs/0"),
+            ..check(context, state)
+        }
+    }
+
+    fn found() -> common::Found {
+        common::Found {
+            slug: RepoSlug::new("them", "proj"),
+            pr: forgejo_model::PullRequest {
+                number: forgejo_core::types::ids::IssueIndex::new(42),
+                ..forgejo_model::PullRequest::default()
+            },
+        }
+    }
+
+    /// The human view exactly as `pr checks` writes it to a terminal (no colour): stdout, and
+    /// stderr, which must stay empty there.
+    fn human(s: &CombinedStatus, scoped: bool) -> String {
+        let (out, err) = streams(s, &Term::tty(120), scoped);
+        assert_eq!(err, "", "on a terminal the summary and hint belong on stdout");
+        out
+    }
+
+    /// `(stdout, stderr)` of the human path under `term`.
+    fn streams(s: &CombinedStatus, term: &Term, scoped: bool) -> (String, String) {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        write_report(None, s, term, &found(), scoped, &mut out, &mut err).unwrap();
+        (String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
+    }
+
+    /// Bug this prevents: `fjo pr checks | cut -f2` choking on a summary line that is not TSV.
+    /// Piped, stdout is exactly the table it was before the summary existed, and the summary and
+    /// hint move to stderr, where an agent capturing both streams still finds them.
+    #[test]
+    fn piped_stdout_stays_pure_tsv_and_the_footer_goes_to_stderr() {
+        let s = status(vec![
+            actions("ci / build", "success", 6441),
+            actions("ci / test", "failure", 6442),
+            check("lint", "pending"),
+        ]);
+        let (out, err) = streams(&s, &Term::piped(), false);
+        assert_eq!(
+            out,
+            render(&s, &Term::piped()),
+            "stdout must be the pre-change TSV, byte for byte"
+        );
+        assert!(
+            out.lines().all(|l| l.split('\t').count() == 4),
+            "every stdout line is a row: {out:?}"
+        );
+        insta::assert_snapshot!(format!("== stdout\n{out}== stderr\n{err}"));
+    }
+
+    /// Piped with nothing to hint at: the summary alone, still on stderr.
+    #[test]
+    fn piped_all_green_puts_only_the_summary_on_stderr() {
+        let s = status(vec![check("lint", "success")]);
+        let (out, err) = streams(&s, &Term::piped(), false);
+        assert_eq!(out, render(&s, &Term::piped()));
+        assert_eq!(err, "1 passed, 0 failed, 0 pending, 0 skipped\n");
+    }
+
+    /// A failed Actions job is something `fjo ci logs` can print, so the output says so — on
+    /// stdout, after the table, where an agent reading the result will see it.
+    #[test]
+    fn a_failed_actions_check_points_at_ci_logs() {
+        let s = status(vec![
+            actions("ci / build", "success", 6441),
+            actions("ci / test", "failure", 6442),
+            check("external", "pending"),
+            check("docs", "skipped"),
+        ]);
+        insta::assert_snapshot!(human(&s, false));
+    }
+
+    #[test]
+    fn a_pending_actions_check_points_at_ci_watch() {
+        let s = status(vec![
+            actions("ci / build", "success", 6441),
+            actions("ci / test", "pending", 6442),
+            actions("ci / queued", "", 6443),
+        ]);
+        insta::assert_snapshot!(human(&s, false));
+    }
+
+    /// Bug this prevents: `next: fjo ci logs 42` for a failure posted by external CI, which has
+    /// no Actions run — `fjo ci logs` would find nothing failed and the hint would be a dead end.
+    /// The same goes for a run URL of some *other* repository.
+    #[test]
+    fn an_external_failure_gets_a_summary_but_no_hint() {
+        let mut elsewhere = actions("fork / test", "failure", 7);
+        elsewhere.target_url = "https://forgejo.example.org/someone/fork/actions/runs/7".to_owned();
+        let s = status(vec![check("jenkins", "failure"), elsewhere, check("lint", "success")]);
+        let out = human(&s, false);
+        assert!(!out.contains("next:"), "external CI has nothing for fjo ci to show: {out}");
+        insta::assert_snapshot!(out);
+    }
+
+    #[test]
+    fn an_all_green_run_gets_a_summary_and_no_hint() {
+        let s = status(vec![
+            actions("ci / build", "success", 6441),
+            check("lint", "success"),
+            check("style", "warning"),
+        ]);
+        let out = human(&s, false);
+        assert!(!out.contains("next:"));
+        insta::assert_snapshot!(out);
+    }
+
+    /// A failure outranks a pending sibling, as it does in [`verdict`]: watching a run whose
+    /// sibling already failed is a wait that ends red.
+    #[test]
+    fn logs_outranks_watch_and_the_hint_carries_the_repo_when_it_must() {
+        let s = status(vec![actions("a", "pending", 1), actions("b", "error", 2)]);
+        let out = human(&s, true);
+        assert!(out.ends_with("next: fjo ci logs 42 -R them/proj\n"), "{out}");
+    }
+
+    /// `-R` survives into the hint exactly when the hint would otherwise land somewhere else: the
+    /// repository came from `-R`, there was none to infer, or the pull request was named by a URL
+    /// for a different repository than the checkout's.
+    #[test]
+    fn the_hint_names_the_repo_only_when_it_was_not_inferred() {
+        let here = RepoSlug::new("them", "proj");
+        let ctx = |source| RepoContext {
+            host: forgejo_core::config::HostKey::parse("forgejo.example.org").unwrap(),
+            login: None,
+            slug: here.clone(),
+            source,
+        };
+        let remote = ctx(RepoSource::Remote { remote: "origin".to_owned(), score: 3 });
+        assert!(!needs_repo_flag(Some(&remote), &here));
+        assert!(!needs_repo_flag(Some(&remote), &RepoSlug::new("Them", "Proj")));
+        assert!(!needs_repo_flag(Some(&ctx(RepoSource::Env { var: "FJO_REPO" })), &here));
+        assert!(needs_repo_flag(Some(&ctx(RepoSource::Flag)), &here));
+        assert!(needs_repo_flag(Some(&remote), &RepoSlug::new("someone", "else")));
+        assert!(needs_repo_flag(None, &here));
+    }
+
+    /// `--json` is a contract with scripts: the summary line and the hint are human output, and
+    /// the machine bytes must be exactly the document `support::machine::emit` always wrote.
+    #[test]
+    fn json_output_carries_no_summary_and_no_hint() {
+        let s = status(vec![actions("ci / test", "failure", 6442), check("lint", "pending")]);
+        let globals = GlobalOpts::default();
+        let triad = support::machine::Triad::compile(
+            &globals,
+            Some(vec!["state".to_owned(), "statuses".to_owned()]),
+        )
+        .unwrap();
+
+        let mut via_report = Vec::new();
+        let mut err = Vec::new();
+        write_report(Some(&triad), &s, &Term::piped(), &found(), true, &mut via_report, &mut err)
+            .unwrap();
+        assert!(err.is_empty(), "--json writes no summary or hint to stderr either");
+        let mut before = Vec::new();
+        triad.render(support::to_value(&s).unwrap(), &Term::piped(), &mut before).unwrap();
+        assert_eq!(via_report, before, "--json must be byte-identical to the old path");
+
+        let text = String::from_utf8(via_report).unwrap();
+        assert!(!text.contains("passed,") && !text.contains("next:"), "{text}");
+    }
+
+    /// No checks keeps printing nothing on stdout: the "no checks" note is stderr's job.
+    #[test]
+    fn no_checks_prints_no_summary() {
+        assert_eq!(human(&status(Vec::new()), true), "");
+        assert_eq!(
+            streams(&status(Vec::new()), &Term::piped(), true),
+            (String::new(), String::new())
+        );
     }
 }

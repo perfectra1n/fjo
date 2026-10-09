@@ -1,0 +1,6 @@
+---
+source: crates/fjo/src/cmd/ci/tests.rs
+assertion_line: 384
+expression: out
+---
+PR #2626 (renovate/zip-9.x) at f36d1a7

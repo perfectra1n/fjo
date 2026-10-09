@@ -1,0 +1,13 @@
+---
+source: crates/fjo/src/cmd/pr/checks.rs
+assertion_line: 752
+expression: "human(&s, false)"
+---
+CHECK       STATE    AGE  DETAILS
+ci / build  success       /them/proj/actions/runs/6441/jobs/0
+ci / test   failure       /them/proj/actions/runs/6442/jobs/0
+external    pending       https://ci.example.org/external
+docs        skipped       https://ci.example.org/docs
+
+1 passed, 1 failed, 1 pending, 1 skipped
+next: fjo ci logs 42

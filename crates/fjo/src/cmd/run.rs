@@ -26,18 +26,34 @@
 //! the ID column here prints the value the path wants, so what you read is what you can pass
 //! back. `INDEX` is printed alongside precisely because the two differ once an instance has more
 //! than one repository, and mixing them up addresses a real run belonging to someone else.
+//!
+//! Every `<RUN>` positional is a [`RunRef`], resolved by [`resolve_run`] before anything else
+//! happens, and accepts three forms:
+//!
+//! * `6442` — an id. **Only** if no run has that id (a 404) is it retried as a run number, and a
+//!   warning on stderr says so; an id that is neither is still the server's 404.
+//! * `#3623` — explicitly the run number, found with the listing's `run_number` filter.
+//! * the run's web URL, `…/actions/runs/3623[/jobs/1]` — which on Forgejo carries the run
+//!   **number**, and with `/jobs/<n>` the job at that 0-based position, which `view --log` and
+//!   `logs` act on unless `--job` says otherwise.
+//!
+//! `--job` is a [`JobRef`]: a job id, or a job's name — an exact match, else an unambiguous
+//! substring. An ambiguous name is refused with the candidates listed, never guessed. See
+//! `run_ref.rs` for both.
 
 use clap::{Args as ClapArgs, Subcommand};
 use forgejo_client::{Api, query};
 use forgejo_core::error::{Error, ErrorKind, Result};
 use forgejo_core::types::RepoSlug;
-use forgejo_core::types::ids::{JobId, RunId};
+use forgejo_core::types::ids::JobId;
 use forgejo_model::{ActionRun, ActionRunJob, ActionRunner};
 use futures::{StreamExt, TryStreamExt};
 
 use crate::global::GlobalOpts;
 use crate::output::color;
 use crate::runtime::Runtime;
+
+use crate::cmd::run_ref::{JobRef, RunRef, job_at, resolve_job, resolve_run};
 
 use crate::cmd::support;
 use crate::cmd::support::listing::{self as emit, Fields, Listing};
@@ -52,7 +68,11 @@ const STATUSES: &[&str] =
 /// Bounded rather than "one per job": a matrix build has dozens of jobs, and an unbounded burst
 /// against a self-hosted instance behind a reverse proxy trips its rate limit — after which
 /// `forgejo_core::http`'s retry layer spends the whole win back in backoff.
-const LOG_CONCURRENCY: usize = 6;
+pub(crate) const LOG_CONCURRENCY: usize = 6;
+
+/// The field tables `--json` validates against, shared with `fjo ci`.
+pub(crate) const RUN_FIELDS: Fields = Fields::Op("ActionRun");
+pub(crate) const JOB_FIELDS: Fields = Fields::Op("ListActionRunJobs");
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -103,17 +123,17 @@ pub struct ListArgs {
 
 #[derive(Debug, ClapArgs)]
 pub struct ViewArgs {
-    /// The run id, as printed by `fjo run list`
-    pub run: RunId,
+    /// The run: an id (6442), a run number (#3623), or the run's URL
+    pub run: RunRef,
     /// Print the run's logs instead of its summary
     #[arg(long)]
     pub log: bool,
     /// Print only the logs of the jobs that failed
     #[arg(long = "log-failed")]
     pub log_failed: bool,
-    /// Restrict `--log` to one job
-    #[arg(short = 'j', long, value_name = "JOB_ID")]
-    pub job: Option<JobId>,
+    /// Only this job: its id, or its name (an unambiguous part of it)
+    #[arg(short = 'j', long, value_name = "JOB")]
+    pub job: Option<JobRef>,
     /// Exit non-zero when the run did not succeed
     #[arg(long = "exit-status")]
     pub exit_status: bool,
@@ -124,14 +144,14 @@ pub struct ViewArgs {
 
 #[derive(Debug, ClapArgs)]
 pub struct OneArgs {
-    /// The run id
-    pub run: RunId,
+    /// The run: an id (6442), a run number (#3623), or the run's URL
+    pub run: RunRef,
 }
 
 #[derive(Debug, ClapArgs)]
 pub struct DeleteArgs {
-    /// The run id
-    pub run: RunId,
+    /// The run: an id (6442), a run number (#3623), or the run's URL
+    pub run: RunRef,
     /// Skip the confirmation
     #[arg(long)]
     pub yes: bool,
@@ -139,11 +159,11 @@ pub struct DeleteArgs {
 
 #[derive(Debug, ClapArgs)]
 pub struct LogsArgs {
-    /// The run id
-    pub run: RunId,
-    /// Only this job's logs
-    #[arg(short = 'j', long, value_name = "JOB_ID")]
-    pub job: Option<JobId>,
+    /// The run: an id (6442), a run number (#3623), or the run's URL
+    pub run: RunRef,
+    /// Only this job: its id, or its name (an unambiguous part of it)
+    #[arg(short = 'j', long, value_name = "JOB")]
+    pub job: Option<JobRef>,
     /// Only the logs of jobs that failed
     #[arg(long)]
     pub failed: bool,
@@ -151,8 +171,8 @@ pub struct LogsArgs {
 
 #[derive(Debug, ClapArgs)]
 pub struct WatchArgs {
-    /// The run id
-    pub run: RunId,
+    /// The run: an id (6442), a run number (#3623), or the run's URL
+    pub run: RunRef,
     /// Seconds between polls
     #[arg(short = 'i', long, value_name = "SECONDS", default_value_t = 3,
           value_parser = clap::value_parser!(u64).range(1..=3600))]
@@ -164,8 +184,9 @@ pub struct WatchArgs {
 
 #[derive(Debug, ClapArgs)]
 pub struct ArtifactsArgs {
-    /// Only artifacts of this run; omit for the whole repository
-    pub run: Option<RunId>,
+    /// Only artifacts of this run: an id (6442), a run number (#3623), or the run's URL; omit for
+    /// the whole repository
+    pub run: Option<RunRef>,
     /// Only artifacts with this name
     #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
@@ -212,11 +233,11 @@ pub fn run(globals: &GlobalOpts, args: &Args) -> Result<()> {
 /// Which generated field table `--json` validates against, per subcommand.
 fn fields_for(cmd: &Cmd) -> Fields {
     match cmd {
-        Cmd::List(_) => Fields::Op("ActionRun"),
+        Cmd::List(_) => RUN_FIELDS,
         // `--log` turns the command into a text pump, and `--json` cannot apply to it.
         Cmd::View(a) if a.log || a.log_failed => Fields::None,
-        Cmd::View(_) => Fields::Op("ActionRun"),
-        Cmd::Jobs(_) => Fields::Op("ListActionRunJobs"),
+        Cmd::View(_) => RUN_FIELDS,
+        Cmd::Jobs(_) => JOB_FIELDS,
         Cmd::Artifacts(_) => Fields::Op("ListActionRunArtifacts"),
         Cmd::Runners(_) => Fields::Op("getRepoRunners"),
         Cmd::Cancel(_) | Cmd::Delete(_) | Cmd::Logs(_) | Cmd::Watch(_) => Fields::None,
@@ -239,6 +260,9 @@ async fn list(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &ListArgs) ->
     // yet" and sends the user looking for a workflow bug that is not there.
     if runs.is_empty() {
         warn_if_actions_disabled(rt, api, slug).await;
+        if let Some(note) = empty_ref_note(args) {
+            support::warn(&note);
+        }
     }
     if runs.iter().any(|r| is_queued(&r.status)) {
         support::note(
@@ -249,7 +273,7 @@ async fn list(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &ListArgs) ->
     }
 
     let listing = Listing {
-        fields: Fields::Op("ActionRun"),
+        fields: RUN_FIELDS,
         value: serde_json::to_value(runs).map_err(encode_failed)?,
         count: runs.len(),
         total: Some(response.total_count),
@@ -270,6 +294,27 @@ async fn list(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &ListArgs) ->
             ]);
         }
     })
+}
+
+/// What to say when `--ref` matched nothing. Two measured reasons it can, both of which read as
+/// "CI never ran":
+///
+/// * Forgejo compares `ref` against the run's full git reference, so `--ref main` matches
+///   nothing where `--ref refs/heads/main` matches the push runs.
+/// * A `pull_request` run's ref is the pull request (its `prettyref` reads `#12`), so no branch
+///   ref finds it. `fjo ci <branch>` finds those runs by commit instead.
+fn empty_ref_note(args: &ListArgs) -> Option<String> {
+    let r = args.git_ref.as_deref()?;
+    let branch = r.strip_prefix("refs/heads/").unwrap_or(r);
+    let short = if r.starts_with("refs/") {
+        String::new()
+    } else {
+        format!(" `--ref` takes a full reference: did you mean `--ref refs/heads/{r}`?")
+    };
+    Some(format!(
+        "note: no run has ref {r}.{short} pull_request runs carry the pull request, not the \
+         branch, as their ref; `fjo ci {branch}` finds them by commit."
+    ))
 }
 
 /// The `ListActionRuns` call, split out so a `FakeTransport` test can assert the query string
@@ -306,16 +351,16 @@ async fn view(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &ViewArgs) ->
     // else: opening a browser tab should not also cost a job listing that is never read. Same
     // discipline `repo view` applies to its README.
     if args.web {
-        let run = api.run().view(&slug.owner, &slug.name, args.run.get()).await?;
+        let run = resolve_run(api, slug, &args.run).await?;
         return open_url(rt, &run.html_url);
     }
 
-    // Every remaining path needs both, and the two reads are independent — the jobs are keyed on
-    // the run id the caller already typed, not on anything the run object carries.
-    let (run, jobs) = fetch_view(api, slug, args.run).await?;
+    // Every remaining path needs both.
+    let (run, jobs) = fetch_view(api, slug, &args.run).await?;
 
     if args.log || args.log_failed {
-        print_logs(rt, globals, api, slug, &jobs, args.job, args.log_failed).await?;
+        let only = chosen_job(&jobs, &args.run, args.job.as_ref())?;
+        print_logs(rt, globals, api, slug, &jobs, only, args.log_failed).await?;
         return exit_status(args.exit_status, &run);
     }
 
@@ -352,7 +397,7 @@ async fn view(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &ViewArgs) ->
     emit::detail(
         rt,
         globals,
-        Fields::Op("ActionRun"),
+        RUN_FIELDS,
         serde_json::to_value(&run).map_err(encode_failed)?,
         rows,
     )?;
@@ -395,31 +440,54 @@ fn exit_status(wanted: bool, run: &ActionRun) -> Result<()> {
 
 async fn cancel(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &OneArgs) -> Result<()> {
     let slug = slug(rt, globals)?;
-    api.run().cancel(&slug.owner, &slug.name, args.run.get()).await?;
+    let run = resolve_run(api, slug, &args.run).await?;
+    api.run().cancel(&slug.owner, &slug.name, run.id.get()).await?;
     // The endpoint answers 204 for a run that had already finished, so this deliberately does
     // not claim the run *was* running.
-    support::note(rt.term(), &format!("asked {} to cancel run {}", slug, args.run));
+    support::note(
+        rt.term(),
+        &format!("asked {} to cancel run {} (#{})", slug, run.id, run.index_in_repo),
+    );
     Ok(())
 }
 
 async fn delete(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &DeleteArgs) -> Result<()> {
     let slug = slug(rt, globals)?;
-    support::confirm_runtime(
-        rt,
-        args.yes,
-        &format!("delete run {} of {} and its logs", args.run, slug),
-    )?;
-    api.run().delete(&slug.owner, &slug.name, args.run.get()).await?;
-    support::note(rt.term(), &format!("deleted run {}", args.run));
+    // Resolved before the prompt, so what is confirmed is the run that will go — by its id and
+    // its number, whichever of the two the user typed.
+    let run = resolve_run(api, slug, &args.run).await?;
+    support::confirm_runtime(rt, args.yes, &delete_prompt(&run, slug))?;
+    api.run().delete(&slug.owner, &slug.name, run.id.get()).await?;
+    support::note(rt.term(), &format!("deleted run {} (#{})", run.id, run.index_in_repo));
     Ok(())
+}
+
+fn delete_prompt(run: &ActionRun, slug: &RepoSlug) -> String {
+    format!(
+        "delete run {} (#{}, {}) of {slug} and its logs",
+        run.id, run.index_in_repo, run.workflow_id
+    )
+}
+
+/// The job a command should act on: `--job` when given, otherwise the job a pasted
+/// `…/jobs/<n>` URL points at, otherwise none (every job).
+///
+/// `--job` wins over the URL because it is the more deliberate of the two: the URL is whatever
+/// page happened to be open.
+fn chosen_job(jobs: &[ActionRunJob], run: &RunRef, job: Option<&JobRef>) -> Result<Option<JobId>> {
+    if let Some(j) = job {
+        return resolve_job(jobs, j).map(|j| Some(j.id));
+    }
+    run.url_job().map(|pos| job_at(jobs, pos).map(|j| j.id)).transpose()
 }
 
 // ------------------------------------------------------------------------------------- logs
 
 async fn logs(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &LogsArgs) -> Result<()> {
     let slug = slug(rt, globals)?;
-    let jobs = api.run().jobs(&slug.owner, &slug.name, args.run.get()).await?;
-    print_logs(rt, globals, api, slug, &jobs, args.job, args.failed).await
+    let (_, jobs) = fetch_view(api, slug, &args.run).await?;
+    let only = chosen_job(&jobs, &args.run, args.job.as_ref())?;
+    print_logs(rt, globals, api, slug, &jobs, only, args.failed).await
 }
 
 /// Concatenate the per-job plaintext logs.
@@ -428,7 +496,7 @@ async fn logs(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &LogsArgs) ->
 /// grepped. Walking the jobs and fetching each one's `text/plain` log costs one request per job
 /// and produces something you can pipe into `grep -n`, which is the whole reason a porcelain
 /// command exists here rather than `fjo raw repo get-action-run-logs`.
-async fn print_logs(
+pub(crate) async fn print_logs(
     rt: &Runtime,
     globals: &GlobalOpts,
     api: &Api,
@@ -445,7 +513,8 @@ async fn print_logs(
 
     if wanted.is_empty() {
         let why = match (only, failed_only) {
-            (Some(id), _) => format!("this run has no job {id}"),
+            (Some(id), true) => format!("job {id} did not fail"),
+            (Some(id), false) => format!("this run has no job {id}"),
             (None, true) => "no job in this run failed".to_owned(),
             (None, false) => "this run has no jobs yet".to_owned(),
         };
@@ -457,41 +526,79 @@ async fn print_logs(
 
     let logs = fetch_logs(api, slug, &wanted).await?;
 
+    // A header per job, because a concatenation with no separators is unreadable once a run has
+    // three jobs — and none for a run of one job, where it would only be noise above the log.
+    let headed = jobs.len() > 1;
+    let sections = wanted
+        .iter()
+        .zip(&logs)
+        .map(|(job, text)| (headed.then(|| job_header(job)), text.as_str()));
+    emit::text(rt, globals, &concat_logs(sections))
+}
+
+/// `run logs`' per-job header: `==> build (job 11, failure)`. Prefixed with `==>` like `tail -f`
+/// on several files.
+fn job_header(job: &ActionRunJob) -> String {
+    format!("==> {} (job {}, {})", job.name, job.id, job.status)
+}
+
+/// Join job logs into one text stream, each under its header line when it has one.
+///
+/// Every log is made to end in a newline, so the next header always starts a line of its own
+/// even when a step's last output had none. Split out of [`print_logs`] so `fjo ci logs`, whose
+/// header also names the workflow (`==> ci.yml / build (run 6442, job 11) <==`), shares the
+/// assembly and differs only in the words.
+pub(crate) fn concat_logs<'a>(
+    sections: impl IntoIterator<Item = (Option<String>, &'a str)>,
+) -> String {
     let mut out = String::new();
-    for (job, text) in wanted.iter().zip(&logs) {
-        // A header per job, because a concatenation with no separators is unreadable once a run
-        // has three jobs. Prefixed with `==>` like `tail -f` on several files.
-        if jobs.len() > 1 {
-            out.push_str(&format!("==> {} (job {}, {})\n", job.name, job.id, job.status));
+    for (header, text) in sections {
+        if let Some(h) = header {
+            out.push_str(&h);
+            out.push('\n');
         }
         out.push_str(text);
         if !text.ends_with('\n') {
             out.push('\n');
         }
     }
-    emit::text(rt, globals, &out)
+    out
 }
 
-/// The run and its jobs, concurrently.
+/// The run a [`RunRef`] names, and its jobs — each fetched once.
+///
+/// When the reference is a bare id, the run is resolved and the jobs of that id are read
+/// **concurrently**, since the id is very likely right. Only when resolution fell back to a run
+/// *number* — so the resolved id differs from the one guessed — are the guessed jobs discarded
+/// and the real run's read. `#N` and a URL carry a number, not an id, so there is nothing to
+/// guess and they resolve first.
 ///
 /// `join!` rather than `try_join!` — and then unwrapped in a fixed order. `try_join!` returns
 /// whichever error *arrived* first, so a run that is both gone and unreadable would report a
-/// different reason depending on the network; unwrapping `run` first keeps the message the
-/// serial version gave. Split out from [`view`] so a `FakeTransport` test can assert both
-/// requests without a [`Runtime`].
-async fn fetch_view(
+/// different reason depending on the network; unwrapping `run` first keeps the message stable.
+/// Split out from [`view`] so a `FakeTransport` test can assert the requests without a
+/// [`Runtime`].
+pub(crate) async fn fetch_view(
     api: &Api,
     slug: &RepoSlug,
-    run_id: RunId,
+    r: &RunRef,
 ) -> Result<(ActionRun, Vec<ActionRunJob>)> {
-    // Bound rather than called twice inline: `api.run()` returns a borrow of `api`, and a
-    // temporary of it does not outlive the `join!` that awaits both futures.
+    let RunRef::Bare(guess) = *r else {
+        let run = resolve_run(api, slug, r).await?;
+        let jobs = api.run().jobs(&slug.owner, &slug.name, run.id.get()).await?;
+        return Ok((run, jobs));
+    };
+    // Bound rather than called inline: `api.run()` returns a borrow of `api`, and a temporary of
+    // it does not outlive the `join!` that awaits both futures.
     let runs = api.run();
-    let (run, jobs) = futures::join!(
-        runs.view(&slug.owner, &slug.name, run_id.get()),
-        runs.jobs(&slug.owner, &slug.name, run_id.get()),
-    );
-    Ok((run?, jobs?))
+    let (run, jobs) =
+        futures::join!(resolve_run(api, slug, r), runs.jobs(&slug.owner, &slug.name, guess));
+    let run = run?;
+    if run.id.get() == guess {
+        return Ok((run, jobs?));
+    }
+    let jobs = runs.jobs(&slug.owner, &slug.name, run.id.get()).await?;
+    Ok((run, jobs))
 }
 
 /// Every wanted job's log, [`LOG_CONCURRENCY`] at a time, **in `wanted` order**.
@@ -505,7 +612,11 @@ async fn fetch_view(
 /// build the output, and an unordered stream would file each job's log under a different job's
 /// `==>` header. Peak memory is unchanged — the assembled string already held every log by the
 /// end of the loop this replaced; it is only reached sooner.
-async fn fetch_logs(api: &Api, slug: &RepoSlug, wanted: &[&ActionRunJob]) -> Result<Vec<String>> {
+pub(crate) async fn fetch_logs(
+    api: &Api,
+    slug: &RepoSlug,
+    wanted: &[&ActionRunJob],
+) -> Result<Vec<String>> {
     let q = query::RepoGetActionJobLogsQuery::default();
     // Both bound outside the closure: they are borrows of `api`, and a temporary of either would
     // be dropped before the futures the stream holds are polled.
@@ -536,10 +647,12 @@ async fn fetch_logs(api: &Api, slug: &RepoSlug, wanted: &[&ActionRunJob]) -> Res
 async fn watch(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &WatchArgs) -> Result<()> {
     let slug = slug(rt, globals)?;
     let interval = std::time::Duration::from_secs(args.interval);
+    // The first poll is the resolution itself; every later one is by the resolved id.
+    let mut run = resolve_run(api, slug, &args.run).await?;
+    let id = run.id.get();
     let mut announced_wait = false;
 
     loop {
-        let run = api.run().view(&slug.owner, &slug.name, args.run.get()).await?;
         if is_finished(&run.status) {
             support::note(
                 rt.term(),
@@ -551,7 +664,7 @@ async fn watch(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &WatchArgs) 
         // Diagnose once, not every poll: a run waiting on a label nobody offers will still be
         // waiting on the next poll, and repeating the explanation every three seconds is noise.
         if !announced_wait && is_queued(&run.status) {
-            let jobs = api.run().jobs(&slug.owner, &slug.name, args.run.get()).await?;
+            let jobs = api.run().jobs(&slug.owner, &slug.name, id).await?;
             for line in diagnose_waiting(api, slug, &jobs).await? {
                 support::note(rt.term(), &line);
             }
@@ -559,6 +672,7 @@ async fn watch(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &WatchArgs) 
         }
         support::note(rt.term(), &format!("run {} is {} …", run.id, run.status));
         tokio::time::sleep(interval).await;
+        run = api.run().view(&slug.owner, &slug.name, id).await?;
     }
 }
 
@@ -566,9 +680,9 @@ async fn watch(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &WatchArgs) 
 
 async fn jobs(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &OneArgs) -> Result<()> {
     let slug = slug(rt, globals)?;
-    let jobs = api.run().jobs(&slug.owner, &slug.name, args.run.get()).await?;
+    let (_, jobs) = fetch_view(api, slug, &args.run).await?;
     let listing = Listing {
-        fields: Fields::Op("ListActionRunJobs"),
+        fields: JOB_FIELDS,
         value: serde_json::to_value(&jobs).map_err(encode_failed)?,
         count: jobs.len(),
         total: None,
@@ -605,14 +719,15 @@ async fn artifacts(
 ) -> Result<()> {
     let slug = slug(rt, globals)?;
     let limit = support::limit(None, globals);
-    let items: Vec<forgejo_model::ActionArtifact> = match args.run {
-        Some(run) => {
+    let items: Vec<forgejo_model::ActionArtifact> = match &args.run {
+        Some(r) => {
+            let run = resolve_run(api, slug, r).await?;
             let q = query::ListActionRunArtifactsQuery {
                 name: args.name.clone(),
                 ..Default::default()
             };
             api.run()
-                .artifacts(&slug.owner, &slug.name, run.get(), &q)
+                .artifacts(&slug.owner, &slug.name, run.id.get(), &q)
                 .take(limit)
                 .try_collect()
                 .await?
@@ -721,7 +836,7 @@ fn runner_scope(r: &ActionRunner) -> String {
 ///
 /// A runner can take a job only if it carries **every** label the job asks for, which is why the
 /// check is a superset test rather than an intersection.
-async fn diagnose_waiting(
+pub(crate) async fn diagnose_waiting(
     api: &Api,
     slug: &RepoSlug,
     jobs: &[ActionRunJob],
@@ -783,7 +898,7 @@ fn explain_job(job: &ActionRunJob, runners: &[ActionRunner]) -> String {
 }
 
 /// Warn when the repository has Actions turned off, which makes every listing empty.
-async fn warn_if_actions_disabled(rt: &Runtime, api: &Api, slug: &RepoSlug) {
+pub(crate) async fn warn_if_actions_disabled(rt: &Runtime, api: &Api, slug: &RepoSlug) {
     let Ok(repo) = api.repo().get(&slug.owner, &slug.name).await else { return };
     if !repo.has_actions {
         support::note(
@@ -798,25 +913,33 @@ async fn warn_if_actions_disabled(rt: &Runtime, api: &Api, slug: &RepoSlug) {
 // ----------------------------------------------------------------------------------- helpers
 
 /// Statuses that mean "not going to change without something else happening".
-fn is_finished(status: &str) -> bool {
+pub(crate) fn is_finished(status: &str) -> bool {
     matches!(status, "success" | "failure" | "cancelled" | "skipped")
 }
 
 /// Statuses that mean "nothing has picked this up yet" — the state a missing runner label
 /// produces, and the one this module goes out of its way to explain.
-fn is_queued(status: &str) -> bool {
+pub(crate) fn is_queued(status: &str) -> bool {
     matches!(status, "waiting" | "blocked" | "unknown")
 }
 
 /// Labels as `a, b`, or a dash when there are none. A dash rather than an empty cell because in
 /// this table an empty `RUNS-ON` is itself the bug being looked for.
-fn labels(labels: &[String]) -> String {
+pub(crate) fn labels(labels: &[String]) -> String {
     if labels.is_empty() { "-".to_owned() } else { labels.join(", ") }
 }
 
-fn duration(seconds: i64) -> String {
-    if seconds <= 0 {
+/// A run's `duration`, which Forgejo serialises as a Go `time.Duration` — **nanoseconds**
+/// (measured: a one-second run reports `1000000000`). Nothing for zero, which is what a run that
+/// has not finished reports; `<1s` for a run that finished faster than a second rounds to.
+pub(crate) fn duration(nanos: i64) -> String {
+    const NANOS_PER_SEC: i64 = 1_000_000_000;
+    if nanos <= 0 {
         return String::new();
+    }
+    let seconds = nanos / NANOS_PER_SEC;
+    if seconds == 0 {
+        return "<1s".to_owned();
     }
     let (m, s) = (seconds / 60, seconds % 60);
     if m == 0 { format!("{s}s") } else { format!("{m}m{s:02}s") }
@@ -848,6 +971,7 @@ mod tests {
     use crate::output::Term;
     use forgejo_core::http::transport::Canned;
     use forgejo_core::http::{Auth, Client, FakeTransport, RetryPolicy};
+    use forgejo_core::types::ids::RunId;
     use std::sync::Arc;
 
     fn api_for(fake: Arc<FakeTransport>) -> Api {
@@ -1049,7 +1173,7 @@ mod tests {
                 ),
         );
         let (run, jobs) =
-            fetch_view(&api_for(fake.clone()), &RepoSlug::new("o", "r"), RunId::new(7))
+            fetch_view(&api_for(fake.clone()), &RepoSlug::new("o", "r"), &RunRef::Bare(7))
                 .await
                 .unwrap();
         assert_eq!(run.id.get(), 7);
@@ -1142,8 +1266,232 @@ mod tests {
         assert_eq!(size(1024), "1.0 KiB");
         assert_eq!(size(1024 * 1024 * 3 / 2), "1.5 MiB");
         assert_eq!(duration(0), "");
-        assert_eq!(duration(9), "9s");
-        assert_eq!(duration(125), "2m05s");
+        assert_eq!(duration(9 * SEC), "9s");
+        assert_eq!(duration(125 * SEC), "2m05s");
+    }
+
+    const SEC: i64 = 1_000_000_000;
+
+    /// Bug this prevents: `run view` reading the nanoseconds Forgejo sends as seconds, so a
+    /// one-second run (measured: `"duration":1000000000`) printed as `16666666m40s`. The
+    /// opposite direction is guarded too: a run that finished in under a second is not shown as
+    /// blank, which is what an unfinished run shows.
+    #[test]
+    fn a_run_duration_is_read_as_nanoseconds() {
+        assert_eq!(duration(SEC), "1s");
+        assert_eq!(duration(6 * 60 * SEC + 44 * SEC + 999_999_999), "6m44s");
+        assert_eq!(duration(SEC / 2), "<1s");
+        assert_eq!(duration(-1), "");
+    }
+
+    fn paths(fake: &FakeTransport) -> Vec<String> {
+        fake.calls().into_iter().map(|c| c.path).collect()
+    }
+
+    const RUN_6442: &str = r#"{"total_count":1,"workflow_runs":[{"id":6442,"index_in_repo":3623,"workflow_id":"ci.yml"}]}"#;
+    const JOBS_6442: &str = r#"[{"id":21,"name":"build (linux)"},{"id":22,"name":"build (macos)"},{"id":23,"name":"lint"}]"#;
+
+    /// `run view '#3623'`: the number is found with the listing's `run_number` filter, and the
+    /// jobs are then read by the id it resolved to — never by the number, which is some other
+    /// run's id or none at all.
+    #[tokio::test]
+    async fn view_accepts_a_run_number_by_filtering_then_reading_by_id() {
+        let get = || "GET".parse().unwrap();
+        let fake = Arc::new(
+            FakeTransport::new()
+                .on(get(), "/api/v1/repos/o/r/actions/runs", Canned::json(200, RUN_6442))
+                .on(
+                    get(),
+                    "/api/v1/repos/o/r/actions/runs/6442/jobs",
+                    Canned::json(200, JOBS_6442),
+                ),
+        );
+        let r: RunRef = "#3623".parse().unwrap();
+        let (run, jobs) =
+            fetch_view(&api_for(fake.clone()), &RepoSlug::new("o", "r"), &r).await.unwrap();
+        assert_eq!((run.id.get(), run.index_in_repo), (6442, 3623));
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(
+            paths(&fake),
+            ["/api/v1/repos/o/r/actions/runs", "/api/v1/repos/o/r/actions/runs/6442/jobs"]
+        );
+    }
+
+    /// A pasted run URL carries the run's number on Forgejo, and `/jobs/<n>` a position: one
+    /// filtered listing, one jobs read, and the job at index 2 — not a job with id 2.
+    #[tokio::test]
+    async fn view_accepts_a_run_url_by_number_and_its_job_by_position() {
+        let get = || "GET".parse().unwrap();
+        let fake = Arc::new(
+            FakeTransport::new()
+                .on(get(), "/api/v1/repos/o/r/actions/runs", Canned::json(200, RUN_6442))
+                .on(
+                    get(),
+                    "/api/v1/repos/o/r/actions/runs/6442/jobs",
+                    Canned::json(200, JOBS_6442),
+                ),
+        );
+        let r: RunRef = "https://git.example.org/o/r/actions/runs/3623/jobs/2".parse().unwrap();
+        let (run, jobs) =
+            fetch_view(&api_for(fake.clone()), &RepoSlug::new("o", "r"), &r).await.unwrap();
+        assert_eq!(run.id.get(), 6442);
+        assert_eq!(fake.call_count(), 2, "{:?}", fake.calls());
+        assert_eq!(chosen_job(&jobs, &r, None).unwrap(), Some(JobId::new(23)));
+    }
+
+    /// The reported bug: `fjo run view 3623`, typed from the INDEX column, was a bare 404. The id
+    /// is tried first; on its 404 the run numbered 3623 is used, and its jobs — not the jobs of
+    /// the id that did not exist — are what is shown.
+    #[tokio::test]
+    async fn view_falls_back_from_a_missing_id_to_the_run_number() {
+        let get = || "GET".parse().unwrap();
+        let missing = || Canned::json(404, r#"{"message":"run not found"}"#);
+        let fake = Arc::new(
+            FakeTransport::new()
+                .on(get(), "/api/v1/repos/o/r/actions/runs/3623", missing())
+                .on(get(), "/api/v1/repos/o/r/actions/runs/3623/jobs", missing())
+                .on(get(), "/api/v1/repos/o/r/actions/runs", Canned::json(200, RUN_6442))
+                .on(
+                    get(),
+                    "/api/v1/repos/o/r/actions/runs/6442/jobs",
+                    Canned::json(200, JOBS_6442),
+                ),
+        );
+        let (run, jobs) =
+            fetch_view(&api_for(fake.clone()), &RepoSlug::new("o", "r"), &RunRef::Bare(3623))
+                .await
+                .unwrap();
+        assert_eq!(run.id.get(), 6442);
+        assert_eq!(jobs.iter().map(|j| j.id.get()).collect::<Vec<_>>(), [21, 22, 23]);
+        // The run itself is never read a second time by its resolved id.
+        assert!(!paths(&fake).iter().any(|p| p == "/api/v1/repos/o/r/actions/runs/6442"));
+    }
+
+    fn jobs_6442() -> Vec<ActionRunJob> {
+        serde_json::from_str(JOBS_6442).unwrap()
+    }
+
+    /// `run logs 6442 --job lint`: a name nobody has to look up an id for.
+    #[test]
+    fn logs_job_picks_the_job_by_name() {
+        let jobs = jobs_6442();
+        let pick = |s: &str| chosen_job(&jobs, &RunRef::Bare(6442), Some(&s.parse().unwrap()));
+        assert_eq!(pick("lint").unwrap(), Some(JobId::new(23)));
+        assert_eq!(pick("MACOS").unwrap(), Some(JobId::new(22)));
+        assert_eq!(pick("21").unwrap(), Some(JobId::new(21)));
+        // No `--job` and no job URL: every job.
+        assert_eq!(chosen_job(&jobs, &RunRef::Bare(6442), None).unwrap(), None);
+    }
+
+    /// Bug this prevents: `--job build` silently printing one of a matrix's two `build` jobs.
+    #[test]
+    fn an_ambiguous_job_name_is_refused_naming_the_candidates() {
+        let jobs = jobs_6442();
+        let err =
+            chosen_job(&jobs, &RunRef::Bare(6442), Some(&"build".parse().unwrap())).unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("build (linux) (id 21)"), "{msg}");
+        assert!(msg.contains("build (macos) (id 22)"), "{msg}");
+    }
+
+    /// Both a job URL and `--job`: the flag is the deliberate choice, so it wins. A position past
+    /// the run's last job is not found, never clamped to some other job.
+    #[test]
+    fn job_flag_wins_over_a_job_url() {
+        let jobs = jobs_6442();
+        let r: RunRef = "https://h/o/r/actions/runs/3623/jobs/0".parse().unwrap();
+        assert_eq!(chosen_job(&jobs, &r, None).unwrap(), Some(JobId::new(21)));
+        assert_eq!(
+            chosen_job(&jobs, &r, Some(&"lint".parse().unwrap())).unwrap(),
+            Some(JobId::new(23))
+        );
+        let past: RunRef = "https://h/o/r/actions/runs/3623/jobs/3".parse().unwrap();
+        assert_eq!(chosen_job(&jobs, &past, None).unwrap_err().exit_code(), 5);
+    }
+
+    fn no_filters() -> ListArgs {
+        ListArgs { workflow: None, status: vec![], event: vec![], git_ref: None, commit: None }
+    }
+
+    /// Bug this prevents: `run list --ref …` printing nothing for a branch whose only CI is its
+    /// pull request's — which Forgejo files under the pull request, not the branch — or for a
+    /// short ref, which (measured) matches nothing at all.
+    #[test]
+    fn an_empty_ref_listing_points_at_fjo_ci() {
+        let full = ListArgs { git_ref: Some("refs/heads/feature".into()), ..no_filters() };
+        let note = empty_ref_note(&full).unwrap();
+        assert!(note.contains("pull_request runs carry the pull request"), "{note}");
+        assert!(note.contains("`fjo ci feature`"), "{note}");
+        assert!(!note.contains("did you mean"), "{note}");
+
+        let short = ListArgs { git_ref: Some("feature".into()), ..no_filters() };
+        let note = empty_ref_note(&short).unwrap();
+        assert!(note.contains("did you mean `--ref refs/heads/feature`?"), "{note}");
+        assert!(note.contains("`fjo ci feature`"), "{note}");
+
+        assert_eq!(empty_ref_note(&no_filters()), None);
+    }
+
+    /// The confirmation names the run that will actually be deleted, whichever form was typed.
+    #[test]
+    fn the_delete_prompt_names_the_resolved_id_and_number() {
+        let run = ActionRun {
+            id: RunId::new(6442),
+            index_in_repo: 3623,
+            workflow_id: "ci.yml".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            delete_prompt(&run, &RepoSlug::new("o", "r")),
+            "delete run 6442 (#3623, ci.yml) of o/r and its logs"
+        );
+    }
+
+    /// Every `<RUN>` takes all three forms on the command line, and a fourth is refused with a
+    /// message naming them — not the old "is not a number".
+    #[test]
+    fn run_positionals_take_ids_numbers_and_urls() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Harness {
+            #[command(subcommand)]
+            cmd: Cmd,
+        }
+        let m = Harness::try_parse_from(["fjo", "view", "#3623", "--log", "-j", "lint"]).unwrap();
+        let Cmd::View(v) = m.cmd else { panic!("view") };
+        assert_eq!(v.run, RunRef::Number(3623));
+        assert_eq!(v.job, Some(JobRef::Name("lint".into())));
+        for sub in ["view", "cancel", "delete", "logs", "watch", "jobs", "artifacts"] {
+            let ok = Harness::try_parse_from(["fjo", sub, "https://h/o/r/actions/runs/7"]);
+            assert!(ok.is_ok(), "{sub}");
+            let Err(err) = Harness::try_parse_from(["fjo", sub, "run-seven"]) else {
+                panic!("{sub} accepted a non-run")
+            };
+            assert!(err.to_string().contains("a run number (`#3623`)"), "{sub}: {err}");
+        }
+    }
+
+    /// The byte-for-byte shape `run logs` has always printed, now that `fjo ci logs` shares the
+    /// assembly. Bug this prevents: a header glued onto the previous job's last line because that
+    /// log did not end in a newline.
+    #[test]
+    fn logs_concatenate_under_their_headers_and_always_end_in_a_newline() {
+        let build = ActionRunJob {
+            id: JobId::new(11),
+            name: "build".into(),
+            status: "failure".into(),
+            ..Default::default()
+        };
+        let out = concat_logs([
+            (Some(job_header(&build)), "no newline at the end"),
+            (Some("==> next".to_owned()), "line\n"),
+            (None, "bare"),
+        ]);
+        assert_eq!(
+            out,
+            "==> build (job 11, failure)\nno newline at the end\n==> next\nline\nbare\n"
+        );
     }
 
     /// Snapshot of both output modes for the same data, so a column reorder or a TSV regression

@@ -188,6 +188,53 @@ impl FailedCheck {
     }
 }
 
+/// One failed Actions run, as `fjo ci` reports it inside [`ErrorKind::CiFailed`].
+///
+/// Unlike [`FailedCheck`], this *is* an Actions run, so it carries the run id: `fjo ci` found it
+/// by listing Actions runs for a commit, never through the commit-status API, so there is no
+/// external-CI case for the id to be wrong about. The workflow file is carried as well because a
+/// push typically starts several workflows, and "run 6442 failed" means nothing to someone who
+/// thinks of their CI as `ci.yml` and `release.yml`.
+///
+/// `#[non_exhaustive]` because this crate is published and a later need (an attempt number, a
+/// duration) must not be a breaking change; build one with [`FailedRun::new`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FailedRun {
+    /// The run's database id, which is what `fjo run view` and the API path take.
+    pub id: i64,
+    /// The workflow file, `ci.yml` — the run's `workflow_id`, which Forgejo sets to the file name.
+    pub workflow: String,
+    /// How the run ended: `failure` or `cancelled`. Forgejo has no separate conclusion — a run's
+    /// status *is* its outcome — so this is that status.
+    pub conclusion: String,
+    /// The names of the jobs that failed, when they were fetched. Empty means "not known", not
+    /// "none": a run can be cancelled before any job ran.
+    pub failed_jobs: Vec<String>,
+    /// The run's web URL, when the API gave one.
+    pub url: Option<String>,
+}
+
+impl FailedRun {
+    /// A failed run. A blank `url` is stored as `None`, for the same reason as
+    /// [`FailedCheck::new`]: the renderer decides whether to print a URL on exactly that.
+    pub fn new(
+        id: i64,
+        workflow: impl Into<String>,
+        conclusion: impl Into<String>,
+        failed_jobs: Vec<String>,
+        url: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            workflow: workflow.into(),
+            conclusion: conclusion.into(),
+            failed_jobs,
+            url: url.filter(|u| !u.trim().is_empty()),
+        }
+    }
+}
+
 /// What a refused AGit push leaves the user able to do.
 ///
 /// AGit's entire protocol is `git push`, so the server's reason arrives as `remote:` lines on
@@ -530,6 +577,39 @@ pub enum ErrorKind {
         /// The web URL of the run, when the API gave one.
         url: Option<String>,
     },
+    /// Forgejo Actions, for one commit, finished and at least one workflow run failed.
+    ///
+    /// What `fjo ci` reports, and deliberately not [`ErrorKind::RunFailed`] repeated once per
+    /// run: a push starts several workflows, the user asked about a *commit* (or the pull request
+    /// or branch it is the head of), and the remedy is one command over all of them —
+    /// `fjo ci logs` — not one `fjo run view` per run. Nor is it
+    /// [`ErrorKind::ChecksFailed`]: these are Actions runs found by listing runs for the SHA, so
+    /// every one has a run id and a log `fjo` can print.
+    CiFailed {
+        /// The repository, `owner/name`, when known.
+        slug: Option<String>,
+        /// What the user asked about, as `fjo ci` would accept it back; `None` means "here",
+        /// the branch of the current checkout, and the advice then omits the positional.
+        target: Option<String>,
+        /// The full commit SHA the runs were listed for.
+        sha: String,
+        /// The runs that failed, one entry per workflow.
+        failed: Vec<FailedRun>,
+    },
+    /// Forgejo Actions, for one commit, has not finished, and nothing has failed yet.
+    ///
+    /// The `fjo ci` counterpart to [`ErrorKind::ChecksPending`], and it exits 8 for the same
+    /// reason — see [`ErrorKind::exit_code`].
+    CiPending {
+        /// The repository, `owner/name`, when known.
+        slug: Option<String>,
+        /// What the user asked about, as `fjo ci` would accept it back; `None` means "here".
+        target: Option<String>,
+        /// The full commit SHA the runs were listed for.
+        sha: String,
+        /// The workflow files whose runs are still queued or in progress.
+        pending: Vec<String>,
+    },
     /// Pagination hit its own ceiling: every page came back full and the instance never once
     /// said the collection had ended.
     ///
@@ -691,6 +771,10 @@ impl ErrorKind {
     /// conditions call for the *same* action — wait and try again — so a script that branches on
     /// 8 does the right thing under either. Anything that must tell them apart has
     /// [`Error::kind`].
+    /// [`ErrorKind::CiFailed`] and [`ErrorKind::CiPending`] are **1 and 8**, the same pair as
+    /// [`ErrorKind::ChecksFailed`] and [`ErrorKind::ChecksPending`], so a script written against
+    /// `fjo pr checks` reads `fjo ci` the same way: 1 means look at a log, 8 means wait.
+    ///
     pub fn exit_code(&self) -> i32 {
         use ErrorKind::*;
         match self {
@@ -720,13 +804,14 @@ impl ErrorKind {
 
             ServerError { .. } | PaginationDidNotTerminate { .. } => 7,
 
-            RateLimited { .. } | ChecksPending { .. } => 8,
+            RateLimited { .. } | ChecksPending { .. } | CiPending { .. } => 8,
 
             Cancelled => 130,
 
             // 1 is the honest answer for the rest: something the user asked for did not happen,
             // and no finer-grained code would tell a script anything it could act on.
-            // `StateConflict`, `RunFailed` and `GitFailed` all land here alongside `Conflict`.
+            // `StateConflict`, `RunFailed`, `CiFailed` and `GitFailed` all land here alongside
+            // `Conflict`.
             _ => 1,
         }
     }
@@ -846,6 +931,29 @@ mod tests {
             "failed and pending must not be the same code: one waits, the other does not"
         );
         assert!(!agit.is_transient() && !checks.is_transient());
+    }
+
+    /// `fjo ci` exits the way `fjo pr checks` does: 1 for a red commit, 8 for one still running.
+    /// Bug this prevents: `CiPending` falling into the catch-all 1, which would make a script's
+    /// `case $? in 8) sleep 60;;` give up on CI that was merely slow.
+    #[test]
+    fn ci_failed_exits_1_and_ci_pending_exits_8_like_pr_checks() {
+        let failed = ErrorKind::CiFailed {
+            slug: None,
+            target: Some("42".into()),
+            sha: "f36d1a7".repeat(5) + "ab0de",
+            failed: vec![FailedRun::new(6442, "ci.yml", "failure", vec![], None)],
+        };
+        let pending =
+            ErrorKind::CiPending { slug: None, target: None, sha: "a".repeat(40), pending: vec![] };
+        assert_eq!(failed.exit_code(), 1);
+        assert_eq!(pending.exit_code(), 8);
+        assert!(!failed.is_transient() && !pending.is_transient());
+    }
+
+    #[test]
+    fn a_failed_run_without_a_url_carries_none() {
+        assert_eq!(FailedRun::new(1, "ci.yml", "failure", vec![], Some(" ".into())).url, None);
     }
 
     /// The order of the tests in `from_stderr` is the whole subtlety: a push-options refusal also
