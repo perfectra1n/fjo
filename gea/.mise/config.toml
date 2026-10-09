@@ -483,16 +483,16 @@ set -eu
 # crates/gea-itest/src/coverage.rs.
 #
 # To drain one: `cargo xtask coverage-check --list` names what is uncovered.
-# Every porcelain leaf is driven live. The raw budget is the 11 operations the
-# Gitea port has not yet written live tests for (Actions reruns/attempts/job
-# and workflow reads need a run that actually executed; the rest are cheap and
-# just unwritten): ActionsGetWorkflow, getWorkflowJob, getWorkflowRunAttempt,
-# listWorkflowRunAttemptJobs, rerunFailedWorkflowRun, rerunWorkflowJob,
+# Every porcelain leaf is driven live. The raw budget is the 5 operations the
+# Gitea port has not yet written live tests for, all cheap and just unwritten:
 # getCurrentToken, deleteCurrentToken, orgDeleteRepos,
-# repoUpdateBranchProtectionPriories, userCheckUserBlock.
+# repoUpdateBranchProtectionPriories, userCheckUserBlock. (The Actions
+# reruns/attempts/job and workflow reads that needed a run that actually
+# executed are driven by crates/gea-itest/tests/live_ci.rs against the
+# harness's real runner.)
 #
 # This budget drains to zero by writing those tests, never by raising it.
-RAW_BUDGET=11
+RAW_BUDGET=5
 PORCELAIN_BUDGET=0
 # Start from an empty directory. A journal is named after the pid that wrote
 # it, so stale ones from an earlier run would ACCUMULATE rather than be

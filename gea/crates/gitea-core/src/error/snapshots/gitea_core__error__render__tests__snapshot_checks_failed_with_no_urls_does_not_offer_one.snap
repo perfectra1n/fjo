@@ -12,5 +12,5 @@ what to do:
   1. no URL was published; check the logs in the service that runs these
      checks
   2. gea pr checks 4212 --web  (the same checks in a browser)
-  note: checks may come from external services. For Gitea Actions, use gea
-        run list.
+  note: checks may come from external services. For Gitea Actions, gea ci
+        logs 4212 prints the failed jobs' logs.

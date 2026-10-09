@@ -47,8 +47,8 @@
 //! * `6442` — an id. **Only** if no run has that id (a 404) is it retried as a run number, and a
 //!   note on stderr says so; an id that is neither is still the server's 404.
 //! * `#3623` — explicitly the run number, found by paging the run list newest first.
-//! * the run's web URL, `…/actions/runs/6442[/jobs/2]` — the id in it, and with `/jobs/<n>` the
-//!   job at that position, which `view --log`, `logs` and `rerun` act on unless `--job` says
+//! * the run's web URL, `…/actions/runs/6442[/jobs/33898]` — the id in it, and with `/jobs/<id>`
+//!   that job, which `view --log`, `logs` and `rerun` act on unless `--job` says
 //!   otherwise.
 //!
 //! `--job` is a [`JobRef`]: a job id, or a job's name — an exact match, else an unambiguous
@@ -72,7 +72,7 @@ use crate::global::GlobalOpts;
 use crate::output::color;
 use crate::runtime::Runtime;
 
-use crate::cmd::run_ref::{JobRef, RunRef, job_at, resolve_job, resolve_run};
+use crate::cmd::run_ref::{JobRef, RunRef, resolve_job, resolve_run};
 
 use crate::cmd::support;
 use crate::cmd::support::listing::{self as emit, Fields, Listing};
@@ -502,7 +502,7 @@ async fn rerun(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &RerunArgs) 
     let slug = slug(rt, globals)?;
     let run = resolve_run(api, slug, &args.run).await?;
     // `--failed` is explicit, so it outranks a job URL; `--job` cannot be combined with it.
-    let job = if !args.failed && (args.job.is_some() || args.run.job_index().is_some()) {
+    let job = if !args.failed && (args.job.is_some() || args.run.url_job().is_some()) {
         let jobs = fetch_jobs(api, slug, run.id).await?;
         chosen_job(&jobs, &args.run, args.job.as_ref())?
     } else {
@@ -522,7 +522,7 @@ async fn rerun(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &RerunArgs) 
 }
 
 /// The job a command should act on: `--job` when given, otherwise the job a pasted
-/// `…/jobs/<n>` URL points at, otherwise none (every job).
+/// `…/jobs/<id>` URL points at, otherwise none (every job).
 ///
 /// `--job` wins over the URL because it is the more deliberate of the two: the URL is whatever
 /// page happened to be open.
@@ -534,7 +534,7 @@ fn chosen_job(
     if let Some(j) = job {
         return resolve_job(jobs, j).map(|j| Some(j.id));
     }
-    run.job_index().map(|i| job_at(jobs, i).map(|j| j.id)).transpose()
+    run.url_job().map(|id| resolve_job(jobs, &JobRef::Id(id)).map(|j| j.id)).transpose()
 }
 
 /// Which part of a finished run to run again — the three routes Gitea has for it.
@@ -1498,12 +1498,13 @@ mod tests {
                     Canned::json(200, JOBS_6442),
                 ),
         );
-        let r: RunRef = "https://git.example.org/o/r/actions/runs/6442/jobs/2".parse().unwrap();
+        let r: RunRef = "https://git.example.org/o/r/actions/runs/6442/jobs/23".parse().unwrap();
         let (run, jobs) =
             fetch_view(&api_for(fake.clone()), &RepoSlug::new("o", "r"), &r).await.unwrap();
         assert_eq!(run.id.get(), 6442);
         assert_eq!(fake.call_count(), 2, "{:?}", fake.calls());
-        // And the URL's `/jobs/2` is the third job, for `view --log` and `logs`.
+        // And the URL's `/jobs/23` is job 23 (an id, as Gitea 1.27 links it), for `view --log` and
+        // `logs`.
         assert_eq!(chosen_job(&jobs, &r, None).unwrap(), Some(JobId::new(23)));
     }
 
@@ -1567,7 +1568,7 @@ mod tests {
     #[test]
     fn job_flag_wins_over_a_job_url() {
         let jobs = jobs_6442();
-        let r: RunRef = "https://h/o/r/actions/runs/6442/jobs/0".parse().unwrap();
+        let r: RunRef = "https://h/o/r/actions/runs/6442/jobs/21".parse().unwrap();
         assert_eq!(chosen_job(&jobs, &r, None).unwrap(), Some(JobId::new(21)));
         assert_eq!(
             chosen_job(&jobs, &r, Some(&"lint".parse().unwrap())).unwrap(),

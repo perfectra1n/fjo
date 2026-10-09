@@ -1,10 +1,9 @@
 ---
 source: crates/gea/src/cmd/pr/checks.rs
-assertion_line: 783
 expression: out
 ---
 CHECK       STATE    AGE  DETAILS
-ci / build  success       https://gitea.example.org/them/proj/actions/runs/6441/jobs/0
+ci / build  success       /them/proj/actions/runs/6441/jobs/64411
 lint        success       https://ci.example.org/lint
 style       warning       https://ci.example.org/style
 

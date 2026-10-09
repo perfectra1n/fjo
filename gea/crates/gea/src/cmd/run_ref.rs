@@ -15,7 +15,7 @@
 //! | --- | --- |
 //! | `6442` | an id — and, only if no run has that id, the run whose number it is |
 //! | `#3623` | explicitly the run number |
-//! | `https://host/o/r/actions/runs/6442[/jobs/2]` | the id in the URL (Gitea 1.27's `html_url` carries the id), and optionally a job by position |
+//! | `https://host/o/r/actions/runs/6442[/jobs/33898]` | the id in the URL (Gitea 1.27's `html_url` carries the id), and optionally a job by its id |
 //!
 //! The bare-number fallback is deliberately **one-way and loud**: the id is tried first, because
 //! that is what every `gea` output prints and what the API means; the number is consulted only on
@@ -75,9 +75,10 @@ pub enum RunRef {
     Url {
         /// The run segment of the URL.
         run: i64,
-        /// `…/jobs/<n>`: the job at that 0-based position in the run's job list. See
-        /// [`job_at`].
-        job_index: Option<u32>,
+        /// `…/jobs/<n>`: the job with that **id**. Gitea 1.27 puts the job's id there, not its
+        /// position (measured: a run whose jobs are ids 3 and 4 links them as `jobs/3` and
+        /// `jobs/4`), and so do the `target_url`s of the commit statuses Actions posts.
+        job: Option<i64>,
         /// The repository the URL names. **Not** used to switch repository — `-R` does that —
         /// only to warn when it differs from the one the command resolved.
         slug: RepoSlug,
@@ -85,10 +86,10 @@ pub enum RunRef {
 }
 
 impl RunRef {
-    /// The URL's job position, when the reference was a job URL.
-    pub(crate) fn job_index(&self) -> Option<u32> {
+    /// The URL's job id, when the reference was a job URL.
+    pub(crate) fn url_job(&self) -> Option<i64> {
         match self {
-            RunRef::Url { job_index, .. } => *job_index,
+            RunRef::Url { job, .. } => *job,
             RunRef::Bare(_) | RunRef::Number(_) => None,
         }
     }
@@ -119,7 +120,7 @@ impl FromStr for RunRef {
             return Ok(RunRef::Bare(n));
         }
         if let Some(u) = parse_run_url(s) {
-            return Ok(RunRef::Url { run: u.run, job_index: u.job_index, slug: u.slug });
+            return Ok(RunRef::Url { run: u.run, job: u.job, slug: u.slug });
         }
         Err(reject(raw))
     }
@@ -147,32 +148,40 @@ pub(crate) struct RunUrl {
     pub slug: RepoSlug,
     /// The run segment: the run's id on Gitea 1.27.
     pub run: i64,
-    /// The `jobs/<n>` segment, when there was one: a 0-based position, not a job id.
-    pub job_index: Option<u32>,
+    /// The `jobs/<n>` segment, when there was one: the job's id on Gitea 1.27.
+    pub job: Option<i64>,
 }
 
-/// `https://host[/subpath]/owner/name/actions/runs/6442[/jobs/2|/attempts/3][/][?…][#…]`.
+/// `https://host[/subpath]/owner/name/actions/runs/6442[/jobs/33898|/attempts/3][/][?…][#…]`,
+/// or the same without scheme and host (`/owner/name/actions/runs/6442/jobs/33898`).
+///
+/// The path-only form is not a nicety: it is what Gitea 1.27 puts in the `target_url` of every
+/// commit status its Actions post, so a parser that insisted on `://` recognised no real check
+/// as an Actions run, and `gea pr checks` never pointed at `gea ci`.
 ///
 /// Parsed by hand, like `pr::common::parse_url`, rather than through `RepoRef`: the slug sits in
 /// front of three more segments, which `RepoRef` would read as the repository's name. Anything
 /// after the recognised segments is ignored rather than refused, so a link copied from a deeper
 /// page still names its run.
 pub(crate) fn parse_run_url(raw: &str) -> Option<RunUrl> {
-    let rest = raw.trim().split_once("://")?.1;
+    let raw = raw.trim();
+    let path = match raw.split_once("://") {
+        Some((_scheme, rest)) => rest.split_once('/')?.1,
+        None => raw.strip_prefix('/')?,
+    };
     // The query and the fragment are not part of the path, and a `#L12` anchor on a log line is
     // exactly the kind of thing that gets pasted.
-    let rest = rest.split(['?', '#']).next()?;
-    let (_authority, path) = rest.split_once('/')?;
+    let path = path.split(['?', '#']).next()?;
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let at = segs.windows(2).position(|w| w == ["actions", "runs"])?;
     let owner = segs.get(at.checked_sub(2)?)?;
     let name = segs.get(at - 1)?;
     let run = positive(segs.get(at + 2)?)?;
-    let job_index = match segs.get(at + 3) {
-        Some(&"jobs") => Some(segs.get(at + 4)?.parse::<u32>().ok()?),
+    let job = match segs.get(at + 3) {
+        Some(&"jobs") => Some(positive(segs.get(at + 4)?)?),
         _ => None,
     };
-    Some(RunUrl { slug: RepoSlug::new(*owner, *name), run, job_index })
+    Some(RunUrl { slug: RepoSlug::new(*owner, *name), run, job })
 }
 
 /// The run id in an Actions run URL, or `None` when the URL is not one.
@@ -373,19 +382,6 @@ pub(crate) fn pick_job<'a, T>(
     }
 }
 
-/// The job at `index` in the run's job list — what a `…/jobs/<index>` URL means.
-///
-/// 0-based, in the order the jobs endpoint returns them, which is the order the web UI numbers
-/// them in its URLs.
-pub(crate) fn job_at(jobs: &[ActionWorkflowJob], index: u32) -> Result<&ActionWorkflowJob> {
-    usize::try_from(index).ok().and_then(|i| jobs.get(i)).ok_or_else(|| {
-        job_not_found(
-            &format!("at position {index}"),
-            jobs.iter().map(|j| format!("{} (id {})", j.name, j.id)).collect(),
-        )
-    })
-}
-
 fn job_not_found(what: &str, have: Vec<String>) -> Error {
     let have = if have.is_empty() { "none yet".to_owned() } else { have.join(", ") };
     Error::new(ErrorKind::ResourceNotFound {
@@ -411,15 +407,17 @@ mod tests {
 
     #[test]
     fn every_run_reference_form_parses() {
-        let url = |run, job_index| RunRef::Url { run, job_index, slug: slug() };
+        let url = |run, job| RunRef::Url { run, job, slug: slug() };
         let cases: &[(&str, RunRef)] = &[
             ("6442", RunRef::Bare(6442)),
             (" 6442 ", RunRef::Bare(6442)),
             ("#3623", RunRef::Number(3623)),
             ("https://git.example.org/o/r/actions/runs/6442", url(6442, None)),
             ("https://git.example.org/o/r/actions/runs/6442/", url(6442, None)),
-            ("https://git.example.org/o/r/actions/runs/6442/jobs/2", url(6442, Some(2))),
-            ("https://git.example.org/o/r/actions/runs/6442/jobs/0/", url(6442, Some(0))),
+            ("https://git.example.org/o/r/actions/runs/6442/jobs/33898", url(6442, Some(33898))),
+            ("https://git.example.org/o/r/actions/runs/6442/jobs/33898/", url(6442, Some(33898))),
+            // The path-only form Gitea puts in an Actions commit status's `target_url`.
+            ("/o/r/actions/runs/6442/jobs/12", url(6442, Some(12))),
             ("https://git.example.org/o/r/actions/runs/6442/attempts/3", url(6442, None)),
             ("https://git.example.org/o/r/actions/runs/6442?tab=logs", url(6442, None)),
             ("https://git.example.org/o/r/actions/runs/6442/jobs/1#L12", url(6442, Some(1))),
@@ -448,6 +446,8 @@ mod tests {
             "https://git.example.org/o/r/actions/runs/abc",
             "https://git.example.org/o/r/pulls/4",
             "https://git.example.org/o/r/actions/runs/6442/jobs/x",
+            "https://git.example.org/o/r/actions/runs/6442/jobs/0",
+            "o/r/actions/runs/6442",
         ] {
             let err = raw.parse::<RunRef>().expect_err(raw);
             assert!(err.contains(RUN_FORMS), "{raw}: {err}");
@@ -459,13 +459,18 @@ mod tests {
         assert_eq!(RunRef::Bare(6442).to_string(), "6442");
         assert_eq!(RunRef::Number(3623).to_string(), "#3623");
         let u: RunRef = "https://h/o/r/actions/runs/7/jobs/1".parse().unwrap();
-        assert_eq!((u.to_string(), u.job_index()), ("7".to_owned(), Some(1)));
+        assert_eq!((u.to_string(), u.url_job()), ("7".to_owned(), Some(1)));
     }
 
     /// For `pr checks`: a check's `target_url` is a run only when it really is an Actions run.
     #[test]
     fn a_run_id_is_read_out_of_a_check_url_and_nothing_else_is() {
-        assert_eq!(run_id_from_url("https://h/o/r/actions/runs/6442/jobs/0"), Some(6442));
+        assert_eq!(run_id_from_url("https://h/o/r/actions/runs/6442/jobs/1"), Some(6442));
+        // Gitea 1.27 posts Actions statuses with a path-only `target_url`. Bug this prevents:
+        // `gea pr checks` treating every real Actions check as external CI, and so never
+        // printing its `next: gea ci …` hint (found by the live suite, not by a fixture).
+        assert_eq!(run_id_from_url("/o/r/actions/runs/6/jobs/12"), Some(6));
+        assert_eq!(run_id_from_url("/gitea/o/r/actions/runs/6"), Some(6));
         assert_eq!(run_id_from_url("https://ci.example.org/builds/6442"), None);
         assert_eq!(run_id_from_url(""), None);
         assert_eq!(
@@ -709,14 +714,18 @@ mod tests {
         assert!(err.to_string().contains("release.yml / lint (id 2)"), "{err}");
     }
 
-    /// A job URL's index is a position, not an id: `/jobs/0` is the first job whatever its id.
+    /// Bug this prevents: a pasted job URL acting on the wrong job. Gitea 1.27 links a job as
+    /// `…/jobs/<job id>` (measured against a live instance: jobs 3 and 4 of a run are `jobs/3` and
+    /// `jobs/4`), so the segment is an id, and treating it as a position picked a different job
+    /// or none at all.
     #[test]
-    fn a_url_job_index_is_a_zero_based_position() {
+    fn a_url_job_segment_is_a_job_id() {
+        let u: RunRef = "https://h/o/r/actions/runs/7/jobs/13".parse().unwrap();
+        assert_eq!(u.url_job(), Some(13));
         let jobs = jobs();
-        assert_eq!(job_at(&jobs, 0).unwrap().id.get(), 11);
-        assert_eq!(job_at(&jobs, 3).unwrap().id.get(), 14);
-        let err = job_at(&jobs, 4).unwrap_err();
-        assert_eq!(err.exit_code(), 5, "{err}");
-        assert!(err.to_string().contains("at position 4"), "{err}");
+        assert_eq!(
+            resolve_job(&jobs, &JobRef::Id(u.url_job().unwrap())).unwrap().name,
+            "build (macos)"
+        );
     }
 }

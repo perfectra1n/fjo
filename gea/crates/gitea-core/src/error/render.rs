@@ -1323,9 +1323,10 @@ fn advise(kind: &ErrorKind, ctx: &RequestCtx) -> Advice {
                 Line::step(2, format!("gea pr checks {pr}{scope} --web"))
                     .and_text("  (the same checks in a browser)"),
             )
-            .todo(Line::note(
-                "checks may come from external services. For Gitea Actions, use gea run list.",
-            ))
+            .todo(Line::note(format!(
+                "checks may come from external services. For Gitea Actions, gea ci logs {pr}{scope} \
+                 prints the failed jobs' logs."
+            )))
         }
 
         RunFailed { slug, run, conclusion, failed_jobs, url } => {

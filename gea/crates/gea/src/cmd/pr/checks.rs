@@ -670,10 +670,13 @@ mod tests {
         assert_eq!(display_name(&c), "finished in 4m");
     }
 
-    /// A check posted by this repository's own Actions, at `jobs/0` of run `run`.
+    /// A check posted by this repository's own Actions for a job of run `run` — with the
+    /// path-only `target_url` Gitea 1.27 really posts (`/owner/name/actions/runs/<id>/jobs/<id>`).
+    /// The fixture used to carry a full URL, which no Actions status has, and so hid that the
+    /// parser required a scheme and recognised no real check.
     fn actions(context: &str, state: &str, run: i64) -> CommitStatus {
         CommitStatus {
-            target_url: format!("https://gitea.example.org/them/proj/actions/runs/{run}/jobs/0"),
+            target_url: format!("/them/proj/actions/runs/{run}/jobs/{}", run * 10 + 1),
             ..check(context, state)
         }
     }

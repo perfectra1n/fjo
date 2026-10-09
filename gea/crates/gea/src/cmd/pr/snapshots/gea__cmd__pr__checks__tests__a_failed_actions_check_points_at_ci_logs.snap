@@ -1,11 +1,10 @@
 ---
 source: crates/gea/src/cmd/pr/checks.rs
-assertion_line: 748
 expression: "human(&s, false)"
 ---
 CHECK       STATE    AGE  DETAILS
-ci / build  success       https://gitea.example.org/them/proj/actions/runs/6441/jobs/0
-ci / test   failure       https://gitea.example.org/them/proj/actions/runs/6442/jobs/0
+ci / build  success       /them/proj/actions/runs/6441/jobs/64411
+ci / test   failure       /them/proj/actions/runs/6442/jobs/64421
 external    pending       https://ci.example.org/external
 docs        skipped       https://ci.example.org/docs
 

@@ -47,7 +47,7 @@ server-side `head_sha` filter (the same one `run list --commit` uses), which wor
 | --- | --- |
 | `6442` | `Bare(6442)`: an id, with fallback (below) |
 | `#3623` | `Number(3623)`: explicitly the per-repository run number |
-| `https://host/o/r/actions/runs/6442`, optionally followed by `/jobs/2`, `/attempts/N`, or a trailing slash/query/fragment | `Url { run: 6442, job_index: Option<u32> }`. The run segment is treated like `Bare` (Gitea 1.27's `html_url` carries the id). The URL's owner/name are **not** used to switch repository (out of scope; `-R` does that), but if they differ from the resolved repository, print a stderr note. |
+| `https://host/o/r/actions/runs/6442`, optionally followed by `/jobs/2`, `/attempts/N`, or a trailing slash/query/fragment | `Url { run: 6442, job: Option<i64> }` (the job's id; see below). The run segment is treated like `Bare` (Gitea 1.27's `html_url` carries the id). The URL's owner/name are **not** used to switch repository (out of scope; `-R` does that), but if they differ from the resolved repository, print a stderr note. |
 
 Anything else is a clap usage error. It names the accepted forms: "expected a run id (`6442`), a
 run number (`#3623`), or a run URL".
@@ -80,8 +80,11 @@ The `i32` range guard (`int()` in run.rs) still applies after resolution.
 - `Name(s)`: a case-insensitive **exact** name match wins. Otherwise a unique case-insensitive
   **substring** match. Zero matches is not-found (listing the jobs). Several matches is a usage
   error listing each candidate as `name (id N)` and saying "pass the id to choose one". Never guess.
-- A run URL's `job_index` resolves to the job at that 0-based position in the run's job list (the
-  order the jobs endpoint returns). Out of range is not-found.
+- A run URL's `/jobs/<n>` segment is the job's **id** (`Url { job: Option<i64> }`), resolved like
+  `--job <id>`; no such job is not-found. *Corrected after the live suite:* this section first said
+  a 0-based position, but Gitea 1.27 links jobs by id (a run whose jobs are ids 3 and 4 links them
+  as `jobs/3` and `jobs/4`). Commit statuses posted by Actions carry the same URL **path-only**
+  (`/owner/name/actions/runs/<id>/jobs/<id>`), so the URL parser accepts that form too.
 
 ### 1.3 CI targets (`crates/gea/src/cmd/ci/target.rs`, new)
 
