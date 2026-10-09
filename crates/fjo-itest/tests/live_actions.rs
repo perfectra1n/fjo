@@ -39,6 +39,11 @@
 //! empty because a task is created when a runner *claims* a job, and no artifact is ever
 //! uploaded, which is why the three artifact operations are reachable only through their
 //! not-found paths.
+//!
+//! The harness can now attach a runner (`fjo_itest::runner`), and the outcome half lives in
+//! `live_runner.rs` and `live_ci.rs`. This file stays runner-free on purpose: the `waiting`
+//! lifecycle is its subject, and a runner on the shared instance would take its jobs. Its
+//! workflows ask for no label the shared runner offers, so none of them is ever picked up.
 
 use std::path::{Path, PathBuf};
 
