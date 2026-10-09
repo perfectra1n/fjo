@@ -14,7 +14,7 @@ use gitea_model::ActionWorkflowJob;
 use serde_json::json;
 
 use super::view::{self, RunView};
-use super::watch::{Poll, follow};
+use super::watch::{Poll, appeared, changes, follow, states};
 use super::*;
 use crate::cmd::support::testing::{self, on, on_fn};
 
@@ -212,6 +212,26 @@ fn hints_name_the_target_and_carry_an_explicit_repo() {
     assert_eq!(hint("logs", &resolved(Some(url)), &g), format!("gea ci logs {url}"));
 }
 
+/// Bug this prevents: `ci.yml@refs/heads/main` and `ci.yml@refs/tags/v1`, both `push`, drawn
+/// as two identical `ci.yml` lines. `latest_per_workflow` keeps both, so the names must differ.
+#[test]
+fn same_file_same_event_on_two_refs_is_told_apart_by_the_ref() {
+    let at = |id: i64, file_ref: &str, event: &str| {
+        run_with(id, "x", event, "completed", "success", json!({ "path": file_ref }))
+    };
+    let main = at(1, "ci.yml@refs/heads/main", "push");
+    let tag = at(2, "ci.yml@refs/tags/v1", "push");
+    let pr = at(3, "ci.yml@refs/pull/7/merge", "pull_request");
+    let lint = at(4, "lint.yml@refs/heads/main", "push");
+    assert_eq!(
+        view::names(&[&main, &tag, &pr, &lint]),
+        ["ci.yml (push, main)", "ci.yml (push, v1)", "ci.yml (pull_request)", "lint.yml"]
+    );
+    // One event per file needs no qualifier, and the event alone when that tells them apart.
+    assert_eq!(view::names(&[&main, &pr]), ["ci.yml (push)", "ci.yml (pull_request)"]);
+    assert_eq!(view::names(&[&main]), ["ci.yml"]);
+}
+
 #[test]
 fn the_empty_note_says_why_and_names_the_workflows_a_filter_missed() {
     let note = no_runs_message(&resolved(Some("2626")), &[], None);
@@ -394,7 +414,7 @@ fn status_human_output_pending_suggests_watch() {
 fn status_human_output_for_a_commit_with_no_runs() {
     let out = view::render(&resolved(Some("2626")), &[], &testing::term(), None);
     insta::assert_snapshot!(out);
-    assert!(view::verdict(&resolved(Some("2626")), &[]).is_ok());
+    assert!(view::verdict(&resolved(Some("2626")), &[], None).is_ok());
 }
 
 fn json_of(selected: &[&ActionWorkflowRun], fields: &str) -> String {
@@ -424,7 +444,7 @@ fn status_json_output_golden() {
 fn a_failed_run_is_ci_failed_exit_1_naming_its_failed_jobs() {
     let runs = mixed_runs();
     let views = mixed_views(&runs);
-    let err = view::verdict(&resolved(Some("2626")), &views).unwrap_err();
+    let err = view::verdict(&resolved(Some("2626")), &views, None).unwrap_err();
     assert_eq!(err.exit_code(), 1);
     let ErrorKind::CiFailed { target, sha, failed, .. } = err.kind() else { panic!("{err:?}") };
     assert_eq!((target.as_deref(), sha.as_str()), (Some("2626"), SHA));
@@ -438,7 +458,7 @@ fn a_failed_run_is_ci_failed_exit_1_naming_its_failed_jobs() {
 fn an_unfinished_run_is_ci_pending_exit_8() {
     let runs = [run(1, "ci.yml", "completed", "success"), run(2, "lint.yml", "waiting", "")];
     let views: Vec<RunView<'_>> = runs.iter().map(RunView::bare).collect();
-    let err = view::verdict(&resolved(None), &views).unwrap_err();
+    let err = view::verdict(&resolved(None), &views, None).unwrap_err();
     assert_eq!(err.exit_code(), 8);
     let ErrorKind::CiPending { target, pending, .. } = err.kind() else { panic!("{err:?}") };
     assert_eq!((target, pending.as_slice()), (&None, &["lint.yml".to_owned()][..]));
@@ -449,7 +469,105 @@ fn skipped_counts_as_success() {
     let runs =
         [run(1, "ci.yml", "completed", "success"), run(2, "docs.yml", "completed", "skipped")];
     let views: Vec<RunView<'_>> = runs.iter().map(RunView::bare).collect();
-    assert!(view::verdict(&resolved(None), &views).is_ok());
+    assert!(view::verdict(&resolved(None), &views, None).is_ok());
+}
+
+/// Bug this prevents: `--all`, a display flag, changing the exit code. A run that failed and
+/// was rerun green is shown under `--all`, marked superseded, but the commit is green: exit 0
+/// and no `next:` line, exactly as without `--all`.
+#[test]
+fn all_shows_a_superseded_failure_without_letting_it_into_the_verdict() {
+    let runs = vec![timed(10, "ci.yml", "failure", 30), timed(12, "ci.yml", "success", 61)];
+    let shown = select(&runs, true, None);
+    let mut views: Vec<RunView<'_>> = shown.iter().copied().map(RunView::bare).collect();
+    view::mark_superseded(&mut views, &runs, None);
+    assert_eq!(
+        views.iter().map(|v| (v.run.id.get(), v.superseded)).collect::<Vec<_>>(),
+        [(10, true), (12, false)]
+    );
+    assert!(view::verdict(&resolved(None), &views, None).is_ok());
+    assert_eq!(view::next_verb(&views), None);
+    let out = view::render(&resolved(None), &views, &testing::term(), None);
+    assert!(out.contains("ci.yml (superseded)"), "{out}");
+    assert!(!out.contains("next:"), "{out}");
+    insta::assert_snapshot!(out);
+    // --json under --all lists every run, superseded included; the exit code above is unchanged.
+    let json = json_of(&shown, "id,conclusion");
+    assert!(json.contains("10") && json.contains("12"), "{json}");
+}
+
+/// The other direction: a green run superseded by a red rerun is still red under `--all`.
+#[test]
+fn all_still_fails_when_the_newest_run_failed() {
+    let runs =
+        vec![run(10, "ci.yml", "completed", "success"), run(12, "ci.yml", "completed", "failure")];
+    let mut views: Vec<RunView<'_>> =
+        select(&runs, true, None).into_iter().map(RunView::bare).collect();
+    view::mark_superseded(&mut views, &runs, None);
+    let err = view::verdict(&resolved(None), &views, None).unwrap_err();
+    let ErrorKind::CiFailed { failed, .. } = err.kind() else { panic!("{err:?}") };
+    assert_eq!(failed.iter().map(|f| f.id).collect::<Vec<_>>(), [12]);
+    assert_eq!(view::next_verb(&views), Some("logs"));
+}
+
+// ------------------------------------------------------------------------------- -R advice
+
+fn rendered(err: &gitea_core::error::Error) -> String {
+    gitea_core::error::render::render(err, gitea_core::error::render::Color::Never)
+}
+
+fn red_views(runs: &[ActionWorkflowRun]) -> Vec<RunView<'_>> {
+    runs.iter().map(RunView::bare).collect()
+}
+
+/// Bug this prevents: the `next:` line and the error under it naming two different commands —
+/// `next: gea ci logs` above `gea ci logs -R o/r`, or `-R` pasted after a URL that already
+/// names its repository. Both now follow [`repo_flag`].
+#[test]
+fn error_advice_carries_r_exactly_when_the_next_line_does() {
+    let runs = [run(1, "ci.yml", "completed", "failure")];
+    let views = red_views(&runs);
+    let check = |target: Option<&str>, globals: &GlobalOpts, want: &str| {
+        let r = resolved(target);
+        let err = view::verdict(&r, &views, advice_slug(&r, globals)).unwrap_err();
+        let out = rendered(&err);
+        let next = hint("logs", &r, globals);
+        assert_eq!(next, want);
+        assert!(out.contains(&format!("1. {want}  (")), "advice is not `{want}`:\n{out}");
+        let ErrorKind::CiFailed { slug, .. } = err.kind() else { panic!("{err:?}") };
+        assert_eq!(slug.is_some(), want.contains(" -R "));
+    };
+    let here = GlobalOpts::default();
+    let flagged = GlobalOpts { repo: Some("o/r".parse().unwrap()), ..GlobalOpts::default() };
+    // In a checkout, no -R: the repository comes from the checkout, where the command reruns.
+    check(None, &here, "gea ci logs");
+    check(Some("2626"), &here, "gea ci logs 2626");
+    // With -R, the advice keeps it.
+    check(None, &flagged, "gea ci logs -R o/r");
+    check(Some("main"), &flagged, "gea ci logs main -R o/r");
+    // A URL names its repository; -R after it would be noise at best.
+    let url = "https://git.example.org/o/r/pulls/7";
+    check(Some(url), &flagged, &format!("gea ci logs {url}"));
+    check(Some(url), &here, &format!("gea ci logs {url}"));
+}
+
+/// The same rule for pending and for no runs at all.
+#[test]
+fn pending_and_no_runs_advice_follow_the_same_r_rule() {
+    let runs = [run(1, "ci.yml", "in_progress", "")];
+    let views = red_views(&runs);
+    let flagged = GlobalOpts { repo: Some("o/r".parse().unwrap()), ..GlobalOpts::default() };
+    let here = GlobalOpts::default();
+    let r = resolved(Some("main"));
+    let out = rendered(&view::verdict(&r, &views, advice_slug(&r, &here)).unwrap_err());
+    assert!(out.contains("1. gea ci watch main  ("), "{out}");
+    let out = rendered(&view::verdict(&r, &views, advice_slug(&r, &flagged)).unwrap_err());
+    assert!(out.contains("1. gea ci watch main -R o/r  ("), "{out}");
+
+    let out = rendered(&no_runs_error(&r, &here, None));
+    assert!(out.contains("gea ci watch main --appear-timeout"), "{out}");
+    let out = rendered(&no_runs_error(&r, &flagged, None));
+    assert!(out.contains("gea ci watch main -R o/r --appear-timeout"), "{out}");
 }
 
 // ------------------------------------------------------------------------------------ logs
@@ -628,6 +746,53 @@ async fn watch_waits_for_runs_to_appear_then_gives_up() {
     assert_eq!((fake.call_count(), sleeps.get()), (3, 2));
     assert_eq!(said.len(), 1, "announced once, not every poll: {said:?}");
     assert!(said[0].contains("waiting up to 2s"), "{said:?}");
+
+    // Giving up is not success. Bug this prevents: `gea ci watch && gea pr merge` merging a
+    // commit no workflow ever ran on, because an empty selection exited 0.
+    let err = appeared(&runs, &resolved(Some("main")), &GlobalOpts::default(), None).unwrap_err();
+    assert_eq!(err.exit_code(), 8);
+    let ErrorKind::CiNoRuns { slug, target, sha, workflow } = err.kind() else { panic!("{err:?}") };
+    assert_eq!(
+        (slug, target.as_deref(), sha.as_str(), workflow),
+        (&None, Some("main"), SHA, &None)
+    );
+}
+
+/// A `--workflow` that matches none of the commit's runs gives up the same way, and says which
+/// workflow it was waiting for.
+#[test]
+fn watch_gives_up_on_a_workflow_filter_that_matches_nothing() {
+    let runs = vec![run(1, "ci.yml", "completed", "success")];
+    let err =
+        appeared(&runs, &resolved(None), &GlobalOpts::default(), Some("nope.yml")).unwrap_err();
+    assert_eq!(err.exit_code(), 8);
+    let ErrorKind::CiNoRuns { workflow, .. } = err.kind() else { panic!("{err:?}") };
+    assert_eq!(workflow.as_deref(), Some("nope.yml"));
+    assert_eq!(appeared(&runs, &resolved(None), &GlobalOpts::default(), None).unwrap().len(), 1);
+}
+
+/// Bug this prevents: transitions matched across polls by display name. When a second
+/// `ci.yml` (another ref, same event) appears, the first one's name gains a qualifier; matched by
+/// name it would read as a brand-new run, and two same-named runs would swap transitions.
+#[test]
+fn watch_matches_runs_across_polls_by_identity_not_name() {
+    let at = |id: i64, file_ref: &str, status: &str, conclusion: &str| {
+        run_with(id, "x", "push", status, conclusion, json!({ "path": file_ref }))
+    };
+    let main_queued = at(1, "ci.yml@refs/heads/main", "queued", "");
+    let before = states(&[&main_queued]);
+    let main_running = at(1, "ci.yml@refs/heads/main", "in_progress", "");
+    let tag_queued = at(2, "ci.yml@refs/tags/v1", "queued", "");
+    let now = states(&[&main_running, &tag_queued]);
+    assert_eq!(
+        changes(&before, &now),
+        ["ci.yml (push, main): queued → in_progress", "ci.yml (push, v1): queued"]
+    );
+
+    // Both present on both polls, only one moves: the transition lands on the right one.
+    let tag_done = at(2, "ci.yml@refs/tags/v1", "completed", "failure");
+    let later = states(&[&main_running, &tag_done]);
+    assert_eq!(changes(&now, &later), ["ci.yml (push, v1): queued → failure"]);
 }
 
 /// A run that appears after a few empty polls is followed like any other.

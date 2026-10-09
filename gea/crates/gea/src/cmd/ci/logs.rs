@@ -14,7 +14,7 @@ use gitea_model::{ActionWorkflowJob, ActionWorkflowRun};
 
 use super::target::{self, CiState, Resolved, ci_state};
 use super::view::{self, RunView, job_failed};
-use super::{LogsArgs, no_runs, select, sha7};
+use super::{LogsArgs, advice_slug, no_runs, select, sha7};
 use crate::cmd::run::{LOG_CONCURRENCY, concat_logs, fetch_jobs, fetch_logs, workflow_file};
 use crate::cmd::run_ref::{JobRef, pick_job};
 use crate::cmd::support;
@@ -41,7 +41,7 @@ pub(super) async fn run(
     let picked = pick(api, &resolved.slug, &selected, args.all, args.job.as_ref()).await?;
     if picked.is_empty() {
         support::warn(&nothing_to_print(&resolved, &selected, args.all));
-        return view::verdict(&resolved, &bare(&selected));
+        return view::verdict(&resolved, &bare(&selected), advice_slug(&resolved, globals));
     }
     let wanted: Vec<&ActionWorkflowJob> = picked.iter().map(|(_, j)| j).collect();
     let logs = fetch_logs(api, &resolved.slug, &wanted).await?;

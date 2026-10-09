@@ -13,14 +13,23 @@
 //!
 //! | you type | means |
 //! | --- | --- |
-//! | `6442` | an id — and, only if no run has that id, the run whose number it is |
+//! | `6442` | an id — and, for a read-only command and only if no run has that id, the run whose number it is |
 //! | `#3623` | explicitly the run number |
-//! | `https://host/o/r/actions/runs/6442[/jobs/33898]` | the id in the URL (Gitea 1.27's `html_url` carries the id), and optionally a job by its id |
+//! | `https://host/o/r/actions/runs/6442[/jobs/33898]` | the id in the URL (Gitea 1.27's `html_url` carries the id), and optionally a job by its id; never a number |
 //!
 //! The bare-number fallback is deliberately **one-way and loud**: the id is tried first, because
 //! that is what every `gea` output prints and what the API means; the number is consulted only on
 //! a 404, and when it is used a note says so. Guessing silently would be worse than the 404 it
 //! replaces — an id and a number that are both valid name two *different* runs.
+//!
+//! Two places get no fallback at all, and the caller says which by passing [`Fallback`]:
+//!
+//! * **Commands that change something** (`run delete`, `run rerun`). A guess that reads the wrong
+//!   run costs a confused look; a guess that deletes it costs the run. `gea run delete 6442 --yes`
+//!   after 6442 is already gone must not go on to delete the unrelated run numbered #6442, so a
+//!   404 there is the 404, with a hint to type `#6442` if the number was meant.
+//! * **URLs**, always. The run segment of a Gitea URL is an id by construction, never a number,
+//!   so a 404 for it means the run is gone — retrying it as a number could only find a stranger.
 //!
 //! # Jobs, by name
 //!
@@ -29,11 +38,6 @@
 //! already set (see `docs/porcelain-conventions.md`): an exact match wins, a unique substring is
 //! accepted, and an **ambiguous** name is refused with the candidates listed — never guessed,
 //! because a matrix build's `build (linux)` and `build (macos)` are both "build".
-
-// `gea run` uses these now; `run_id_from_url` is for `gea pr checks` and `pick_job`'s generic
-// form for `gea ci`, which land separately. Until both do, some of this is reached only from the
-// tests.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use std::str::FromStr;
 
@@ -67,11 +71,11 @@ const NUMBER_SCAN_PAGE_SIZE: i32 = 50;
 /// A run, as the user named it. See the module docs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunRef {
-    /// `6442`: an id, falling back to the run number on a 404.
+    /// `6442`: an id, falling back to the run number on a 404 when [`Fallback::ToNumber`].
     Bare(i64),
     /// `#3623`: explicitly the per-repository run number.
     Number(i64),
-    /// A run's web URL. `run` is treated like [`RunRef::Bare`].
+    /// A run's web URL. `run` is an id and only an id: it never falls back to a run number.
     Url {
         /// The run segment of the URL.
         run: i64,
@@ -184,29 +188,49 @@ pub(crate) fn parse_run_url(raw: &str) -> Option<RunUrl> {
     Some(RunUrl { slug: RepoSlug::new(*owner, *name), run, job })
 }
 
-/// The run id in an Actions run URL, or `None` when the URL is not one.
+/// Whether two slugs name the same repository.
 ///
-/// For `gea pr checks`, whose status checks carry a `target_url` and nothing else: when that URL
-/// is an Actions run of the same repository, the check can be followed with `gea ci`. Same parser
-/// as [`RunRef`], so the two cannot disagree about which URLs are runs.
-pub(crate) fn run_id_from_url(raw: &str) -> Option<i64> {
-    parse_run_url(raw).map(|u| u.run)
+/// Gitea's owner and repository names are case-insensitive: `Them/Proj` in a URL is `them/proj`.
+/// Bug this prevents: a URL copied from a page whose owner is capitalised differently from the
+/// remote warning that it names a *different* repository, or (in `gea pr checks`) an Actions run
+/// of the pull request's own repository being treated as external CI.
+pub(crate) fn same_repo(a: &RepoSlug, b: &RepoSlug) -> bool {
+    a.owner.eq_ignore_ascii_case(&b.owner) && a.name.eq_ignore_ascii_case(&b.name)
+}
+
+/// Whether a bare number that is not a run id may be retried as a run number. See the module
+/// docs for why the answer differs by command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Fallback {
+    /// Read-only commands (`view`, `logs`, `watch`, `jobs`, `artifacts`): a bare id that 404s is
+    /// retried as `#N`, loudly. The worst a wrong guess does is show the wrong run, and the note
+    /// says which one it showed.
+    ToNumber,
+    /// Commands that change something (`delete`, `rerun`): a bare id that 404s is the 404. The
+    /// user can still name a number, by typing `#N`.
+    Never,
 }
 
 /// Turn a [`RunRef`] into the run it names, in `slug`.
 ///
-/// * [`RunRef::Bare`] and [`RunRef::Url`]: `GET …/actions/runs/{n}`. On a 404 **only**, the run
-///   whose `run_number` is `n` is used instead, with one note on stderr saying so. If there is
-///   none, the original 404 is returned, after a note naming both forms. Any other error — a 403,
-///   a 5xx, a network failure — propagates unchanged: it says nothing about whether `n` was the
-///   wrong kind of number, and retrying it as one would only hide it.
+/// * [`RunRef::Bare`]: `GET …/actions/runs/{n}`. With [`Fallback::ToNumber`], on a 404 **only**,
+///   the run whose `run_number` is `n` is used instead, with one note on stderr saying so; if
+///   there is none, the original 404 is returned after a note naming both forms. With
+///   [`Fallback::Never`] the 404 is returned as it is, after a note suggesting `#n`. Any other
+///   error — a 403, a 5xx, a network failure — propagates unchanged in either mode: it says
+///   nothing about whether `n` was the wrong kind of number, and retrying it as one would only
+///   hide it.
+/// * [`RunRef::Url`]: `GET …/actions/runs/{n}` and nothing else, whatever `fallback` says — the
+///   segment is an id. A note on stderr when the URL names a different repository.
 /// * [`RunRef::Number`]: the run with that number, or `ResourceNotFound`.
 ///
-/// `term` is for the notes, which follow `support::note`'s rule (a terminal only).
+/// The notes go through `support::warn` (stderr, always): a script that typed one thing and got
+/// another run, or a 404 it could have avoided, needs to be told even with nobody watching.
 pub(crate) async fn resolve_run(
     api: &Api,
     slug: &RepoSlug,
     r: &RunRef,
+    fallback: Fallback,
 ) -> Result<ActionWorkflowRun> {
     let id = match r {
         RunRef::Number(n) => {
@@ -214,13 +238,13 @@ pub(crate) async fn resolve_run(
         }
         RunRef::Bare(n) => *n,
         RunRef::Url { run, slug: named, .. } => {
-            if named != slug {
+            if !same_repo(named, slug) {
                 support::warn(&format!(
                     "note: the URL names {named}, but this command is working in {slug}; \
                          looking run {run} up in {slug} (pass -R {named} to use the URL's)"
                 ));
             }
-            *run
+            return api.run().view(&slug.owner, &slug.name, int(*run)?).await;
         }
     };
 
@@ -229,6 +253,10 @@ pub(crate) async fn resolve_run(
         Err(e) if is_miss(&e) => e,
         Err(e) => return Err(e),
     };
+    if fallback == Fallback::Never {
+        support::warn(&format!("note: no run has id {id}; if {id} is a run number, pass #{id}"));
+        return Err(miss);
+    }
     // A failed scan is not reported in place of the 404: the 404 is the answer to what was
     // asked, and the scan was only ever a courtesy on top of it.
     if let Ok(Some(run)) = run_by_number(api, slug, id).await {
@@ -464,19 +492,30 @@ mod tests {
 
     /// For `pr checks`: a check's `target_url` is a run only when it really is an Actions run.
     #[test]
-    fn a_run_id_is_read_out_of_a_check_url_and_nothing_else_is() {
-        assert_eq!(run_id_from_url("https://h/o/r/actions/runs/6442/jobs/1"), Some(6442));
+    fn a_run_is_read_out_of_a_check_url_and_nothing_else_is() {
+        let run = |raw: &str| parse_run_url(raw).map(|u| u.run);
+        assert_eq!(run("https://h/o/r/actions/runs/6442/jobs/1"), Some(6442));
         // Gitea 1.27 posts Actions statuses with a path-only `target_url`. Bug this prevents:
         // `gea pr checks` treating every real Actions check as external CI, and so never
         // printing its `next: gea ci …` hint (found by the live suite, not by a fixture).
-        assert_eq!(run_id_from_url("/o/r/actions/runs/6/jobs/12"), Some(6));
-        assert_eq!(run_id_from_url("/gitea/o/r/actions/runs/6"), Some(6));
-        assert_eq!(run_id_from_url("https://ci.example.org/builds/6442"), None);
-        assert_eq!(run_id_from_url(""), None);
+        assert_eq!(run("/o/r/actions/runs/6/jobs/12"), Some(6));
+        assert_eq!(run("/gitea/o/r/actions/runs/6"), Some(6));
+        assert_eq!(run("https://ci.example.org/builds/6442"), None);
+        assert_eq!(run(""), None);
         assert_eq!(
             parse_run_url("https://h/them/proj/actions/runs/9").map(|u| u.slug.to_string()),
             Some("them/proj".to_owned())
         );
+    }
+
+    /// Bug this prevents: a URL copied from `https://h/Them/Proj/…` warning that it names a
+    /// different repository from the `them/proj` the command resolved — Gitea treats the two as
+    /// one.
+    #[test]
+    fn repositories_compare_case_insensitively() {
+        assert!(same_repo(&RepoSlug::new("Them", "Proj"), &RepoSlug::new("them", "proj")));
+        assert!(!same_repo(&RepoSlug::new("them", "proj"), &RepoSlug::new("them", "proj2")));
+        assert!(!same_repo(&RepoSlug::new("alice", "proj"), &RepoSlug::new("them", "proj")));
     }
 
     #[test]
@@ -501,8 +540,14 @@ mod tests {
             "/api/v1/repos/o/r/actions/runs/6442",
             Canned::json(200, RUN_6442),
         ));
-        let run =
-            resolve_run(&testing::api(fake.clone()), &slug(), &RunRef::Bare(6442)).await.unwrap();
+        let run = resolve_run(
+            &testing::api(fake.clone()),
+            &slug(),
+            &RunRef::Bare(6442),
+            Fallback::ToNumber,
+        )
+        .await
+        .unwrap();
         assert_eq!(run.id.get(), 6442);
         assert_eq!(fake.call_count(), 1, "{:?}", fake.calls());
     }
@@ -526,8 +571,14 @@ mod tests {
                 ),
             ),
         ));
-        let run =
-            resolve_run(&testing::api(fake.clone()), &slug(), &RunRef::Bare(3623)).await.unwrap();
+        let run = resolve_run(
+            &testing::api(fake.clone()),
+            &slug(),
+            &RunRef::Bare(3623),
+            Fallback::ToNumber,
+        )
+        .await
+        .unwrap();
         assert_eq!((run.id.get(), run.run_number), (6442, 3623));
         assert_eq!(fake.call_count(), 2, "{:?}", fake.calls());
     }
@@ -547,7 +598,9 @@ mod tests {
             "/api/v1/repos/o/r/actions/runs",
             Canned::json(200, format!(r#"{{"total_count":1,"workflow_runs":[{RUN_6442}]}}"#)),
         ));
-        let err = resolve_run(&testing::api(fake), &slug(), &RunRef::Bare(99)).await.unwrap_err();
+        let err = resolve_run(&testing::api(fake), &slug(), &RunRef::Bare(99), Fallback::ToNumber)
+            .await
+            .unwrap_err();
         assert_eq!(err.exit_code(), 5, "{err:?}");
         assert!(
             err.ctx.path.as_deref().is_some_and(|p| p.ends_with("/actions/runs/99")),
@@ -565,9 +618,14 @@ mod tests {
             "/api/v1/repos/o/r/actions/runs/6442",
             Canned::json(403, r#"{"message":"no"}"#),
         ));
-        let err = resolve_run(&testing::api(fake.clone()), &slug(), &RunRef::Bare(6442))
-            .await
-            .unwrap_err();
+        let err = resolve_run(
+            &testing::api(fake.clone()),
+            &slug(),
+            &RunRef::Bare(6442),
+            Fallback::ToNumber,
+        )
+        .await
+        .unwrap_err();
         assert_ne!(err.exit_code(), 5, "{err:?}");
         assert_eq!(fake.call_count(), 1, "{:?}", fake.calls());
     }
@@ -597,14 +655,17 @@ mod tests {
         ));
         let api = testing::api(fake.clone());
 
-        let run = resolve_run(&api, &slug(), &RunRef::Number(117)).await.unwrap();
+        let run =
+            resolve_run(&api, &slug(), &RunRef::Number(117), Fallback::ToNumber).await.unwrap();
         assert_eq!(run.run_number, 117);
         assert_eq!(fake.call_count(), 2, "{:?}", fake.calls());
 
         // Newer than any run: the very first page is already below it, so that page is the
         // whole scan.
         let before = fake.call_count();
-        let err = resolve_run(&api, &slug(), &RunRef::Number(1000)).await.unwrap_err();
+        let err = resolve_run(&api, &slug(), &RunRef::Number(1000), Fallback::ToNumber)
+            .await
+            .unwrap_err();
         assert_eq!(err.exit_code(), 5, "{err}");
         assert!(err.to_string().contains("#1000"), "{err}");
         assert_eq!(fake.call_count() - before, 1, "stopped after the first page");
@@ -629,9 +690,14 @@ mod tests {
                 )
             },
         ));
-        let err = resolve_run(&testing::api(fake.clone()), &slug(), &RunRef::Number(5))
-            .await
-            .unwrap_err();
+        let err = resolve_run(
+            &testing::api(fake.clone()),
+            &slug(),
+            &RunRef::Number(5),
+            Fallback::ToNumber,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.exit_code(), 2, "{err}");
         assert!(err.to_string().contains("pass the run's id"), "{err}");
         assert_eq!(fake.call_count(), NUMBER_SCAN_PAGES as usize);
@@ -647,8 +713,69 @@ mod tests {
         ));
         let r: RunRef =
             "https://git.example.org/other/repo/actions/runs/6442/jobs/1".parse().unwrap();
-        let run = resolve_run(&testing::api(fake), &slug(), &r).await.unwrap();
+        let run = resolve_run(&testing::api(fake), &slug(), &r, Fallback::ToNumber).await.unwrap();
         assert_eq!(run.id.get(), 6442);
+    }
+
+    /// A 404 for `id`, and a run list in which a *different* run is numbered `id` — the trap the
+    /// fallback can walk into.
+    fn id_missing_but_number_exists(id: i64) -> Arc<gitea_core::http::FakeTransport> {
+        Arc::new(on(
+            on(
+                testing::transport(),
+                "GET",
+                &format!("/api/v1/repos/o/r/actions/runs/{id}"),
+                Canned::json(404, r#"{"message":"run not found"}"#),
+            ),
+            "GET",
+            "/api/v1/repos/o/r/actions/runs",
+            Canned::json(
+                200,
+                format!(r#"{{"total_count":1,"workflow_runs":[{{"id":9001,"run_number":{id}}}]}}"#),
+            ),
+        ))
+    }
+
+    /// The bug this prevents is `gea run delete 6442 --yes`, run a second time after 6442 is
+    /// gone, deleting the unrelated run numbered #6442. Without the fallback the 404 is the
+    /// answer, and the run list is never even read.
+    #[tokio::test]
+    async fn without_the_fallback_a_missing_bare_id_is_the_original_404() {
+        let fake = id_missing_but_number_exists(6442);
+        let err =
+            resolve_run(&testing::api(fake.clone()), &slug(), &RunRef::Bare(6442), Fallback::Never)
+                .await
+                .unwrap_err();
+        assert_eq!(err.exit_code(), 5, "{err:?}");
+        assert!(
+            err.ctx.path.as_deref().is_some_and(|p| p.ends_with("/actions/runs/6442")),
+            "{err:?}"
+        );
+        assert_eq!(fake.call_count(), 1, "{:?}", fake.calls());
+    }
+
+    /// `#N` is explicit, so it still reaches a run by number where a bare id no longer does.
+    #[tokio::test]
+    async fn without_the_fallback_an_explicit_number_still_resolves() {
+        let fake = id_missing_but_number_exists(6442);
+        let run = resolve_run(&testing::api(fake), &slug(), &RunRef::Number(6442), Fallback::Never)
+            .await
+            .unwrap();
+        assert_eq!(run.id.get(), 9001);
+    }
+
+    /// A URL's run segment is an id by construction. Bug this prevents: a pasted link to a run
+    /// that has since been deleted resolving to whichever other run happens to carry that
+    /// number — even in a read-only command, where the fallback is otherwise on.
+    #[tokio::test]
+    async fn a_run_url_never_falls_back_to_a_run_number() {
+        let fake = id_missing_but_number_exists(6442);
+        let r: RunRef = "https://git.example.org/o/r/actions/runs/6442".parse().unwrap();
+        let err = resolve_run(&testing::api(fake.clone()), &slug(), &r, Fallback::ToNumber)
+            .await
+            .unwrap_err();
+        assert_eq!(err.exit_code(), 5, "{err:?}");
+        assert_eq!(fake.call_count(), 1, "{:?}", fake.calls());
     }
 
     // ------------------------------------------------------------------------- resolve_job

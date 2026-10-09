@@ -32,6 +32,7 @@
 
 use futures::StreamExt;
 use gitea_client::{Api, query};
+use gitea_core::context::RepoSource;
 use gitea_core::context::git::GitCtx;
 use gitea_core::error::{Error, ErrorKind, Result};
 use gitea_core::types::RepoSlug;
@@ -53,6 +54,15 @@ const OPEN_PR_SCAN: usize = 200;
 /// Runs per page when listing a commit's runs. A commit has a handful of runs; this only bounds
 /// how a pathological one is paged.
 const RUNS_PAGE_SIZE: i32 = 50;
+
+/// How many pages of runs a commit's run listing reads before giving up.
+///
+/// A commit has a handful of runs, so a server that honours `head_sha` answers in one page. The
+/// cap is for one that ignores the filter and answers with every run in the repository: without
+/// it, every `gea ci` — and every poll of `gea ci watch` — would page the repository's entire
+/// history to keep the few runs that match. Hitting the cap is reported, since the list may then
+/// be incomplete.
+const RUNS_SCAN_PAGES: i32 = 10;
 
 /// What the user asked about, before any request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,8 +167,10 @@ pub(crate) async fn resolve_target(
             resolve_branch(api, &slug, &b, Some(b.clone())).await
         }
         Target::Commit(c) => {
-            let slug = rt.repo(globals)?.slug.clone();
-            resolve_commit(rt.git(), api, &slug, &c).await
+            let ctx = rt.repo(globals)?;
+            // The checkout's objects only say anything about the checkout's repository.
+            let local = from_checkout(&ctx.source).then(|| rt.git());
+            resolve_commit(local, api, &ctx.slug, &c).await
         }
     }
 }
@@ -207,7 +219,11 @@ async fn resolve_branch(
     Ok(Resolved { slug: slug.clone(), label: format!("branch {branch}"), sha, selector })
 }
 
-/// The newest open pull request whose head is `branch`, when there is one.
+/// The newest open pull request whose head is `branch` **in this repository**, when there is one.
+///
+/// A fork's pull request is never "the branch's pull request": a fork opening a PR from its own
+/// `main` has a head labelled `main` too, and matching on the name alone made `gea ci main` report
+/// the fork's commit as the base repository's `main`. See [`head_is_base_repo`].
 async fn open_pr_for_branch(
     api: &Api,
     slug: &RepoSlug,
@@ -220,6 +236,7 @@ async fn open_pr_for_branch(
     while let Some(item) = stream.next().await {
         let pr = item?;
         if common::head_matches(&pr, branch)
+            && head_is_base_repo(&pr, slug)
             && best.as_ref().is_none_or(|b| pr.number.get() > b.number.get())
         {
             best = Some(pr);
@@ -228,14 +245,41 @@ async fn open_pr_for_branch(
     Ok(best)
 }
 
+/// Whether the pull request's head branch lives in the repository it targets — not a fork's.
+///
+/// Repository ids when the server sends both (a renamed or transferred repository keeps its id);
+/// otherwise the head repository's `full_name` against `slug`, case-insensitively as Gitea's names
+/// are. When neither is known the answer is no: the cost of a wrong no is only the "PR #N" in the
+/// label (the branch's tip is the same commit), while a wrong yes reports another repository's CI.
+fn head_is_base_repo(pr: &PullRequest, slug: &RepoSlug) -> bool {
+    let Some(head) = &pr.head else { return false };
+    let base_id = pr.base.as_ref().map_or(0, |b| b.repo_id);
+    let head_id = head.repo.as_ref().map_or(head.repo_id, |r| r.id.get());
+    if base_id != 0 && head_id != 0 {
+        return base_id == head_id;
+    }
+    head.repo
+        .as_ref()
+        .is_some_and(|r| r.full_name.eq_ignore_ascii_case(&format!("{}/{}", slug.owner, slug.name)))
+}
+
+/// Whether the repository was inferred from the current checkout's remotes, so that the
+/// checkout's objects are that repository's objects.
+///
+/// `-R` and `$GEA_REPO` can name any repository; expanding a short SHA against the local clone
+/// of a different one finds the wrong commit (or one the named repository does not have).
+fn from_checkout(source: &RepoSource) -> bool {
+    matches!(source, RepoSource::Remote { .. } | RepoSource::GitConfig { .. })
+}
+
 /// A commit, expanded to its full SHA.
 ///
 /// A full SHA is taken as it is: listing runs for it is the existence check, and an empty list
-/// is an honest answer. A short one is expanded locally when there is a checkout (no request),
-/// and through the API otherwise. A short SHA no commit has falls back to a branch of that name,
-/// for the `defaced` case the module docs describe.
+/// is an honest answer. A short one is expanded locally when `git` is given — the repository is
+/// the checkout's — (no request), and through the API otherwise. A short SHA no commit has falls
+/// back to a branch of that name, for the `defaced` case the module docs describe.
 async fn resolve_commit(
-    git: &dyn GitCtx,
+    git: Option<&dyn GitCtx>,
     api: &Api,
     slug: &RepoSlug,
     given: &str,
@@ -264,17 +308,32 @@ async fn resolve_commit(
     })
 }
 
-/// A short SHA as a full one: local `git` first, the server second.
+/// A short SHA as a full one: local `git` first (when given), the server second.
 ///
 /// `<sha>^{commit}` rather than the bare SHA, because `git rev-parse --verify` succeeds for any
 /// well-formed 40-hex string whether or not the object exists, and for a short one it would
 /// happily resolve a tree or a blob. A local miss is not final — the commit may simply not have
 /// been fetched — so it falls through to the server rather than failing.
-async fn expand_sha(git: &dyn GitCtx, api: &Api, slug: &RepoSlug, short: &str) -> Result<String> {
-    if git.git_dir()?.is_some() {
+///
+/// Both answers must **start with what was typed**. `rev-parse` (and the server's commit lookup)
+/// resolve ref names too, so a hex-looking branch `deadbeef` would otherwise come back as that
+/// branch's tip — locally, possibly an unpushed one — labelled "commit deadbeef". A result that
+/// is not a prefix match is not this commit; the caller then tries the branch.
+async fn expand_sha(
+    git: Option<&dyn GitCtx>,
+    api: &Api,
+    slug: &RepoSlug,
+    short: &str,
+) -> Result<String> {
+    let short = short.to_ascii_lowercase();
+    let short = short.as_str();
+    let expands = |full: &str| is_full_sha(full) && full.starts_with(short);
+    if let Some(git) = git
+        && git.git_dir()?.is_some()
+    {
         let out = git.try_run(&["rev-parse", "--verify", &format!("{short}^{{commit}}")])?;
         let full = out.stdout.trim().to_ascii_lowercase();
-        if out.ok && is_full_sha(&full) {
+        if out.ok && expands(&full) {
             return Ok(full);
         }
     }
@@ -286,7 +345,7 @@ async fn expand_sha(git: &dyn GitCtx, api: &Api, slug: &RepoSlug, short: &str) -
     };
     let commit = api.repo().get_single_commit(&slug.owner, &slug.name, short, &q).await?;
     let full = commit.sha.to_ascii_lowercase();
-    if is_full_sha(&full) { Ok(full) } else { Err(support::not_found("commit", short, slug)) }
+    if expands(&full) { Ok(full) } else { Err(support::not_found("commit", short, slug)) }
 }
 
 /// Where "here" is, locally, before anything is asked of the server.
@@ -362,18 +421,46 @@ fn is_missing(e: &Error) -> bool {
 
 // ------------------------------------------------------------------------------------- runs
 
-/// Every Actions run for one commit, all pages.
+/// Every Actions run for one commit.
 ///
 /// The server filters on `head_sha`; the result is filtered again here. Not redundancy for its
 /// own sake: an instance that does not know the parameter ignores it and answers with every run
 /// in the repository, and `gea ci` would then report some other commit's red run as this one's.
+/// On such an instance the scan is bounded (see [`scan_runs_for_sha`]), and hitting the bound is
+/// said once on stderr rather than passed off as the complete list.
 pub(crate) async fn runs_for_sha(
     api: &Api,
     slug: &RepoSlug,
     sha: &str,
 ) -> Result<Vec<ActionWorkflowRun>> {
+    let scan = scan_runs_for_sha(api, slug, sha).await?;
+    if scan.capped {
+        support::warn(&format!(
+            "warning: {slug} appears to ignore the head_sha filter; read {RUNS_SCAN_PAGES} pages \
+             of runs and stopped, so runs for {} may be missing",
+            short(sha)
+        ));
+    }
+    Ok(scan.runs)
+}
+
+/// What [`scan_runs_for_sha`] found, and whether it stopped at [`RUNS_SCAN_PAGES`].
+#[derive(Debug)]
+struct RunScan {
+    runs: Vec<ActionWorkflowRun>,
+    capped: bool,
+}
+
+/// The paging behind [`runs_for_sha`], separate so the stop rules are testable without stderr.
+///
+/// Stops at the first of: an empty page or the collection's end; a page with no run for `sha`
+/// once one has been seen (runs are listed newest first, so a commit's runs are contiguous enough
+/// that a page past them means they are over — this is what keeps a filter-ignoring server cheap
+/// in the common case of a recent commit); [`RUNS_SCAN_PAGES`] pages, reported as `capped`.
+async fn scan_runs_for_sha(api: &Api, slug: &RepoSlug, sha: &str) -> Result<RunScan> {
     let mut runs: Vec<ActionWorkflowRun> = Vec::new();
-    for page in 1.. {
+    let mut listed: i64 = 0;
+    for page in 1..=RUNS_SCAN_PAGES {
         let q = query::GetWorkflowRunsQuery {
             head_sha: Some(sha.to_owned()),
             page: Some(page),
@@ -382,13 +469,17 @@ pub(crate) async fn runs_for_sha(
         };
         let resp = api.run().list(&slug.owner, &slug.name, &q).await?;
         let got = resp.workflow_runs.len();
-        runs.extend(resp.workflow_runs);
-        if got == 0 || runs.len() as i64 >= resp.total_count {
-            break;
+        listed += got as i64;
+        let before = runs.len();
+        runs.extend(
+            resp.workflow_runs.into_iter().filter(|r| r.head_sha.eq_ignore_ascii_case(sha)),
+        );
+        let matched_here = runs.len() > before;
+        if got == 0 || listed >= resp.total_count || (before > 0 && !matched_here) {
+            return Ok(RunScan { runs, capped: false });
         }
     }
-    runs.retain(|r| r.head_sha.eq_ignore_ascii_case(sha));
-    Ok(runs)
+    Ok(RunScan { runs, capped: true })
 }
 
 /// Where a run stands, in the order `gea ci` lists runs: what needs attention first.
@@ -506,9 +597,15 @@ mod tests {
         }
     }
 
+    /// A same-repository pull request, as Gitea sends it: base and head share a repository id.
     fn pr_json(number: i64, branch: &str, sha: &str) -> String {
+        pr_json_from(number, branch, sha, 1)
+    }
+
+    /// A pull request whose head lives in the repository `head_repo_id` (the base is id 1).
+    fn pr_json_from(number: i64, branch: &str, sha: &str, head_repo_id: i64) -> String {
         format!(
-            r#"{{"number":{number},"state":"open","head":{{"ref":"{branch}","label":"{branch}","sha":"{sha}"}}}}"#
+            r#"{{"number":{number},"state":"open","base":{{"ref":"main","repo_id":1}},"head":{{"ref":"{branch}","label":"{branch}","sha":"{sha}","repo_id":{head_repo_id}}}}}"#
         )
     }
 
@@ -541,6 +638,45 @@ mod tests {
         assert_eq!(r.selector.as_deref(), Some("renovate/zip-9.x"));
         let listed = testing::calls(&fake, "GET", "/api/v1/repos/o/r/pulls");
         assert!(listed[0].query.contains("state=open"), "{:?}", listed[0].query);
+    }
+
+    /// Bug this prevents: a fork's pull request from *its* `main` matched `gea ci main` by head
+    /// name, so the base repository's `main` was reported as the fork's commit.
+    #[tokio::test]
+    async fn a_forks_pull_request_from_a_same_named_branch_is_not_the_branchs() {
+        let list = format!("[{}]", pr_json_from(9, "main", OTHER, 2));
+        let fake = Arc::new(on(
+            on_fn(
+                with_settings(testing::transport()),
+                "GET",
+                "/api/v1/repos/o/r/pulls",
+                move |c| paged(c, &list),
+            ),
+            "GET",
+            "/api/v1/repos/o/r/branches/main",
+            Canned::json(200, format!(r#"{{"name":"main","commit":{{"id":"{SHA}"}}}}"#)),
+        ));
+        let r = resolve_branch(&testing::api(fake), &slug(), "main", Some("main".into()))
+            .await
+            .unwrap();
+        assert_eq!((r.sha.as_str(), r.label.as_str()), (SHA, "branch main"));
+    }
+
+    /// The fork test's other half: without ids, the head repository's name decides, and it is
+    /// compared case-insensitively as Gitea's names are.
+    #[test]
+    fn the_head_repository_is_matched_by_id_else_by_name() {
+        let pr = |json: &str| serde_json::from_str::<PullRequest>(json).unwrap();
+        let same = pr(&pr_json(1, "main", SHA));
+        let fork = pr(&pr_json_from(1, "main", SHA, 2));
+        let named = pr(r#"{"number":1,"head":{"ref":"x","repo":{"full_name":"O/R"}}}"#);
+        let other = pr(r#"{"number":1,"head":{"ref":"x","repo":{"full_name":"them/r"}}}"#);
+        let unknown = pr(r#"{"number":1,"head":{"ref":"x"}}"#);
+        assert!(head_is_base_repo(&same, &slug()));
+        assert!(!head_is_base_repo(&fork, &slug()));
+        assert!(head_is_base_repo(&named, &slug()));
+        assert!(!head_is_base_repo(&other, &slug()));
+        assert!(!head_is_base_repo(&unknown, &slug()), "unknown is not ours");
     }
 
     #[tokio::test]
@@ -581,8 +717,9 @@ mod tests {
         let git =
             FakeGit::repo().with_response(GitOutput::success().with_stdout(format!("{SHA}\n")));
         let fake = Arc::new(testing::transport());
-        let r =
-            resolve_commit(&git, &testing::api(fake.clone()), &slug(), "f36d1a7").await.unwrap();
+        let r = resolve_commit(Some(&git), &testing::api(fake.clone()), &slug(), "f36d1a7")
+            .await
+            .unwrap();
         assert_eq!(r.sha, SHA);
         assert_eq!(r.label, "commit f36d1a7");
         assert_eq!(r.selector.as_deref(), Some("f36d1a7"));
@@ -598,13 +735,62 @@ mod tests {
             "/api/v1/repos/o/r/git/commits/f36d1a7",
             Canned::json(200, format!(r#"{{"sha":"{SHA}"}}"#)),
         ));
-        let r =
-            resolve_commit(&FakeGit::not_a_repo(), &testing::api(fake.clone()), &slug(), "f36d1a7")
-                .await
-                .unwrap();
+        let r = resolve_commit(
+            Some(&FakeGit::not_a_repo()),
+            &testing::api(fake.clone()),
+            &slug(),
+            "f36d1a7",
+        )
+        .await
+        .unwrap();
         assert_eq!(r.sha, SHA);
         let q = &fake.calls()[0].query;
         assert!(q.contains("files=false") && q.contains("stat=false"), "{q}");
+    }
+
+    /// Bug this prevents: `rev-parse deadbeef^{commit}` resolves a local *branch* named
+    /// `deadbeef` to its (possibly unpushed) tip, which was then labelled "commit deadbeef". A
+    /// result that does not start with the input is not that commit; the branch is tried instead.
+    #[tokio::test]
+    async fn a_local_expansion_that_is_not_a_prefix_match_is_a_branch_name() {
+        let git =
+            FakeGit::repo().with_response(GitOutput::success().with_stdout(format!("{OTHER}\n")));
+        let fake = Arc::new(on(
+            on(
+                on_fn(with_settings(testing::transport()), "GET", "/api/v1/repos/o/r/pulls", |c| {
+                    paged(c, "[]")
+                }),
+                "GET",
+                "/api/v1/repos/o/r/git/commits/deadbeef",
+                Canned::json(200, format!(r#"{{"sha":"{OTHER}"}}"#)),
+            ),
+            "GET",
+            "/api/v1/repos/o/r/branches/deadbeef",
+            Canned::json(200, format!(r#"{{"name":"deadbeef","commit":{{"id":"{SHA}"}}}}"#)),
+        ));
+        let r = resolve_commit(Some(&git), &testing::api(fake), &slug(), "deadbeef").await.unwrap();
+        // The server's commit lookup resolved the ref name as well; that is refused the same way.
+        assert_eq!((r.sha.as_str(), r.label.as_str()), (SHA, "branch deadbeef"));
+    }
+
+    /// Bug this prevents: with `-R other/repo`, the short SHA was expanded against the local
+    /// checkout — a different repository's objects.
+    #[tokio::test]
+    async fn a_repository_not_from_the_checkout_expands_on_the_server_only() {
+        let git =
+            FakeGit::repo().with_response(GitOutput::success().with_stdout(format!("{OTHER}\n")));
+        let fake = Arc::new(on(
+            testing::transport(),
+            "GET",
+            "/api/v1/repos/o/r/git/commits/f36d1a7",
+            Canned::json(200, format!(r#"{{"sha":"{SHA}"}}"#)),
+        ));
+        let r = resolve_commit(None, &testing::api(fake), &slug(), "f36d1a7").await.unwrap();
+        assert_eq!(r.sha, SHA);
+        assert!(git.command_lines().is_empty());
+        assert!(!from_checkout(&RepoSource::Flag));
+        assert!(!from_checkout(&RepoSource::Env { var: "GEA_REPO" }));
+        assert!(from_checkout(&RepoSource::Remote { remote: "origin".into(), score: 3 }));
     }
 
     /// A full SHA is used as it is: no git, no request.
@@ -612,7 +798,8 @@ mod tests {
     async fn a_full_sha_needs_no_lookup() {
         let git = FakeGit::repo();
         let fake = Arc::new(testing::transport());
-        let r = resolve_commit(&git, &testing::api(fake.clone()), &slug(), SHA).await.unwrap();
+        let r =
+            resolve_commit(Some(&git), &testing::api(fake.clone()), &slug(), SHA).await.unwrap();
         assert_eq!(r.sha, SHA);
         assert!(git.command_lines().is_empty());
         assert_eq!(fake.call_count(), 0);
@@ -635,9 +822,10 @@ mod tests {
             "/api/v1/repos/o/r/branches/defaced",
             Canned::json(200, format!(r#"{{"name":"defaced","commit":{{"id":"{SHA}"}}}}"#)),
         ));
-        let r = resolve_commit(&FakeGit::not_a_repo(), &testing::api(fake), &slug(), "defaced")
-            .await
-            .unwrap();
+        let r =
+            resolve_commit(Some(&FakeGit::not_a_repo()), &testing::api(fake), &slug(), "defaced")
+                .await
+                .unwrap();
         assert_eq!(r.label, "branch defaced");
     }
 
@@ -721,6 +909,54 @@ mod tests {
         assert_eq!(runs.iter().map(|r| r.id.get()).collect::<Vec<_>>(), [3, 1]);
         assert_eq!(fake.call_count(), 2);
         assert!(fake.calls()[0].query.contains(&format!("head_sha={SHA}")), "{:?}", fake.calls());
+    }
+
+    /// A full page of runs, none of them for `SHA` — what a server ignoring `head_sha` sends.
+    fn foreign_page(page: i64) -> String {
+        let runs: Vec<String> = (0..RUNS_PAGE_SIZE as i64)
+            .map(|i| format!(r#"{{"id":{},"head_sha":"{OTHER}"}}"#, 100_000 - page * 100 - i))
+            .collect();
+        format!(r#"{{"total_count":100000,"workflow_runs":[{}]}}"#, runs.join(","))
+    }
+
+    /// Bug this prevents: on a server that ignores `head_sha`, every `gea ci` (and every watch
+    /// poll) paged the repository's entire history. The scan stops at the cap and says so.
+    #[tokio::test]
+    async fn a_server_ignoring_head_sha_is_scanned_up_to_the_cap() {
+        let fake =
+            Arc::new(on_fn(testing::transport(), "GET", "/api/v1/repos/o/r/actions/runs", |c| {
+                let page: i64 = c.query_param("page").and_then(|p| p.parse().ok()).unwrap_or(1);
+                Canned::json(200, foreign_page(page))
+            }));
+        let scan = scan_runs_for_sha(&testing::api(fake.clone()), &slug(), SHA).await.unwrap();
+        assert!(scan.capped);
+        assert!(scan.runs.is_empty());
+        assert_eq!(fake.call_count(), RUNS_SCAN_PAGES as usize);
+    }
+
+    /// Runs are newest first, so once a commit's runs have been seen, a page without any means
+    /// they are over — the common case on a filter-ignoring server costs a page or two, not ten.
+    #[tokio::test]
+    async fn the_scan_stops_at_the_first_page_without_a_match_after_one() {
+        let fake = Arc::new(on_fn(
+            testing::transport(),
+            "GET",
+            "/api/v1/repos/o/r/actions/runs",
+            |c| {
+                let page: i64 = c.query_param("page").and_then(|p| p.parse().ok()).unwrap_or(1);
+                let body = match page {
+                    1 => format!(
+                        r#"{{"total_count":100000,"workflow_runs":[{{"id":9,"head_sha":"{SHA}"}},{{"id":8,"head_sha":"{OTHER}"}}]}}"#
+                    ),
+                    _ => foreign_page(page),
+                };
+                Canned::json(200, &body)
+            },
+        ));
+        let scan = scan_runs_for_sha(&testing::api(fake.clone()), &slug(), SHA).await.unwrap();
+        assert!(!scan.capped);
+        assert_eq!(scan.runs.iter().map(|r| r.id.get()).collect::<Vec<_>>(), [9]);
+        assert_eq!(fake.call_count(), 2);
     }
 
     /// Bug this prevents: a cancelled duplicate or a superseded failure being reported next to

@@ -7,7 +7,8 @@
 //! is testing to know when to start looking.
 //!
 //! Exit codes are asserted exactly, because they are the interface a script reads: 0 passed,
-//! 1 failed (`CiFailed`), 2 usage, 8 still running (`CiPending`).
+//! 1 failed (`CiFailed`), 2 usage, 8 still running (`CiPending`) or no run ever appeared
+//! (`CiNoRuns`).
 //!
 //! Job logs contain each step's command text as well as its output, so the markers asserted on
 //! are printed in two halves (`echo_unseen`): a marker in the log proves the step ran, not merely
@@ -588,6 +589,37 @@ fn ci_watch_waits_for_a_running_job_and_reports_its_transition() {
     );
     assert!(watched.stdout.contains("success"), "{}", watched.stdout);
     assert!(!watched.stdout.contains("next:"), "{}", watched.stdout);
+}
+
+/// Bug this prevents: `gea ci watch` on a commit no workflow ever ran on exiting 0, which
+/// `gea ci watch && gea pr merge` reads as green. It must give up after `--appear-timeout` with
+/// `CiNoRuns`, exit 8, and say why.
+#[test]
+fn ci_watch_on_a_branch_with_no_workflow_gives_up_with_exit_8() {
+    let inst = instance_or_skip!();
+    let _runner = runner_or_skip!(inst);
+    cover!(porcelain: ["ci watch"], hits: ["getWorkflowRuns", "repoGetBranch", "repoListPullRequests"]);
+    let repo = TestRepo::create_initialized(inst, "ci-none");
+    let dir = tempfile::tempdir().expect("a scratch directory");
+    let clone = dir.path().join("clone");
+    repo.clone_to(&clone);
+    commit_and_push(&clone, "no-ci", "README.txt", "no workflow here\n", "No CI");
+    let sha = git(&clone, &["rev-parse", "HEAD"]).trim().to_owned();
+    let slug = repo.slug();
+
+    let started = Instant::now();
+    let watched =
+        inst.gea(["ci", "watch", "no-ci", "--appear-timeout", "2", "-i", "1", "-R", &slug]);
+    watched.assert_code(8, "gea ci watch on a commit no workflow ran on");
+    assert!(started.elapsed() >= Duration::from_secs(2), "it waited out --appear-timeout");
+    watched.assert_says(&format!("no Actions run appeared for commit {}", &sha[..7]));
+    watched.assert_says(&format!("gea ci watch no-ci -R {slug} --appear-timeout"));
+    assert!(!watched.stdout.contains("next:"), "{}", watched.stdout);
+
+    // `gea ci status` on the same commit: an empty listing, which is success.
+    inst.gea(["ci", "status", "no-ci", "-R", &slug])
+        .assert_ok("gea ci status on a commit with no runs")
+        .assert_says("no Actions runs for");
 }
 
 /// Bug this prevents: the raw Actions operations that only mean something on a run that has

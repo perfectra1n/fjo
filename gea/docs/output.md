@@ -135,9 +135,11 @@ Two of those are subtle enough to be worth stating, because each was a real bug:
 | 5 | not found |
 | 6 | network or transport failure |
 | 7 | server error (5xx) |
-| 8 | rate limited, or checks/CI still pending (`pr checks`, `ci`) — both mean "wait and retry" |
+| 8 | rate limited, checks/CI still pending (`pr checks`, `ci`), or no CI run appeared before `ci watch --appear-timeout` — all mean "no result yet; wait and retry" |
 | 130 | interrupted |
 
 0–4 match `gh`. An empty list is success: `gea pr list --json number` on a repository with no open pull requests prints `[]` and exits 0, so `if gea pr list ...` tests reachability rather than emptiness.
+
+The same holds for `gea ci status` on a commit with no Actions runs: it notes that on stderr and exits 0. To gate on CI, use `gea ci watch`, which waits up to `--appear-timeout` for a run to appear and exits 8 (`CiNoRuns`) when none does, so `gea ci watch && gea pr merge` never merges a commit CI did not look at.
 
 `SIGPIPE` is restored to its default disposition at startup, so `gea pr list | head -1` exits 0 silently instead of panicking with "failed printing to stdout".

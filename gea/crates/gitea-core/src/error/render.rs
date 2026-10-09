@@ -346,6 +346,10 @@ pub fn headline(kind: &ErrorKind) -> String {
             0 | 1 => format!("CI is still running for commit {}", short_sha(sha)),
             n => format!("{n} workflow runs are still running for commit {}", short_sha(sha)),
         },
+        CiNoRuns { sha, workflow, .. } => match workflow.as_deref() {
+            Some(w) => format!("no Actions run of {w} appeared for commit {}", short_sha(sha)),
+            None => format!("no Actions run appeared for commit {}", short_sha(sha)),
+        },
         PaginationDidNotTerminate { pages, .. } => {
             format!("pagination stopped after {pages} pages without reaching the end")
         }
@@ -528,8 +532,13 @@ fn short_sha(sha: &str) -> String {
 }
 
 /// The arguments after `gea ci <verb>` that re-address what the user asked about: the target
-/// when there was one (none means "the branch you are on", which must stay implicit), then the
-/// repository so the command works from outside the checkout too.
+/// when there was one (none means "the branch you are on", which must stay implicit), then
+/// `-R <slug>` whenever a slug was given.
+///
+/// The rule here is deliberately dumb — slug present, `-R` printed — because the decision of
+/// whether the command *needs* `-R` belongs to the caller, which knows whether the user gave
+/// one and whether the target already names the repository (a pull request URL does). `gea ci`
+/// sets `slug` only when its own `next:` hint carries `-R`, so the two never disagree.
 fn ci_args(target: Option<&str>, slug: Option<&str>) -> String {
     let mut out = String::new();
     if let Some(t) = target.map(str::trim).filter(|t| !t.is_empty()) {
@@ -1403,6 +1412,37 @@ fn advise(kind: &ErrorKind, ctx: &RequestCtx) -> Advice {
                 ))
         }
 
+        // The causes are listed because none of them shows in the command's output: an empty
+        // run list looks the same whether the `on:` filter skipped the push, Actions is off, or
+        // Gitea is merely slow. Waiting longer is the remedy for exactly one of them, so it is
+        // the command, and the rest are things to check.
+        CiNoRuns { slug, target, sha, workflow } => {
+            let args = ci_args(target.as_deref(), slug.as_deref());
+            let mut a = a
+                .fact("commit", sha)
+                .fact("target", target.clone().unwrap_or_default())
+                .fact("repository", slug.clone().unwrap_or_default())
+                .fact("workflow", workflow.clone().unwrap_or_default())
+                .todo(Line::text("CI has not looked at this commit; the usual reasons are:"))
+                .todo(Line::text(
+                    "- the workflows' `on:` filters (branches, paths, events) do not match it",
+                ))
+                .todo(Line::text("- Actions is disabled for the repository or the instance"))
+                .todo(Line::text("- the push has not been processed yet"));
+            if workflow.is_some() {
+                a = a.todo(Line::text(
+                    "- --workflow names a file that has no run for this commit",
+                ));
+            }
+            a.todo(
+                Line::step(1, format!("gea ci watch{args} --appear-timeout 300"))
+                    .and_text("  (wait longer for a run to appear)"),
+            )
+            .todo(Line::note(
+                "no CI result yet returns exit code 8, as pending CI does.",
+            ))
+        }
+
         // The content of this advice is load-bearing: `http::paginate`'s rule-(f) test asserts
         // that the rendering names the page count, a `?page`-ignoring instance, a
         // header-stripping proxy, and something actionable. That is the contract, not decoration.
@@ -1729,6 +1769,7 @@ mod tests {
             RunFailed { .. } => "RunFailed",
             CiFailed { .. } => "CiFailed",
             CiPending { .. } => "CiPending",
+            CiNoRuns { .. } => "CiNoRuns",
             RateLimited { .. } => "RateLimited",
             Forbidden { .. } => "Forbidden",
             ServerError { .. } => "ServerError",
@@ -2057,6 +2098,18 @@ mod tests {
                 target: None,
                 sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
                 pending: vec![],
+            },
+            CiNoRuns {
+                slug: Some("perf3ct/gea".into()),
+                target: Some("main".into()),
+                sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                workflow: Some("ci.yml".into()),
+            },
+            CiNoRuns {
+                slug: None,
+                target: None,
+                sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                workflow: None,
             },
             PaginationDidNotTerminate { pages: 10_000, items: 500_000 },
             RateLimited {
@@ -2716,6 +2769,27 @@ mod tests {
         );
         assert!(out.contains("gea ci watch main -R perf3ct/gea"), "{out}");
         assert!(!out.contains("gea ci logs"), "{out}");
+        insta::assert_snapshot!(out);
+    }
+
+    /// No run ever appeared: the headline says so plainly, the advice lists the causes a reader
+    /// cannot see from the output, and the command is the same watch with a longer wait. Bug
+    /// this prevents: `gea ci watch` reporting "nothing" as if it were "passed".
+    #[test]
+    fn snapshot_ci_no_runs() {
+        let out = snap(
+            ErrorKind::CiNoRuns {
+                slug: None,
+                target: Some("feature/x".into()),
+                sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                workflow: None,
+            },
+            RequestCtx::default(),
+        );
+        assert!(out.contains("no Actions run appeared for commit f36d1a7"), "{out}");
+        assert!(out.contains("gea ci watch feature/x --appear-timeout"), "{out}");
+        assert!(!out.contains(" -R "), "{out}");
+        assert!(!out.contains("--workflow names"), "{out}");
         insta::assert_snapshot!(out);
     }
 

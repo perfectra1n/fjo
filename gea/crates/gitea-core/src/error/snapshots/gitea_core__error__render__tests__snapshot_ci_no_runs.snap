@@ -1,0 +1,16 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: out
+---
+error: no Actions run appeared for commit f36d1a7
+
+  commit: f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed
+  target: feature/x
+
+what to do:
+  CI has not looked at this commit; the usual reasons are:
+  - the workflows' `on:` filters (branches, paths, events) do not match it
+  - Actions is disabled for the repository or the instance
+  - the push has not been processed yet
+  1. gea ci watch feature/x --appear-timeout 300  (wait longer for a run to appear)
+  note: no CI result yet returns exit code 8, as pending CI does.

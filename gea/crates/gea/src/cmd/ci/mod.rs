@@ -12,7 +12,8 @@
 //! * **No pickers.** An ambiguous `--job` is refused with every candidate listed, labelled with
 //!   its workflow, never guessed and never prompted for.
 //! * **The exit code is the verdict.** `gea ci` exits 1 (`ErrorKind::CiFailed`) when a selected
-//!   run failed, 8 (`ErrorKind::CiPending`) while one is unfinished, 0 otherwise — under
+//!   run failed, 8 (`ErrorKind::CiPending`) while one is unfinished — or, for `gea ci watch`,
+//!   when no run ever appeared (`ErrorKind::CiNoRuns`) — 0 otherwise — under
 //!   `--json` too, as `gea pr checks` does — so `case $?` is all a script needs.
 //! * **Every human view ends with the next command**, on stdout so an agent reading the output
 //!   sees it: `next: gea ci logs 2626` when something failed, `next: gea ci watch 2626` while
@@ -22,7 +23,8 @@
 //!
 //! One commit collects several runs of one workflow: a re-push, a manual rerun, a cancelled
 //! duplicate. Only the newest says anything about the commit now, so every subcommand works on
-//! [`target::latest_per_workflow`]'s selection; `gea ci status --all` shows the rest.
+//! [`target::latest_per_workflow`]'s selection; `gea ci status --all` shows the rest, marked
+//! superseded, without letting them into the exit code.
 //!
 //! See `docs/superpowers/specs/2026-10-09-ci-porcelain-design.md`.
 
@@ -35,7 +37,7 @@ use std::io::Write;
 
 use clap::{Args as ClapArgs, Subcommand};
 use gitea_client::Api;
-use gitea_core::error::Result;
+use gitea_core::error::{Error, ErrorKind, Result};
 use gitea_core::types::RepoSlug;
 use gitea_model::ActionWorkflowRun;
 
@@ -61,13 +63,16 @@ TARGET is one of:
 
 Every target becomes one commit, and gea ci shows the Actions runs for that commit,
 including pull_request runs, which Gitea files under no branch. Only the newest run of
-each workflow is shown; a run it superseded is hidden (`gea ci status --all` shows it).
+each workflow is shown; a run it superseded is hidden (`gea ci status --all` shows it,
+marked superseded; it never changes the exit code).
 
 `gea ci [TARGET]` is `gea ci status [TARGET]`. A branch named like a subcommand needs
 the explicit form: `gea ci status logs`.
 
 Exit codes: 0 when every run passed (skipped counts as passed), 1 when a run failed,
-8 while a run has not finished. The same under --json.
+8 while a run has not finished. The same under --json. A commit with no runs at all is
+0 for `gea ci status` (an empty listing is not an error); to gate on CI, use
+`gea ci watch`, which exits 8 when no run appears within --appear-timeout.
 
   gea ci                     # CI for the branch you are on
   gea ci 2626                # CI for pull request #2626
@@ -92,7 +97,10 @@ pub enum Cmd {
 Show the CI runs for a target: each workflow's newest run, failed first, with the jobs
 that failed under it and why a waiting job is waiting. Ends with the next command to run.
 
-Exit codes: 0 passed, 1 failed, 8 still running. The same under --json.
+Exit codes: 0 passed, 1 failed, 8 still running. The same under --json. No runs at all
+is 0 (an empty listing is not an error); gate on `gea ci watch` instead, which exits 8.
+--all only adds the superseded runs to what is shown; the exit code and the next command
+still come from each workflow's newest run.
 
   gea ci status
   gea ci status 2626 --workflow ci.yml
@@ -113,7 +121,9 @@ When nothing failed: exit 8 if something is still running, else 0.
     #[command(long_about = "\
 Poll a target's runs until every one has finished, printing each status change to
 stderr, then print `gea ci status` and exit as it does (--exit-status is implied: 0
-passed, 1 failed). When no run exists yet, keep polling up to --appear-timeout.
+passed, 1 failed). When no run exists yet, keep polling up to --appear-timeout; if none
+appears, exit 8 (no CI result yet) rather than 0, so `gea ci watch && gea pr merge` never
+merges a commit CI did not look at.
 
 Ctrl-C stops it at once.
 
@@ -138,7 +148,8 @@ pub struct StatusArgs {
     /// A pull request (42, #42, URL), a branch, or a commit. Defaults to the branch you are on
     #[arg(value_name = "TARGET")]
     pub target: Option<String>,
-    /// Also show runs a newer run of the same workflow superseded
+    /// Also show runs a newer run of the same workflow superseded (display only: the exit code
+    /// still comes from each workflow's newest run)
     #[arg(long)]
     pub all: bool,
     /// Only runs of this workflow file, e.g. `ci.yml`
@@ -246,19 +257,53 @@ pub(crate) fn select<'a>(
 
 /// `gea ci <verb> [target]`, the command a hint names.
 ///
-/// `-R` is carried over when the user gave it, so the hint runs as printed from wherever the
-/// user is — a hint that only works inside the checkout is not "the exact next command".
+/// `-R` is added exactly when [`repo_flag`] says so, the same rule the advice of a
+/// `CiFailed`/`CiPending`/`CiNoRuns` error follows, so the `next:` line and the error under it
+/// never name two different commands.
 pub(crate) fn hint(verb: &str, resolved: &Resolved, globals: &GlobalOpts) -> String {
     let mut cmd = format!("gea ci {verb}");
     if let Some(sel) = &resolved.selector {
         cmd.push(' ');
         cmd.push_str(sel);
     }
-    let is_url = resolved.selector.as_deref().is_some_and(|s| s.contains("://"));
-    if globals.repo.is_some() && !is_url {
-        cmd.push_str(&format!(" -R {}", resolved.slug));
+    if let Some(slug) = repo_flag(resolved, globals) {
+        cmd.push_str(&format!(" -R {slug}"));
     }
     cmd
+}
+
+/// The repository a follow-up `gea ci` command must name with `-R`, or `None` when it reaches
+/// the same one without.
+///
+/// `-R` is carried over when the user gave it, so the command runs as printed from wherever the
+/// user is — one that only works inside the checkout is not "the exact next command". It is
+/// left off when the target is a URL, which names its repository itself, and when the user gave
+/// no `-R`: the repository then came from the checkout, where the command will run again.
+///
+/// The one source of this decision. [`hint`] prints it; the `gea ci` error variants carry it as
+/// their `slug`, which `gitea-core` renders as `-R` whenever it is set.
+pub(crate) fn repo_flag<'a>(resolved: &'a Resolved, globals: &GlobalOpts) -> Option<&'a RepoSlug> {
+    let is_url = resolved.selector.as_deref().is_some_and(|s| s.contains("://"));
+    (globals.repo.is_some() && !is_url).then_some(&resolved.slug)
+}
+
+/// The `slug` of a `gea ci` error: [`repo_flag`], as the taxonomy carries it.
+pub(crate) fn advice_slug(resolved: &Resolved, globals: &GlobalOpts) -> Option<String> {
+    repo_flag(resolved, globals).map(ToString::to_string)
+}
+
+/// The error `gea ci watch` ends with when no run appeared for the commit in time.
+pub(crate) fn no_runs_error(
+    resolved: &Resolved,
+    globals: &GlobalOpts,
+    workflow: Option<&str>,
+) -> Error {
+    Error::new(ErrorKind::CiNoRuns {
+        slug: advice_slug(resolved, globals),
+        target: resolved.selector.clone(),
+        sha: resolved.sha.clone(),
+        workflow: workflow.map(str::to_owned),
+    })
 }
 
 /// The stderr note for a commit with nothing selected, and a check for the usual reason.
@@ -307,6 +352,12 @@ async fn status(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &StatusArgs
 /// Print the status view (or `--json`) for `selected`, and turn it into the exit code.
 ///
 /// Shared by `status` and `watch`, which ends by printing exactly what `status` would.
+///
+/// `selected` is what to *show*; the verdict and the `next:` line always come from the newest
+/// run of each workflow, so `--all` — a display flag — can never change the exit code. A run in
+/// `selected` that a newer one superseded is marked as such in the human view and ignored by
+/// both. An empty `selected` is success: a listing with nothing in it is not an error, and
+/// gating on "CI looked at this commit" is `gea ci watch`'s job.
 pub(crate) async fn report(
     rt: &Runtime,
     globals: &GlobalOpts,
@@ -318,7 +369,8 @@ pub(crate) async fn report(
 ) -> Result<()> {
     let machine = globals.wants_machine_output();
     // The waiting diagnosis costs requests and only the human view prints it.
-    let views = view::gather(api, &resolved.slug, selected, !machine).await?;
+    let mut views = view::gather(api, &resolved.slug, selected, !machine).await?;
+    view::mark_superseded(&mut views, runs, workflow);
     if machine {
         emit::list(rt, globals, listing(selected)?, |_| {})?;
     } else {
@@ -330,7 +382,7 @@ pub(crate) async fn report(
     if selected.is_empty() {
         no_runs(rt, api, resolved, runs, workflow).await;
     }
-    view::verdict(resolved, &views)
+    view::verdict(resolved, &views, advice_slug(resolved, globals))
 }
 
 /// The selected runs as `--json` prints them: the API's own objects, validated against

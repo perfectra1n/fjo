@@ -45,7 +45,7 @@ use gitea_core::{Error, ErrorKind, Result};
 use gitea_model::{CombinedStatus, CommitStatus};
 
 use super::common;
-use crate::cmd::run_ref::parse_run_url;
+use crate::cmd::run_ref::{parse_run_url, same_repo};
 use crate::cmd::support;
 use crate::global::GlobalOpts;
 use crate::output::Term;
@@ -414,11 +414,6 @@ fn needs_repo_flag(context: Option<&RepoContext>, slug: &RepoSlug) -> bool {
 /// elsewhere) is not this pull request's CI as `gea ci <pr>` sees it.
 fn is_own_actions_run(check: &CommitStatus, slug: &RepoSlug) -> bool {
     parse_run_url(&check.target_url).is_some_and(|u| same_repo(&u.slug, slug))
-}
-
-/// Gitea's owner and repository names are case-insensitive: `Them/Proj` in a URL is `them/proj`.
-fn same_repo(a: &RepoSlug, b: &RepoSlug) -> bool {
-    a.owner.eq_ignore_ascii_case(&b.owner) && a.name.eq_ignore_ascii_case(&b.name)
 }
 
 /// What the human view prints after the table: the summary line and, when `gea ci` can help,

@@ -9,7 +9,8 @@
 //!
 //! One thing `run watch` never faces: right after a push, the commit may have **no runs yet**,
 //! because Gitea has not processed the push. "No runs" is then not an answer, so the loop keeps
-//! polling for up to `--appear-timeout` before it reports the commit as having none.
+//! polling for up to `--appear-timeout`. If none appears it fails with `CiNoRuns` (exit 8) —
+//! never 0, which `gea ci watch && gea pr merge` would read as a green commit.
 
 use std::future::Future;
 use std::time::Duration;
@@ -20,8 +21,8 @@ use gitea_model::ActionWorkflowRun;
 
 use super::target::{self, Resolved};
 use super::view::names;
-use super::{WatchArgs, report, select, sha7};
-use crate::cmd::run::{is_finished, outcome};
+use super::{WatchArgs, no_runs_error, no_runs_message, report, select, sha7};
+use crate::cmd::run::{is_finished, outcome, warn_if_actions_disabled};
 use crate::cmd::support;
 use crate::global::GlobalOpts;
 use crate::runtime::Runtime;
@@ -41,8 +42,38 @@ pub(super) async fn run(
     let runs =
         follow(api, &resolved, &poll, tokio::time::sleep, |line| support::note(rt.term(), line))
             .await?;
-    let selected = select(&runs, false, poll.workflow);
+    let selected = match appeared(&runs, &resolved, globals, poll.workflow) {
+        Ok(selected) => selected,
+        Err(e) => {
+            // The error lists the usual causes; these say which one applies, when we can tell.
+            if runs.is_empty() {
+                warn_if_actions_disabled(rt, api, &resolved.slug).await;
+            } else {
+                support::warn(&no_runs_message(&resolved, &runs, poll.workflow));
+            }
+            return Err(e);
+        }
+    };
     report(rt, globals, api, &resolved, &runs, &selected, poll.workflow).await
+}
+
+/// What [`follow`]'s answer selects, or `CiNoRuns` (exit 8) when it selects nothing — the
+/// watch gave up waiting for a run to appear.
+///
+/// Where `gea ci status` reports an empty commit as success (an empty listing is not an error),
+/// `watch` is the command scripts gate on, and "CI never looked at this commit" must not pass
+/// the gate.
+pub(crate) fn appeared<'r>(
+    runs: &'r [ActionWorkflowRun],
+    resolved: &Resolved,
+    globals: &GlobalOpts,
+    workflow: Option<&str>,
+) -> Result<Vec<&'r ActionWorkflowRun>> {
+    let selected = select(runs, false, workflow);
+    if selected.is_empty() {
+        return Err(no_runs_error(resolved, globals, workflow));
+    }
+    Ok(selected)
 }
 
 /// How [`follow`] polls.
@@ -70,7 +101,7 @@ where
     S: FnMut(Duration) -> F,
     F: Future<Output = ()>,
 {
-    let mut seen: Option<Vec<(String, String)>> = None;
+    let mut seen: Option<Vec<State>> = None;
     let mut waited = Duration::ZERO;
     let mut announced = false;
     loop {
@@ -106,23 +137,44 @@ where
     }
 }
 
-/// Each selected run's name and outcome word.
-fn states(selected: &[&ActionWorkflowRun]) -> Vec<(String, String)> {
+/// One selected run as of one poll.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct State {
+    /// Which workflow this is: `(path, event)`, the key
+    /// [`super::target::latest_per_workflow`] selects on. Stable across polls, unlike the
+    /// display name, which gains a qualifier the moment a same-named sibling appears.
+    pub key: (String, String),
+    /// What the line calls it: [`names`]'s name for it in this poll.
+    pub name: String,
+    /// The outcome word, `queued`, `in_progress`, `failure`, ….
+    pub outcome: String,
+}
+
+/// Each selected run's identity, name and outcome word.
+pub(crate) fn states(selected: &[&ActionWorkflowRun]) -> Vec<State> {
     names(selected)
         .into_iter()
         .zip(selected)
-        .map(|(name, r)| (name, outcome(&r.status, &r.conclusion).to_owned()))
+        .map(|(name, r)| State {
+            key: (r.path.clone(), r.event.clone()),
+            name,
+            outcome: outcome(&r.status, &r.conclusion).to_owned(),
+        })
         .collect()
 }
 
 /// One line per run whose state moved since the last poll: `ci.yml: in_progress → failure`, or
 /// `ci.yml: queued` for a run that was not there before.
-fn changes(before: &[(String, String)], now: &[(String, String)]) -> Vec<String> {
+///
+/// Runs are matched across polls by [`State::key`], never by name: two workflows can share a
+/// file name, and a name changes when its twin appears, either of which would put one run's
+/// transition under another's name.
+pub(crate) fn changes(before: &[State], now: &[State]) -> Vec<String> {
     now.iter()
-        .filter_map(|(name, state)| match before.iter().find(|(n, _)| n == name) {
-            Some((_, was)) if was == state => None,
-            Some((_, was)) => Some(format!("{name}: {was} → {state}")),
-            None => Some(format!("{name}: {state}")),
+        .filter_map(|s| match before.iter().find(|b| b.key == s.key) {
+            Some(b) if b.outcome == s.outcome => None,
+            Some(b) => Some(format!("{}: {} → {}", s.name, b.outcome, s.outcome)),
+            None => Some(format!("{}: {}", s.name, s.outcome)),
         })
         .collect()
 }

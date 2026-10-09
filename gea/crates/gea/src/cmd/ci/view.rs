@@ -9,8 +9,8 @@ use gitea_core::error::{Error, ErrorKind, FailedRun, Result};
 use gitea_core::types::RepoSlug;
 use gitea_model::{ActionWorkflowJob, ActionWorkflowRun};
 
-use super::sha7;
 use super::target::{CiState, Resolved, ci_state};
+use super::{select, sha7};
 use crate::cmd::run::{
     LOG_CONCURRENCY, diagnose_waiting, duration, fetch_jobs, is_queued, outcome, workflow_file,
 };
@@ -26,12 +26,16 @@ pub(crate) struct RunView<'a> {
     pub failed_jobs: Vec<ActionWorkflowJob>,
     /// `diagnose_waiting`'s explanation of each waiting job, when the run is pending.
     pub waiting: Vec<String>,
+    /// A newer run of the same workflow replaced this one; only `gea ci status --all` shows
+    /// such a run. It is drawn with a `(superseded)` mark and counts towards neither
+    /// [`next_verb`] nor [`verdict`], so a display flag cannot change the exit code.
+    pub superseded: bool,
 }
 
 impl<'a> RunView<'a> {
     /// A run with nothing fetched for it.
     pub(crate) fn bare(run: &'a ActionWorkflowRun) -> Self {
-        Self { run, failed_jobs: Vec::new(), waiting: Vec::new() }
+        Self { run, failed_jobs: Vec::new(), waiting: Vec::new(), superseded: false }
     }
 }
 
@@ -81,10 +85,28 @@ async fn detail<'a>(
     Ok(view)
 }
 
+/// Flag each view whose run a newer run of the same workflow superseded: every one not in the
+/// newest-per-workflow selection of `runs` (restricted to `workflow`, as the view is).
+pub(crate) fn mark_superseded(
+    views: &mut [RunView<'_>],
+    runs: &[ActionWorkflowRun],
+    workflow: Option<&str>,
+) {
+    let latest = select(runs, false, workflow);
+    for v in views {
+        v.superseded = !latest.iter().any(|r| r.id == v.run.id);
+    }
+}
+
+/// The views that speak for the commit now: every one but the superseded.
+fn current<'v, 'a>(views: &'v [RunView<'a>]) -> impl Iterator<Item = &'v RunView<'a>> {
+    views.iter().filter(|v| !v.superseded)
+}
+
 /// The verb of the next command to suggest: `logs` when something failed, `watch` while
-/// something runs, nothing when all is well.
+/// something runs, nothing when all is well. Superseded runs are not consulted.
 pub(crate) fn next_verb(views: &[RunView<'_>]) -> Option<&'static str> {
-    let states = || views.iter().map(|v| ci_state(v.run));
+    let states = || current(views).map(|v| ci_state(v.run));
     if states().any(|s| s == CiState::Failed) {
         Some("logs")
     } else if states().any(|s| s == CiState::Pending) {
@@ -95,10 +117,17 @@ pub(crate) fn next_verb(views: &[RunView<'_>]) -> Option<&'static str> {
 }
 
 /// The exit code, through the taxonomy: a failed run is `CiFailed` (1), else an unfinished one
-/// is `CiPending` (8), else success. `skipped` and unrecognised conclusions block nothing.
-pub(crate) fn verdict(resolved: &Resolved, views: &[RunView<'_>]) -> Result<()> {
-    let failed: Vec<FailedRun> = views
-        .iter()
+/// is `CiPending` (8), else success. `skipped` and unrecognised conclusions block nothing, and
+/// neither does a superseded run.
+///
+/// `slug` is the repository the advice must name with `-R`, `None` when the advice needs none:
+/// [`super::advice_slug`], the same rule the `next:` line follows.
+pub(crate) fn verdict(
+    resolved: &Resolved,
+    views: &[RunView<'_>],
+    slug: Option<String>,
+) -> Result<()> {
+    let failed: Vec<FailedRun> = current(views)
         .filter(|v| ci_state(v.run) == CiState::Failed)
         .map(|v| {
             FailedRun::new(
@@ -110,13 +139,11 @@ pub(crate) fn verdict(resolved: &Resolved, views: &[RunView<'_>]) -> Result<()> 
             )
         })
         .collect();
-    let slug = Some(resolved.slug.to_string());
     let (target, sha) = (resolved.selector.clone(), resolved.sha.clone());
     if !failed.is_empty() {
         return Err(Error::new(ErrorKind::CiFailed { slug, target, sha, failed }));
     }
-    let pending: Vec<String> = views
-        .iter()
+    let pending: Vec<String> = current(views)
         .filter(|v| ci_state(v.run) == CiState::Pending)
         .map(|v| workflow_file(&v.run.path).to_owned())
         .collect();
@@ -126,19 +153,38 @@ pub(crate) fn verdict(resolved: &Resolved, views: &[RunView<'_>]) -> Result<()> 
     Ok(())
 }
 
-/// What a run is called in the view: its workflow file, plus the event when the same file
-/// has runs for two events on this commit (`ci.yml (push)`, `ci.yml (pull_request)`) — two
-/// identical names on two lines would read as a duplicate.
+/// What a run is called in the view: its workflow file, qualified just enough that two
+/// different workflows on this commit never read as one — two identical names on two lines
+/// would read as a duplicate, and `watch` would print one's transition under the other's name.
+///
+/// * The same file for two events: the event, `ci.yml (push)` and `ci.yml (pull_request)`.
+/// * The same file and event for two refs (`ci.yml@refs/heads/main` and `ci.yml@refs/tags/v1`,
+///   which [`super::target::latest_per_workflow`] keeps apart): the event *and* the short ref,
+///   `ci.yml (push, main)` and `ci.yml (push, v1)`.
+///
+/// Runs of the same file, event and ref — a superseded run next to its replacement under
+/// `--all` — share a name; they are the same workflow, and the view marks the older one.
 pub(crate) fn names(runs: &[&ActionWorkflowRun]) -> Vec<String> {
     runs.iter()
         .map(|r| {
             let file = workflow_file(&r.path);
-            let twin = runs
-                .iter()
-                .any(|o| o.id != r.id && workflow_file(&o.path) == file && o.event != r.event);
-            if twin { format!("{file} ({})", r.event) } else { file.to_owned() }
+            let same_file = || runs.iter().filter(|o| workflow_file(&o.path) == file);
+            if same_file().any(|o| o.event == r.event && o.path != r.path) {
+                format!("{file} ({}, {})", r.event, short_ref(&r.path))
+            } else if same_file().any(|o| o.event != r.event) {
+                format!("{file} ({})", r.event)
+            } else {
+                file.to_owned()
+            }
         })
         .collect()
+}
+
+/// The ref part of a run's `path` (`ci.yml@refs/heads/main`), as a person would say it: `main`,
+/// `v1`, `pull/2626/merge`. Empty when the path carries no ref.
+fn short_ref(path: &str) -> &str {
+    let full = path.split_once('@').map_or("", |(_, r)| r);
+    ["refs/heads/", "refs/tags/", "refs/"].iter().find_map(|p| full.strip_prefix(p)).unwrap_or(full)
 }
 
 /// The mark and colour for a state.
@@ -203,7 +249,7 @@ fn render_runs(views: &[RunView<'_>], term: &Term) -> String {
             let r = v.run;
             [
                 outcome(&r.status, &r.conclusion).to_owned(),
-                name.clone(),
+                if v.superseded { format!("{name} (superseded)") } else { name.clone() },
                 format!("run {}", r.id),
                 format!("#{}", r.run_number),
                 duration(r.started_at.as_ref(), r.completed_at.as_ref()),

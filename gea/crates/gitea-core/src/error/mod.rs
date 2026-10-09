@@ -609,6 +609,28 @@ pub enum ErrorKind {
         /// The workflow files whose runs are still queued or in progress.
         pending: Vec<String>,
     },
+    /// Gitea Actions produced no run at all for one commit, and `gea ci watch` gave up waiting
+    /// for one to appear.
+    ///
+    /// Not success, which is what an empty selection would otherwise read as: `gea ci watch &&
+    /// gea pr merge` must not merge a commit that CI never looked at. Nor
+    /// [`ErrorKind::CiPending`]: nothing is running, and the usual causes — `on:` filters that do
+    /// not match, Actions disabled, a `--workflow` that names no workflow — will not resolve by
+    /// waiting longer. It still exits 8, the "CI has produced no result yet" code, because the
+    /// one benign cause (the push has not been processed) is exactly a wait-and-retry.
+    ///
+    /// `gea ci status` with no runs is *not* this error: an empty listing is success there, as
+    /// every listing's is. Gating belongs to `gea ci watch`.
+    CiNoRuns {
+        /// The repository, `owner/name`, when the advice must name it.
+        slug: Option<String>,
+        /// What the user asked about, as `gea ci` would accept it back; `None` means "here".
+        target: Option<String>,
+        /// The full commit SHA the runs were listed for.
+        sha: String,
+        /// The workflow file the user restricted to with `--workflow`, if any.
+        workflow: Option<String>,
+    },
     /// Pagination hit its own ceiling: every page came back full and the instance never once
     /// said the collection had ended.
     ///
@@ -773,6 +795,8 @@ impl ErrorKind {
     /// [`ErrorKind::CiFailed`] and [`ErrorKind::CiPending`] are **1 and 8**, the same pair as
     /// [`ErrorKind::ChecksFailed`] and [`ErrorKind::ChecksPending`], so a script written against
     /// `gea pr checks` reads `gea ci` the same way: 1 means look at a log, 8 means wait.
+    /// [`ErrorKind::CiNoRuns`] is 8 too: CI has produced no result yet, and the one cause that
+    /// is not a misconfiguration — a push Gitea has not processed — is cured by waiting.
     ///
     pub fn exit_code(&self) -> i32 {
         use ErrorKind::*;
@@ -803,7 +827,7 @@ impl ErrorKind {
 
             ServerError { .. } | PaginationDidNotTerminate { .. } => 7,
 
-            RateLimited { .. } | ChecksPending { .. } | CiPending { .. } => 8,
+            RateLimited { .. } | ChecksPending { .. } | CiPending { .. } | CiNoRuns { .. } => 8,
 
             Cancelled => 130,
 
@@ -948,6 +972,20 @@ mod tests {
         assert_eq!(failed.exit_code(), 1);
         assert_eq!(pending.exit_code(), 8);
         assert!(!failed.is_transient() && !pending.is_transient());
+    }
+
+    /// Bug this prevents: `gea ci watch` giving up on a commit with no runs and falling into
+    /// the catch-all 1 — or worse, 0, which `gea ci watch && gea pr merge` reads as green.
+    #[test]
+    fn ci_no_runs_exits_8_like_pending() {
+        let none = ErrorKind::CiNoRuns {
+            slug: None,
+            target: Some("main".into()),
+            sha: "a".repeat(40),
+            workflow: None,
+        };
+        assert_eq!(none.exit_code(), 8);
+        assert!(!none.is_transient());
     }
 
     #[test]

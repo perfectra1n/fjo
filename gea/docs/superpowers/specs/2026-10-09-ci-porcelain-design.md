@@ -45,19 +45,26 @@ server-side `head_sha` filter (the same one `run list --commit` uses), which wor
 
 | Input | Meaning |
 | --- | --- |
-| `6442` | `Bare(6442)`: an id, with fallback (below) |
+| `6442` | `Bare(6442)`: an id, with fallback for read-only commands (below) |
 | `#3623` | `Number(3623)`: explicitly the per-repository run number |
-| `https://host/o/r/actions/runs/6442`, optionally followed by `/jobs/2`, `/attempts/N`, or a trailing slash/query/fragment | `Url { run: 6442, job: Option<i64> }` (the job's id; see below). The run segment is treated like `Bare` (Gitea 1.27's `html_url` carries the id). The URL's owner/name are **not** used to switch repository (out of scope; `-R` does that), but if they differ from the resolved repository, print a stderr note. |
+| `https://host/o/r/actions/runs/6442`, optionally followed by `/jobs/2`, `/attempts/N`, or a trailing slash/query/fragment | `Url { run: 6442, job: Option<i64> }` (the job's id; see below). The run segment is an id (Gitea 1.27's `html_url` carries the id) and **never** falls back to a run number: a URL's segment cannot be a number, so a 404 means the run is gone. The URL's owner/name are **not** used to switch repository (out of scope; `-R` does that), but if they differ from the resolved repository, print a stderr note. |
 
 Anything else is a clap usage error. It names the accepted forms: "expected a run id (`6442`), a
 run number (`#3623`), or a run URL".
 
-Resolution: `async fn resolve_run(api: &Api, slug: &RepoSlug, r: &RunRef, term) -> Result<ActionWorkflowRun>`.
+Resolution: `async fn resolve_run(api: &Api, slug: &RepoSlug, r: &RunRef, fallback: Fallback) -> Result<ActionWorkflowRun>`.
+`Fallback::ToNumber` for the read-only commands (`view`, `logs`, `watch`, `jobs`, `artifacts`);
+`Fallback::Never` for the ones that act (`delete`, `rerun`) — a wrong guess there cannot be taken
+back, and `gea run delete 6442 --yes` re-run after 6442 is gone must not delete the run numbered
+#6442. Notes go to stderr always (`support::warn`).
 
-- `Bare(n)` / `Url`: `GET …/actions/runs/{n}`. On **404 only**, look for a run whose `run_number == n`
-  (below). If one exists, use it and print **one stderr note**: `note: no run has id N; using run
-  #N (id M)`. If not, return the original 404 error, extended with a hint naming both forms. Any
-  non-404 error propagates unchanged.
+- `Bare(n)`: `GET …/actions/runs/{n}`. With `ToNumber`, on **404 only**, look for a run whose
+  `run_number == n` (below). If one exists, use it and print **one stderr note**: `note: no run has
+  id N; using run #N (id M)`. If not, return the original 404 error, after a note naming both
+  forms. With `Never`, return the original 404 after `note: no run has id N; if N is a run number,
+  pass #N`. Any non-404 error propagates unchanged in both modes.
+- `Url`: `GET …/actions/runs/{n}` only, in both modes. The owner/name are compared with the
+  resolved repository case-insensitively (Gitea's names are).
 - `Number(n)`: find the run whose `run_number == n`. Not found is `ResourceNotFound`, with a hint to
   use `gea run list`.
 - Finding by number: there is no server filter for `run_number`. Page `GET …/actions/runs` (newest
@@ -242,8 +249,9 @@ Polls `runs_for_sha` + `latest_per_workflow` every `-i/--interval` seconds (defa
 until every selected run is finished. Each poll after the first prints a one-line status change per
 run to stderr (`ci.yml: in_progress → failure`). When it finishes, prints the `ci status` human view
 and exits as `ci status` does (`--exit-status` is implied and documented). If no runs exist yet, it
-keeps polling up to `--appear-timeout <SECONDS>` (default 60), then behaves like `ci status` with no
-runs. Same interruptibility and no-spin guarantees as `run watch` (no SIGINT handler, a sleep every
+keeps polling up to `--appear-timeout <SECONDS>` (default 60), then fails with `ErrorKind::CiNoRuns`
+(exit **8**). Unlike `ci status`, where an empty result is exit 0, `watch` is a gate
+(`gea ci watch && gea pr merge`), and "no CI ran" must not read as "CI passed". Same interruptibility and no-spin guarantees as `run watch` (no SIGINT handler, a sleep every
 non-returning iteration).
 
 ### `gea ci rerun [TARGET]`

@@ -45,11 +45,13 @@
 //! happens, and accepts three forms:
 //!
 //! * `6442` — an id. **Only** if no run has that id (a 404) is it retried as a run number, and a
-//!   note on stderr says so; an id that is neither is still the server's 404.
+//!   note on stderr says so; an id that is neither is still the server's 404. `delete` and
+//!   `rerun` never retry: a guess that acts on the wrong run cannot be taken back, so for them a
+//!   missing id is the 404, with a note to type `#6442` if the number was meant.
 //! * `#3623` — explicitly the run number, found by paging the run list newest first.
-//! * the run's web URL, `…/actions/runs/6442[/jobs/33898]` — the id in it, and with `/jobs/<id>`
-//!   that job, which `view --log`, `logs` and `rerun` act on unless `--job` says
-//!   otherwise.
+//! * the run's web URL, `…/actions/runs/6442[/jobs/33898]` — the id in it (never retried as a
+//!   number: a URL's segment is always an id), and with `/jobs/<id>` that job, which
+//!   `view --log`, `logs` and `rerun` act on unless `--job` says otherwise.
 //!
 //! `--job` is a [`JobRef`]: a job id, or a job's name — an exact match, else an unambiguous
 //! substring. An ambiguous name is refused with the candidates listed, never guessed. See
@@ -72,7 +74,7 @@ use crate::global::GlobalOpts;
 use crate::output::color;
 use crate::runtime::Runtime;
 
-use crate::cmd::run_ref::{JobRef, RunRef, resolve_job, resolve_run};
+use crate::cmd::run_ref::{Fallback, JobRef, RunRef, resolve_job, resolve_run};
 
 use crate::cmd::support;
 use crate::cmd::support::listing::{self as emit, Fields, Listing};
@@ -409,7 +411,7 @@ async fn view(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &ViewArgs) ->
     // else: opening a browser tab should not also cost a job listing that is never read. Same
     // discipline `repo view` applies to its README.
     if args.web {
-        let run = resolve_run(api, slug, &args.run).await?;
+        let run = resolve_run(api, slug, &args.run, Fallback::ToNumber).await?;
         return open_url(rt, &run.html_url);
     }
 
@@ -500,7 +502,21 @@ fn exit_status(wanted: bool, run: &ActionWorkflowRun) -> Result<()> {
 
 async fn rerun(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &RerunArgs) -> Result<()> {
     let slug = slug(rt, globals)?;
-    let run = resolve_run(api, slug, &args.run).await?;
+    let (run, what) = rerun_run(api, slug, args).await?;
+    support::note(
+        rt.term(),
+        &format!("requested a rerun of {what}; follow it with `gea run watch {run}`"),
+    );
+    Ok(())
+}
+
+/// Resolve the run and ask for the rerun; the rerun's run id and its description.
+///
+/// [`Fallback::Never`]: a rerun acts, so a bare id that is not a run must not quietly become the
+/// run *numbered* that. Split from [`rerun`] so a `FakeTransport` test can assert that no `POST`
+/// is ever sent for such an id.
+async fn rerun_run(api: &Api, slug: &RepoSlug, args: &RerunArgs) -> Result<(RunId, String)> {
+    let run = resolve_run(api, slug, &args.run, Fallback::Never).await?;
     // `--failed` is explicit, so it outranks a job URL; `--job` cannot be combined with it.
     let job = if !args.failed && (args.job.is_some() || args.run.url_job().is_some()) {
         let jobs = fetch_jobs(api, slug, run.id).await?;
@@ -513,12 +529,7 @@ async fn rerun(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &RerunArgs) 
         (None, true) => Rerun::Failed,
         (None, false) => Rerun::All,
     };
-    let what = request_rerun(api, slug, run.id, scope).await?;
-    support::note(
-        rt.term(),
-        &format!("requested a rerun of {what}; follow it with `gea run watch {}`", run.id),
-    );
-    Ok(())
+    Ok((run.id, request_rerun(api, slug, run.id, scope).await?))
 }
 
 /// The job a command should act on: `--job` when given, otherwise the job a pasted
@@ -579,13 +590,30 @@ pub(crate) async fn request_rerun(
 
 async fn delete(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &DeleteArgs) -> Result<()> {
     let slug = slug(rt, globals)?;
-    // Resolved before the prompt, so what is confirmed is the run that will go — by its id and
-    // its number, whichever of the two the user typed.
-    let run = resolve_run(api, slug, &args.run).await?;
-    support::confirm_runtime(rt, args.yes, &delete_prompt(&run, slug))?;
-    api.run().delete(&slug.owner, &slug.name, int(run.id.get())?).await?;
+    let run =
+        delete_run(api, slug, &args.run, |prompt| support::confirm_runtime(rt, args.yes, prompt))
+            .await?;
     support::note(rt.term(), &format!("deleted run {} (#{})", run.id, run.run_number));
     Ok(())
+}
+
+/// Resolve, confirm, delete; the run that was deleted.
+///
+/// Resolved before the prompt, so what is confirmed is the run that will go — by its id and its
+/// number, whichever of the two the user typed. [`Fallback::Never`], because `--yes` skips that
+/// prompt: `gea run delete 6442 --yes` run a second time, after 6442 is gone, would otherwise
+/// delete the unrelated run numbered #6442. Split from [`delete`] (with the prompt passed in) so a
+/// `FakeTransport` test can assert no `DELETE` is ever sent for such an id.
+async fn delete_run(
+    api: &Api,
+    slug: &RepoSlug,
+    r: &RunRef,
+    confirm: impl FnOnce(&str) -> Result<()>,
+) -> Result<ActionWorkflowRun> {
+    let run = resolve_run(api, slug, r, Fallback::Never).await?;
+    confirm(&delete_prompt(&run, slug))?;
+    api.run().delete(&slug.owner, &slug.name, int(run.id.get())?).await?;
+    Ok(run)
 }
 
 fn delete_prompt(run: &ActionWorkflowRun, slug: &RepoSlug) -> String {
@@ -730,13 +758,15 @@ pub(crate) async fn fetch_view(
     let guess = match r {
         RunRef::Bare(n) | RunRef::Url { run: n, .. } => *n,
         RunRef::Number(_) => {
-            let run = resolve_run(api, slug, r).await?;
+            let run = resolve_run(api, slug, r, Fallback::ToNumber).await?;
             let jobs = fetch_jobs(api, slug, run.id).await?;
             return Ok((run, jobs));
         }
     };
-    let (run, jobs) =
-        futures::join!(resolve_run(api, slug, r), fetch_jobs(api, slug, RunId::new(guess)));
+    let (run, jobs) = futures::join!(
+        resolve_run(api, slug, r, Fallback::ToNumber),
+        fetch_jobs(api, slug, RunId::new(guess))
+    );
     let run = run?;
     if run.id.get() == guess {
         return Ok((run, jobs?));
@@ -787,7 +817,7 @@ async fn watch(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &WatchArgs) 
     let slug = slug(rt, globals)?;
     let interval = std::time::Duration::from_secs(args.interval);
     // The first poll is the resolution itself; every later one is by the resolved id.
-    let mut run = resolve_run(api, slug, &args.run).await?;
+    let mut run = resolve_run(api, slug, &args.run, Fallback::ToNumber).await?;
     let id = int(run.id.get())?;
     let mut announced_wait = false;
 
@@ -865,7 +895,7 @@ async fn artifacts(
     let limit = support::limit(None, globals);
     let mut items: Vec<gitea_model::ActionArtifact> = match &args.run {
         Some(r) => {
-            let run = resolve_run(api, slug, r).await?;
+            let run = resolve_run(api, slug, r, Fallback::ToNumber).await?;
             let q = query::GetArtifactsOfRunQuery { name: args.name.clone() };
             api.run().artifacts(&slug.owner, &slug.name, int(run.id.get())?, &q).await?.artifacts
         }
@@ -1587,6 +1617,83 @@ mod tests {
         assert!(note.contains("pull_request runs carry no branch"), "{note}");
         assert!(note.contains("`gea ci feature`"), "{note}");
         assert_eq!(empty_branch_note(&no_filters()), None);
+    }
+
+    /// Run 6442 is gone; the run *numbered* 6442 is some other run (id 9001).
+    fn id_6442_gone_but_numbered_6442_exists() -> Arc<FakeTransport> {
+        let get = || "GET".parse().unwrap();
+        Arc::new(
+            FakeTransport::new()
+                .on(
+                    get(),
+                    "/api/v1/repos/o/r/actions/runs/6442",
+                    Canned::json(404, r#"{"message":"run not found"}"#),
+                )
+                .on(
+                    get(),
+                    "/api/v1/repos/o/r/actions/runs",
+                    Canned::json(
+                        200,
+                        r#"{"total_count":1,"workflow_runs":[{"id":9001,"run_number":6442}]}"#,
+                    ),
+                )
+                .on(get(), "/api/v1/repos/o/r/actions/runs/9001/jobs", Canned::json(200, JOBS_6442))
+                .on(
+                    "DELETE".parse().unwrap(),
+                    "/api/v1/repos/o/r/actions/runs/9001",
+                    Canned::new(204),
+                ),
+        )
+    }
+
+    /// Only `GET`s: the command found nothing to act on, and acted on nothing.
+    fn assert_read_only(fake: &FakeTransport) {
+        let acted: Vec<_> = fake.calls().into_iter().filter(|c| c.method != "GET").collect();
+        assert!(acted.is_empty(), "{acted:?}");
+    }
+
+    /// The bug this prevents: `gea run delete 6442 --yes`, run a second time after 6442 is gone,
+    /// falling back to the run numbered #6442 and deleting it — an unrelated run, with `--yes`
+    /// having skipped the prompt that would have named it.
+    #[tokio::test]
+    async fn delete_never_falls_back_from_a_missing_id_to_a_run_number() {
+        let fake = id_6442_gone_but_numbered_6442_exists();
+        let err = delete_run(
+            &api_for(fake.clone()),
+            &RepoSlug::new("o", "r"),
+            &RunRef::Bare(6442),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 5, "{err:?}");
+        assert_read_only(&fake);
+
+        // `#6442` is explicit, and still reaches the run by its number.
+        let run = delete_run(
+            &api_for(fake.clone()),
+            &RepoSlug::new("o", "r"),
+            &RunRef::Number(6442),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(run.id.get(), 9001);
+    }
+
+    /// As for `delete`: a rerun of the wrong run burns runner time and posts statuses onto a
+    /// commit nobody asked about.
+    #[tokio::test]
+    async fn rerun_never_falls_back_from_a_missing_id_to_a_run_number() {
+        let fake = id_6442_gone_but_numbered_6442_exists();
+        for failed in [false, true] {
+            let args = RerunArgs { run: RunRef::Bare(6442), failed, job: None };
+            let err = rerun_run(&api_for(fake.clone()), &RepoSlug::new("o", "r"), &args)
+                .await
+                .unwrap_err();
+            assert_eq!(err.exit_code(), 5, "{err:?}");
+        }
+        assert_read_only(&fake);
     }
 
     /// The confirmation names the run that will actually be deleted, whichever form was typed.
