@@ -23,6 +23,9 @@
 #![allow(rustdoc::private_intra_doc_links)]
 
 pub mod coverage;
+pub mod runner;
+
+pub use runner::{RunnerGuard, shared_runner};
 
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -271,7 +274,8 @@ impl Instance {
             .with_env_var("GITEA__server__ROOT_URL", root_url)
             .with_env_var("GITEA__server__OFFLINE_MODE", "true")
             .with_env_var("GITEA__service__DISABLE_REGISTRATION", "true")
-            // Actions ON, though no runner ever attaches.
+            // Actions ON. No runner attaches unless a test asks for one through
+            // `Instance::attach_runner` / `runner_or_skip!` (see `runner.rs`).
             //
             // This used to be `false`, with the note "nothing here needs a runner, and it
             // shortens startup". The first half stopped being true: with the unit disabled

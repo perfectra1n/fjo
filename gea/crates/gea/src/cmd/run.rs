@@ -79,12 +79,12 @@ const STATUSES: &[&str] = &[
 /// Bounded rather than "one per job": a matrix build has dozens of jobs, and an unbounded burst
 /// against a self-hosted instance behind a reverse proxy trips its rate limit — after which
 /// `gitea_core::http`'s retry layer spends the whole win back in backoff.
-const LOG_CONCURRENCY: usize = 6;
+pub(crate) const LOG_CONCURRENCY: usize = 6;
 
 /// The field tables `--json` validates against. Items, never the envelopes the list endpoints
 /// wrap them in, because what the commands print is the items.
-const RUN_FIELDS: Fields = Fields::Op("GetWorkflowRun");
-const JOB_FIELDS: Fields = Fields::Op("getWorkflowJob");
+pub(crate) const RUN_FIELDS: Fields = Fields::Op("GetWorkflowRun");
+pub(crate) const JOB_FIELDS: Fields = Fields::Op("getWorkflowJob");
 const ARTIFACT_FIELDS: Fields = Fields::Op("getArtifact");
 const RUNNER_FIELDS: Fields = Fields::Op("getRepoRunner");
 
@@ -276,7 +276,7 @@ fn slug<'a>(rt: &'a Runtime, globals: &GlobalOpts) -> Result<&'a RepoSlug> {
 /// The generated client takes run and job ids as `i32` — the spec declares them `integer` with no
 /// format — while the ids themselves are `int64`. An id past `i32::MAX` is refused here with a
 /// message rather than wrapped into someone else's run.
-fn int(id: i64) -> Result<i32> {
+pub(crate) fn int(id: i64) -> Result<i32> {
     i32::try_from(id).map_err(|_| support::usage(format!("id {id} is out of range for this API")))
 }
 
@@ -468,23 +468,57 @@ fn exit_status(wanted: bool, run: &ActionWorkflowRun) -> Result<()> {
 
 async fn rerun(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &RerunArgs) -> Result<()> {
     let slug = slug(rt, globals)?;
-    let run = int(args.run.get())?;
-    let runs = api.run();
-    let what = if let Some(job) = args.job {
-        runs.rerun_job(&slug.owner, &slug.name, run, int(job.get())?).await?;
-        format!("job {job} of run {}", args.run)
-    } else if args.failed {
-        runs.rerun_failed(&slug.owner, &slug.name, run).await?;
-        format!("the failed jobs of run {}", args.run)
-    } else {
-        runs.rerun(&slug.owner, &slug.name, run).await?;
-        format!("run {}", args.run)
+    let scope = match (args.job, args.failed) {
+        (Some(job), _) => Rerun::Job(job),
+        (None, true) => Rerun::Failed,
+        (None, false) => Rerun::All,
     };
+    let what = request_rerun(api, slug, args.run, scope).await?;
     support::note(
         rt.term(),
         &format!("requested a rerun of {what}; follow it with `gea run watch {}`", args.run),
     );
     Ok(())
+}
+
+/// Which part of a finished run to run again — the three routes Gitea has for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rerun {
+    /// The whole run.
+    All,
+    /// Only the jobs that failed, and the jobs that depend on them. What `gea ci rerun` asks for.
+    Failed,
+    /// One job, and the jobs that depend on it.
+    Job(JobId),
+}
+
+/// Ask for a rerun, and say in words what was asked for.
+///
+/// Split out of [`rerun`] so `gea ci rerun` takes the same route `run rerun --failed` does
+/// rather than a copy of it that could drift, and so the description in the note is the same
+/// sentence in both.
+pub(crate) async fn request_rerun(
+    api: &Api,
+    slug: &RepoSlug,
+    run: RunId,
+    scope: Rerun,
+) -> Result<String> {
+    let id = int(run.get())?;
+    let runs = api.run();
+    Ok(match scope {
+        Rerun::Job(job) => {
+            runs.rerun_job(&slug.owner, &slug.name, id, int(job.get())?).await?;
+            format!("job {job} of run {run}")
+        }
+        Rerun::Failed => {
+            runs.rerun_failed(&slug.owner, &slug.name, id).await?;
+            format!("the failed jobs of run {run}")
+        }
+        Rerun::All => {
+            runs.rerun(&slug.owner, &slug.name, id).await?;
+            format!("run {run}")
+        }
+    })
 }
 
 async fn delete(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &DeleteArgs) -> Result<()> {
@@ -513,7 +547,7 @@ async fn logs(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &LogsArgs) ->
 /// to get a run's logs — and it produces something you can pipe into `grep -n`, which is the whole
 /// reason a porcelain command exists here rather than `gea raw job logs` once per job.
 #[allow(clippy::too_many_arguments)]
-async fn print_logs(
+pub(crate) async fn print_logs(
     rt: &Runtime,
     globals: &GlobalOpts,
     api: &Api,
@@ -542,24 +576,43 @@ async fn print_logs(
 
     let logs = fetch_logs(api, slug, &wanted).await?;
 
+    // A header per job, because a concatenation with no separators is unreadable once a run has
+    // three jobs — and none for a run of one job, where it would only be noise above the log.
+    let headed = jobs.len() > 1;
+    let sections = wanted
+        .iter()
+        .zip(&logs)
+        .map(|(job, text)| (headed.then(|| job_header(job)), text.as_str()));
+    emit::text(rt, globals, &concat_logs(sections))
+}
+
+/// `run logs`' per-job header: `==> build (job 11, failure)`. Prefixed with `==>` like `tail -f`
+/// on several files.
+fn job_header(job: &ActionWorkflowJob) -> String {
+    format!("==> {} (job {}, {})", job.name, job.id, outcome(&job.status, &job.conclusion))
+}
+
+/// Join job logs into one text stream, each under its header line when it has one.
+///
+/// Every log is made to end in a newline, so the next header always starts a line of its own
+/// even when a step's last output had none. Split out of [`print_logs`] so `gea ci logs`, whose
+/// header also names the workflow (`==> ci.yml / build (run 6442, job 11) <==`), shares the
+/// assembly and differs only in the words.
+pub(crate) fn concat_logs<'a>(
+    sections: impl IntoIterator<Item = (Option<String>, &'a str)>,
+) -> String {
     let mut out = String::new();
-    for (job, text) in wanted.iter().zip(&logs) {
-        // A header per job, because a concatenation with no separators is unreadable once a run
-        // has three jobs. Prefixed with `==>` like `tail -f` on several files.
-        if jobs.len() > 1 {
-            out.push_str(&format!(
-                "==> {} (job {}, {})\n",
-                job.name,
-                job.id,
-                outcome(&job.status, &job.conclusion)
-            ));
+    for (header, text) in sections {
+        if let Some(h) = header {
+            out.push_str(&h);
+            out.push('\n');
         }
         out.push_str(text);
         if !text.ends_with('\n') {
             out.push('\n');
         }
     }
-    emit::text(rt, globals, &out)
+    out
 }
 
 /// A run's jobs, every page of them.
@@ -567,7 +620,11 @@ async fn print_logs(
 /// The endpoint wraps the list in `{total_count, jobs}` and pages it, so a matrix build larger
 /// than the default page would otherwise lose jobs silently — and `run logs --failed` would then
 /// report "no job failed" for a run whose failing job sat on page two.
-async fn fetch_jobs(api: &Api, slug: &RepoSlug, run: RunId) -> Result<Vec<ActionWorkflowJob>> {
+pub(crate) async fn fetch_jobs(
+    api: &Api,
+    slug: &RepoSlug,
+    run: RunId,
+) -> Result<Vec<ActionWorkflowJob>> {
     const PAGE: i32 = 50;
     let run = int(run.get())?;
     let mut jobs = Vec::new();
@@ -594,7 +651,7 @@ async fn fetch_jobs(api: &Api, slug: &RepoSlug, run: RunId) -> Result<Vec<Action
 /// different reason depending on the network; unwrapping `run` first keeps the message stable.
 /// Split out from [`view`] so a `FakeTransport` test can assert both requests without a
 /// [`Runtime`].
-async fn fetch_view(
+pub(crate) async fn fetch_view(
     api: &Api,
     slug: &RepoSlug,
     run_id: RunId,
@@ -613,7 +670,7 @@ async fn fetch_view(
 /// `buffered` rather than `buffer_unordered`: the logs are zipped straight back onto `wanted` to
 /// build the output, and an unordered stream would file each job's log under a different job's
 /// `==>` header.
-async fn fetch_logs(
+pub(crate) async fn fetch_logs(
     api: &Api,
     slug: &RepoSlug,
     wanted: &[&ActionWorkflowJob],
@@ -626,7 +683,7 @@ async fn fetch_logs(
 
 /// One job's log as text, decoded lossily: a log can carry any bytes a step printed, and failing
 /// the whole command over one of them would be worse than a replacement character.
-async fn job_log(api: &Api, slug: &RepoSlug, job: JobId) -> Result<String> {
+pub(crate) async fn job_log(api: &Api, slug: &RepoSlug, job: JobId) -> Result<String> {
     let (_, mut body) = api.job().logs(&slug.owner, &slug.name, int(job.get())?).await?;
     let mut buf = Vec::new();
     while let Some(chunk) = body.next().await {
@@ -867,7 +924,11 @@ async fn candidate_runners(api: &Api, slug: &RepoSlug) -> (Vec<ActionRunner>, Ve
 ///
 /// A runner can take a job only if it carries **every** label the job asks for, which is why the
 /// check is a superset test rather than an intersection.
-async fn diagnose_waiting(api: &Api, slug: &RepoSlug, jobs: &[ActionWorkflowJob]) -> Vec<String> {
+pub(crate) async fn diagnose_waiting(
+    api: &Api,
+    slug: &RepoSlug,
+    jobs: &[ActionWorkflowJob],
+) -> Vec<String> {
     let (runners, unseen) = candidate_runners(api, slug).await;
     let mut lines: Vec<String> =
         jobs.iter().filter(|j| is_queued(&j.status)).map(|j| explain_job(j, &runners)).collect();
@@ -927,7 +988,7 @@ fn explain_job(job: &ActionWorkflowJob, runners: &[ActionRunner]) -> String {
 }
 
 /// Warn when the repository has Actions turned off, which makes every listing empty.
-async fn warn_if_actions_disabled(rt: &Runtime, api: &Api, slug: &RepoSlug) {
+pub(crate) async fn warn_if_actions_disabled(rt: &Runtime, api: &Api, slug: &RepoSlug) {
     let Ok(repo) = api.repo().get(&slug.owner, &slug.name).await else { return };
     if !repo.has_actions {
         support::note(
@@ -944,7 +1005,7 @@ async fn warn_if_actions_disabled(rt: &Runtime, api: &Api, slug: &RepoSlug) {
 
 /// The run or job has reached an end state. Gitea says so with `status: completed`; the
 /// conclusion then says which end.
-fn is_finished(status: &str) -> bool {
+pub(crate) fn is_finished(status: &str) -> bool {
     status == "completed"
 }
 
@@ -952,29 +1013,29 @@ fn is_finished(status: &str) -> bool {
 /// produces, and the one this module goes out of its way to explain. `queued` is Gitea's name
 /// for a job waiting on a runner; `waiting` is one blocked on something else (an approval, a
 /// `needs:`), which is still worth a diagnosis because it is still not moving.
-fn is_queued(status: &str) -> bool {
+pub(crate) fn is_queued(status: &str) -> bool {
     matches!(status, "queued" | "waiting" | "pending")
 }
 
 /// What to print in a STATUS column: how it ended when it has ended, where it is otherwise.
-fn outcome<'a>(status: &'a str, conclusion: &'a str) -> &'a str {
+pub(crate) fn outcome<'a>(status: &'a str, conclusion: &'a str) -> &'a str {
     if conclusion.is_empty() { status } else { conclusion }
 }
 
 /// `ci.yml` from the run's `path`, which Gitea spells `<workflow file>@<ref>`.
-fn workflow_file(path: &str) -> &str {
+pub(crate) fn workflow_file(path: &str) -> &str {
     path.split_once('@').map_or(path, |(file, _)| file)
 }
 
 /// Labels as `a, b`, or a dash when there are none. A dash rather than an empty cell because in
 /// this table an empty `RUNS-ON` is itself the bug being looked for.
-fn labels(labels: &[String]) -> String {
+pub(crate) fn labels(labels: &[String]) -> String {
     if labels.is_empty() { "-".to_owned() } else { labels.join(", ") }
 }
 
 /// Wall-clock time between two timestamps, or nothing when either is unset — which is what a run
 /// that has not started, or not finished, reports.
-fn duration(
+pub(crate) fn duration(
     started: Option<&gitea_core::types::Timestamp>,
     completed: Option<&gitea_core::types::Timestamp>,
 ) -> String {
@@ -1346,6 +1407,29 @@ mod tests {
             fetch_logs(&api_for(fake.clone()), &RepoSlug::new("o", "r"), &wanted).await.unwrap();
         assert_eq!(logs, ["first\n", "second\n", "third\n"]);
         assert_eq!(fake.call_count(), wanted.len(), "{:?}", fake.calls());
+    }
+
+    /// The byte-for-byte shape `run logs` has always printed, now that `gea ci logs` shares the
+    /// assembly. Bug this prevents: a header glued onto the previous job's last line because that
+    /// log did not end in a newline, or a header appearing for a run with a single job.
+    #[test]
+    fn logs_concatenate_under_their_headers_and_always_end_in_a_newline() {
+        let build = ActionWorkflowJob {
+            id: JobId::new(11),
+            name: "build".into(),
+            status: "completed".into(),
+            conclusion: "failure".into(),
+            ..Default::default()
+        };
+        let out = concat_logs([
+            (Some(job_header(&build)), "no newline at the end"),
+            (Some("==> next".to_owned()), "line\n"),
+            (None, "bare"),
+        ]);
+        assert_eq!(
+            out,
+            "==> build (job 11, failure)\nno newline at the end\n==> next\nline\nbare\n"
+        );
     }
 
     #[test]

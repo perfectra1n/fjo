@@ -25,7 +25,7 @@ use std::fmt::Write as _;
 use anstyle::{AnsiColor, Style};
 
 use super::{
-    AgitRemedy, Attempt, CallbackFailure, CredentialKind, Error, ErrorKind, FailedCheck,
+    AgitRemedy, Attempt, CallbackFailure, CredentialKind, Error, ErrorKind, FailedCheck, FailedRun,
     FieldError, KeyringCause, Phase, RemoteCandidate, RequestCtx, TokenSource,
 };
 
@@ -337,6 +337,15 @@ pub fn headline(kind: &ErrorKind) -> String {
             "" => format!("workflow run {run} did not succeed"),
             c => format!("workflow run {run} ended in {c}"),
         },
+        CiFailed { sha, failed, .. } => match failed.len() {
+            0 => format!("CI did not pass for commit {}", short_sha(sha)),
+            1 => format!("1 workflow run failed for commit {}", short_sha(sha)),
+            n => format!("{n} workflow runs failed for commit {}", short_sha(sha)),
+        },
+        CiPending { sha, pending, .. } => match pending.len() {
+            0 | 1 => format!("CI is still running for commit {}", short_sha(sha)),
+            n => format!("{n} workflow runs are still running for commit {}", short_sha(sha)),
+        },
         PaginationDidNotTerminate { pages, .. } => {
             format!("pagination stopped after {pages} pages without reaching the end")
         }
@@ -508,6 +517,42 @@ fn web_base(ctx: &RequestCtx) -> String {
 
 fn settings_hint(ctx: &RequestCtx) -> String {
     format!("{}/user/settings/applications", web_base(ctx))
+}
+
+/// The first seven characters of a commit SHA, as git abbreviates one in a one-line log.
+///
+/// Character-based rather than a byte slice: the SHA reached here from outside, and slicing a
+/// string that is not the hex it should be at a non-boundary would be a panic in an error path.
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(7).collect()
+}
+
+/// The arguments after `gea ci <verb>` that re-address what the user asked about: the target
+/// when there was one (none means "the branch you are on", which must stay implicit), then the
+/// repository so the command works from outside the checkout too.
+fn ci_args(target: Option<&str>, slug: Option<&str>) -> String {
+    let mut out = String::new();
+    if let Some(t) = target.map(str::trim).filter(|t| !t.is_empty()) {
+        out.push(' ');
+        out.push_str(t);
+    }
+    if let Some(s) = slug {
+        out.push_str(" -R ");
+        out.push_str(s);
+    }
+    out
+}
+
+/// One `failed:` fact for [`ErrorKind::CiFailed`]: `ci.yml (run 6442): failure — jobs: a, b — url`.
+fn failed_run_line(run: &FailedRun) -> String {
+    let mut line = format!("{} (run {}): {}", run.workflow, run.id, run.conclusion);
+    if !run.failed_jobs.is_empty() {
+        line.push_str(&format!(" — jobs: {}", run.failed_jobs.join(", ")));
+    }
+    if let Some(u) = &run.url {
+        line.push_str(&format!(" — {u}"));
+    }
+    line
 }
 
 fn quoted(server_message: &str) -> String {
@@ -1310,6 +1355,53 @@ fn advise(kind: &ErrorKind, ctx: &RequestCtx) -> Advice {
             ))
         }
 
+        // The commands are the whole remedy, and they are `gea ci` ones rather than one
+        // `gea run view` per run: the user asked about a commit, and `ci logs`/`ci rerun` act on
+        // every failed run of it at once. The target is repeated exactly as the user gave it
+        // (or omitted for "here"), so the advice resolves to the same commit when pasted back.
+        CiFailed { slug, target, sha, failed } => {
+            let args = ci_args(target.as_deref(), slug.as_deref());
+            let mut a = a
+                .fact("commit", sha)
+                .fact("target", target.clone().unwrap_or_default())
+                .fact("repository", slug.clone().unwrap_or_default());
+            for (i, run) in failed.iter().enumerate() {
+                let text = failed_run_line(run);
+                a = if i == 0 { a.fact("failed", text) } else { a.cont(text) };
+            }
+            a.todo(Line::text("read the logs of the jobs that failed, then fix or rerun them."))
+                .todo(
+                    Line::step(1, format!("gea ci logs{args}"))
+                        .and_text("  (only the failed jobs)"),
+                )
+                .todo(
+                    Line::step(2, format!("gea ci rerun{args}"))
+                        .and_text("  (rerun only the failed jobs)"),
+                )
+                .todo(Line::note(
+                    "a failed CI run returns exit code 1, as gea pr checks does for a failed check.",
+                ))
+        }
+
+        CiPending { slug, target, sha, pending } => {
+            let args = ci_args(target.as_deref(), slug.as_deref());
+            a.fact("commit", sha)
+                .fact("target", target.clone().unwrap_or_default())
+                .fact("repository", slug.clone().unwrap_or_default())
+                .fact(
+                    "still running",
+                    if pending.is_empty() { String::new() } else { pending.join(", ") },
+                )
+                .todo(Line::text("nothing has failed yet; wait for the runs to finish."))
+                .todo(
+                    Line::step(1, format!("gea ci watch{args}"))
+                        .and_text("  (follow them to the end)"),
+                )
+                .todo(Line::note(
+                    "pending CI returns exit code 8. Rate limits also use this code.",
+                ))
+        }
+
         // The content of this advice is load-bearing: `http::paginate`'s rule-(f) test asserts
         // that the rendering names the page count, a `?page`-ignoring instance, a
         // header-stripping proxy, and something actionable. That is the contract, not decoration.
@@ -1634,6 +1726,8 @@ mod tests {
             ChecksPending { .. } => "ChecksPending",
             ChecksFailed { .. } => "ChecksFailed",
             RunFailed { .. } => "RunFailed",
+            CiFailed { .. } => "CiFailed",
+            CiPending { .. } => "CiPending",
             RateLimited { .. } => "RateLimited",
             Forbidden { .. } => "Forbidden",
             ServerError { .. } => "ServerError",
@@ -1931,6 +2025,37 @@ mod tests {
                 conclusion: String::new(),
                 failed_jobs: vec![],
                 url: None,
+            },
+            CiFailed {
+                slug: Some("perf3ct/gea".into()),
+                target: Some("2626".into()),
+                sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                failed: vec![FailedRun::new(
+                    6442,
+                    "ci.yml",
+                    "failure",
+                    vec!["Fast Checks".into()],
+                    Some("https://git.example.org/perf3ct/gea/actions/runs/6442".into()),
+                )],
+            },
+            // "Here": no target, so the advice must not print a stray positional.
+            CiFailed {
+                slug: None,
+                target: None,
+                sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                failed: vec![],
+            },
+            CiPending {
+                slug: Some("perf3ct/gea".into()),
+                target: Some("main".into()),
+                sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                pending: vec!["ci.yml".into(), "release.yml".into()],
+            },
+            CiPending {
+                slug: None,
+                target: None,
+                sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                pending: vec![],
             },
             PaginationDidNotTerminate { pages: 10_000, items: 500_000 },
             RateLimited {
@@ -2531,6 +2656,66 @@ mod tests {
             },
             c
         ));
+    }
+
+    /// A red commit with two failed workflows: the headline counts them, each is a fact with its
+    /// run id and failed jobs, and the advice is `gea ci logs`/`gea ci rerun` with the target the
+    /// user gave, pasted back verbatim.
+    #[test]
+    fn snapshot_ci_failed() {
+        insta::assert_snapshot!(snap(
+            ErrorKind::CiFailed {
+                slug: Some("perf3ct/gea".into()),
+                target: Some("2626".into()),
+                sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                failed: vec![
+                    FailedRun::new(
+                        6442,
+                        "ci.yml",
+                        "failure",
+                        vec!["Fast Checks (fmt + static lints)".into(), "Build - workspace".into()],
+                        Some("https://git.example.org/perf3ct/gea/actions/runs/6442".into()),
+                    ),
+                    FailedRun::new(6445, "release.yml", "cancelled", vec![], None),
+                ],
+            },
+            RequestCtx::default()
+        ));
+    }
+
+    /// "Here": `gea ci` with no positional. Bug this prevents: advice reading `gea ci logs  -R …`
+    /// or `gea ci logs None`, either of which is a different command from the one that failed.
+    #[test]
+    fn snapshot_ci_failed_here_omits_the_target() {
+        let out = snap(
+            ErrorKind::CiFailed {
+                slug: None,
+                target: None,
+                sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                failed: vec![FailedRun::new(6442, "ci.yml", "failure", vec![], None)],
+            },
+            RequestCtx::default(),
+        );
+        assert!(out.contains("1. gea ci logs  ("), "{out}");
+        assert!(out.contains("2. gea ci rerun  ("), "{out}");
+        insta::assert_snapshot!(out);
+    }
+
+    /// Pending says "wait" and names the watch command, never logs or a rerun.
+    #[test]
+    fn snapshot_ci_pending() {
+        let out = snap(
+            ErrorKind::CiPending {
+                slug: Some("perf3ct/gea".into()),
+                target: Some("main".into()),
+                sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                pending: vec!["ci.yml".into(), "claude-code-review.yml".into()],
+            },
+            RequestCtx::default(),
+        );
+        assert!(out.contains("gea ci watch main -R perf3ct/gea"), "{out}");
+        assert!(!out.contains("gea ci logs"), "{out}");
+        insta::assert_snapshot!(out);
     }
 
     /// A local miss, next to `ResourceNotFound` above: they must not read alike, because they do
