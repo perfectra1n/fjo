@@ -144,9 +144,10 @@ Output is space-padded columns with no borders, which is `gh`'s look. There is e
 
 An empty list is success, exactly as in `gh`: `fjo pr list --json number` on a repository with no open pull requests prints `[]` and exits 0, so `if fjo pr list ...` tests reachability rather than emptiness.
 
-## 8. Two things `gh` has no equivalent of
+## 8. Three things `gh` has no equivalent of
 
 - **`fjo raw`** — a complete, generated command for every one of the 506 API operations. `gh` has `gh api` and nothing between it and the porcelain. See [layers.md](layers.md).
 - **`fjo admin`** — instance administration. `gh` has no admin surface at all, because GitHub Enterprise administration is not in the API `gh` targets.
+- **`fjo ci`** — CI for a pull request, branch or commit (or the branch you are on), keyed by the commit rather than by run id: `fjo ci`, `fjo ci logs`, `fjo ci watch`. `gh` splits this between `gh pr checks` and `gh run`, which works on GitHub because a pull request's runs carry its branch. Forgejo files a `pull_request` run under the pull request instead (its ref reads `#12`), so finding it by branch silently misses it; `fjo ci` resolves every target to a SHA and lists runs by `head_sha`. It exits 1 when a run failed and 8 while one is running, like `gh pr checks`. There is no `fjo ci rerun`: Forgejo's API cannot rerun a run, so a failed `fjo ci` points at the run's page instead.
 
 And several groups have no GitHub counterpart to copy from, so their shape is `fjo`'s own following the same verbs: `times`, `stopwatch`, `wiki`, `quota`, `mirror`, `package`, `transfer`, `nodeinfo`, `block`.

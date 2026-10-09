@@ -55,6 +55,8 @@ fjo pr list
 fjo pr create --fill                     # use the branch's commits for the title and body
 fjo issue list --label bug --state all -L 50
 fjo release create v0.1.0 ./dist/*        # create a release and upload its assets
+fjo ci                                   # CI for the branch you are on; exit 1 red, 8 running
+fjo ci logs 42                           # logs of the failed jobs in pull request 42's CI
 fjo run watch 1234 --exit-status         # wait for an Actions run to finish
 ```
 
