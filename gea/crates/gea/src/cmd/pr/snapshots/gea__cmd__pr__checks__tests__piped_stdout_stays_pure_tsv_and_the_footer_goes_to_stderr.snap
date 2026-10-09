@@ -1,0 +1,12 @@
+---
+source: crates/gea/src/cmd/pr/checks.rs
+assertion_line: 726
+expression: "format!(\"== stdout\\n{out}== stderr\\n{err}\")"
+---
+== stdout
+ci / build	success		https://gitea.example.org/them/proj/actions/runs/6441/jobs/0
+ci / test	failure		https://gitea.example.org/them/proj/actions/runs/6442/jobs/0
+lint	pending		https://ci.example.org/lint
+== stderr
+1 passed, 1 failed, 1 pending, 0 skipped
+next: gea ci logs 42

@@ -1,0 +1,10 @@
+---
+source: crates/gea/src/cmd/ci/tests.rs
+expression: "view::render(&resolved(Some(\"main\")), &views, &testing::term(),\nnext.as_deref())"
+---
+PR #2626 (renovate/zip-9.x) at f36d1a7
+
+● in_progress  lint.yml  run 2  #2
+✓ success      ci.yml    run 1  #1  1m01s
+
+next: gea ci watch main

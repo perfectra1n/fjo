@@ -30,9 +30,6 @@
 //! note says so, because "CI is green" about a commit that is not the one on screen is how
 //! unpushed work gets merged untested.
 
-// `gea ci`'s subcommands are what call these; until that lands some are reached only from tests.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use futures::StreamExt;
 use gitea_client::{Api, query};
 use gitea_core::context::git::GitCtx;
@@ -44,7 +41,6 @@ use crate::cmd::pr::common;
 use crate::cmd::run::{is_finished, workflow_file};
 use crate::cmd::support;
 use crate::global::GlobalOpts;
-use crate::output::Term;
 use crate::runtime::Runtime;
 
 /// How many open pull requests to scan for one whose head is a branch.
@@ -154,7 +150,7 @@ pub(crate) async fn resolve_target(
             // and a repository-resolution error would bury it.
             let here = locate_here(rt.git())?;
             let slug = rt.repo(globals)?.slug.clone();
-            resolve_here(rt.git(), rt.term(), api, &slug, here).await
+            resolve_here(rt.git(), api, &slug, here).await
         }
         Target::Branch(b) => {
             let slug = rt.repo(globals)?.slug.clone();
@@ -330,7 +326,6 @@ fn local_head(git: &dyn GitCtx) -> Option<String> {
 
 async fn resolve_here(
     git: &dyn GitCtx,
-    term: &Term,
     api: &Api,
     slug: &RepoSlug,
     here: Here,
@@ -339,15 +334,12 @@ async fn resolve_here(
         Here::Branch(branch) => {
             let resolved = resolve_branch(api, slug, &branch, None).await?;
             if let Some(local) = local_head(git).filter(|l| *l != resolved.sha) {
-                support::note(
-                    term,
-                    &format!(
-                        "note: local HEAD {} is not what the server has for {branch} ({}); \
+                support::warn(&format!(
+                    "note: local HEAD {} is not what the server has for {branch} ({}); \
                          showing the server's. Push to run CI on your commits.",
-                        short(&local),
-                        short(&resolved.sha)
-                    ),
-                );
+                    short(&local),
+                    short(&resolved.sha)
+                ));
             }
             Ok(resolved)
         }
@@ -559,7 +551,7 @@ mod tests {
             }),
             "GET",
             "/api/v1/repos/o/r/branches/main",
-            Canned::json(200, &format!(r#"{{"name":"main","commit":{{"id":"{SHA}"}}}}"#)),
+            Canned::json(200, format!(r#"{{"name":"main","commit":{{"id":"{SHA}"}}}}"#)),
         ));
         let r = resolve_branch(&testing::api(fake), &slug(), "main", Some("main".into()))
             .await
@@ -604,7 +596,7 @@ mod tests {
             testing::transport(),
             "GET",
             "/api/v1/repos/o/r/git/commits/f36d1a7",
-            Canned::json(200, &format!(r#"{{"sha":"{SHA}"}}"#)),
+            Canned::json(200, format!(r#"{{"sha":"{SHA}"}}"#)),
         ));
         let r =
             resolve_commit(&FakeGit::not_a_repo(), &testing::api(fake.clone()), &slug(), "f36d1a7")
@@ -641,7 +633,7 @@ mod tests {
             ),
             "GET",
             "/api/v1/repos/o/r/branches/defaced",
-            Canned::json(200, &format!(r#"{{"name":"defaced","commit":{{"id":"{SHA}"}}}}"#)),
+            Canned::json(200, format!(r#"{{"name":"defaced","commit":{{"id":"{SHA}"}}}}"#)),
         ));
         let r = resolve_commit(&FakeGit::not_a_repo(), &testing::api(fake), &slug(), "defaced")
             .await
@@ -677,11 +669,10 @@ mod tests {
             }),
             "GET",
             "/api/v1/repos/o/r/branches/main",
-            Canned::json(200, &format!(r#"{{"name":"main","commit":{{"id":"{SHA}"}}}}"#)),
+            Canned::json(200, format!(r#"{{"name":"main","commit":{{"id":"{SHA}"}}}}"#)),
         ));
         let here = locate_here(&git).unwrap();
-        let r =
-            resolve_here(&git, &Term::piped(), &testing::api(fake), &slug(), here).await.unwrap();
+        let r = resolve_here(&git, &testing::api(fake), &slug(), here).await.unwrap();
         assert_eq!(r.sha, SHA);
         assert_eq!(r.selector, None, "hints for here must not name a target");
         assert!(

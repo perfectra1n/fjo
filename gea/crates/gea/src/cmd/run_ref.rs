@@ -30,8 +30,9 @@
 //! accepted, and an **ambiguous** name is refused with the candidates listed — never guessed,
 //! because a matrix build's `build (linux)` and `build (macos)` are both "build".
 
-// The `gea run` positionals switch to these types in the next change, and `gea ci` builds on them
-// after that; until both land some of this is reached only from the tests.
+// `gea run` uses these now; `run_id_from_url` is for `gea pr checks` and `pick_job`'s generic
+// form for `gea ci`, which land separately. Until both do, some of this is reached only from the
+// tests.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::str::FromStr;
@@ -43,7 +44,6 @@ use gitea_model::{ActionWorkflowJob, ActionWorkflowRun};
 
 use crate::cmd::run::int;
 use crate::cmd::support;
-use crate::output::Term;
 
 /// The accepted forms, as one clause. Shared by the parse error and the not-found hint, so the
 /// two cannot come to describe different syntaxes.
@@ -66,7 +66,7 @@ const NUMBER_SCAN_PAGE_SIZE: i32 = 50;
 
 /// A run, as the user named it. See the module docs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RunRef {
+pub enum RunRef {
     /// `6442`: an id, falling back to the run number on a 404.
     Bare(i64),
     /// `#3623`: explicitly the per-repository run number.
@@ -198,7 +198,6 @@ pub(crate) async fn resolve_run(
     api: &Api,
     slug: &RepoSlug,
     r: &RunRef,
-    term: &Term,
 ) -> Result<ActionWorkflowRun> {
     let id = match r {
         RunRef::Number(n) => {
@@ -207,13 +206,10 @@ pub(crate) async fn resolve_run(
         RunRef::Bare(n) => *n,
         RunRef::Url { run, slug: named, .. } => {
             if named != slug {
-                support::note(
-                    term,
-                    &format!(
-                        "note: the URL names {named}, but this command is working in {slug}; \
+                support::warn(&format!(
+                    "note: the URL names {named}, but this command is working in {slug}; \
                          looking run {run} up in {slug} (pass -R {named} to use the URL's)"
-                    ),
-                );
+                ));
             }
             *run
         }
@@ -227,16 +223,13 @@ pub(crate) async fn resolve_run(
     // A failed scan is not reported in place of the 404: the 404 is the answer to what was
     // asked, and the scan was only ever a courtesy on top of it.
     if let Ok(Some(run)) = run_by_number(api, slug, id).await {
-        support::note(term, &format!("note: no run has id {id}; using run #{id} (id {})", run.id));
+        support::warn(&format!("note: no run has id {id}; using run #{id} (id {})", run.id));
         return Ok(run);
     }
-    support::note(
-        term,
-        &format!(
-            "note: {slug} has no run with id {id} and no run numbered #{id}. `gea run list` \
+    support::warn(&format!(
+        "note: {slug} has no run with id {id} and no run numbered #{id}. `gea run list` \
              prints both: pass an ID as it is, or a NUMBER as #N."
-        ),
-    );
+    ));
     Err(miss)
 }
 
@@ -294,7 +287,7 @@ async fn run_by_number(api: &Api, slug: &RepoSlug, n: i64) -> Result<Option<Acti
 
 /// A job, as the user named it: `--job 33898` or `--job "Fast Checks"`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum JobRef {
+pub enum JobRef {
     /// All digits: a job id.
     Id(i64),
     /// Anything else: matched against job names, see [`pick_job`].
@@ -504,9 +497,7 @@ mod tests {
             Canned::json(200, RUN_6442),
         ));
         let run =
-            resolve_run(&testing::api(fake.clone()), &slug(), &RunRef::Bare(6442), &Term::piped())
-                .await
-                .unwrap();
+            resolve_run(&testing::api(fake.clone()), &slug(), &RunRef::Bare(6442)).await.unwrap();
         assert_eq!(run.id.get(), 6442);
         assert_eq!(fake.call_count(), 1, "{:?}", fake.calls());
     }
@@ -525,15 +516,13 @@ mod tests {
             "/api/v1/repos/o/r/actions/runs",
             Canned::json(
                 200,
-                &format!(
+                format!(
                     r#"{{"total_count":2,"workflow_runs":[{{"id":6443,"run_number":3624}},{RUN_6442}]}}"#
                 ),
             ),
         ));
         let run =
-            resolve_run(&testing::api(fake.clone()), &slug(), &RunRef::Bare(3623), &Term::piped())
-                .await
-                .unwrap();
+            resolve_run(&testing::api(fake.clone()), &slug(), &RunRef::Bare(3623)).await.unwrap();
         assert_eq!((run.id.get(), run.run_number), (6442, 3623));
         assert_eq!(fake.call_count(), 2, "{:?}", fake.calls());
     }
@@ -551,11 +540,9 @@ mod tests {
             ),
             "GET",
             "/api/v1/repos/o/r/actions/runs",
-            Canned::json(200, &format!(r#"{{"total_count":1,"workflow_runs":[{RUN_6442}]}}"#)),
+            Canned::json(200, format!(r#"{{"total_count":1,"workflow_runs":[{RUN_6442}]}}"#)),
         ));
-        let err = resolve_run(&testing::api(fake), &slug(), &RunRef::Bare(99), &Term::piped())
-            .await
-            .unwrap_err();
+        let err = resolve_run(&testing::api(fake), &slug(), &RunRef::Bare(99)).await.unwrap_err();
         assert_eq!(err.exit_code(), 5, "{err:?}");
         assert!(
             err.ctx.path.as_deref().is_some_and(|p| p.ends_with("/actions/runs/99")),
@@ -573,10 +560,9 @@ mod tests {
             "/api/v1/repos/o/r/actions/runs/6442",
             Canned::json(403, r#"{"message":"no"}"#),
         ));
-        let err =
-            resolve_run(&testing::api(fake.clone()), &slug(), &RunRef::Bare(6442), &Term::piped())
-                .await
-                .unwrap_err();
+        let err = resolve_run(&testing::api(fake.clone()), &slug(), &RunRef::Bare(6442))
+            .await
+            .unwrap_err();
         assert_ne!(err.exit_code(), 5, "{err:?}");
         assert_eq!(fake.call_count(), 1, "{:?}", fake.calls());
     }
@@ -596,7 +582,7 @@ mod tests {
                 let top = 122 - 2 * page;
                 Canned::json(
                     200,
-                    &format!(
+                    format!(
                         r#"{{"total_count":500,"workflow_runs":[{{"id":{a},"run_number":{a}}},{{"id":{b},"run_number":{b}}}]}}"#,
                         a = top,
                         b = top - 1
@@ -606,15 +592,14 @@ mod tests {
         ));
         let api = testing::api(fake.clone());
 
-        let run = resolve_run(&api, &slug(), &RunRef::Number(117), &Term::piped()).await.unwrap();
+        let run = resolve_run(&api, &slug(), &RunRef::Number(117)).await.unwrap();
         assert_eq!(run.run_number, 117);
         assert_eq!(fake.call_count(), 2, "{:?}", fake.calls());
 
         // Newer than any run: the very first page is already below it, so that page is the
         // whole scan.
         let before = fake.call_count();
-        let err =
-            resolve_run(&api, &slug(), &RunRef::Number(1000), &Term::piped()).await.unwrap_err();
+        let err = resolve_run(&api, &slug(), &RunRef::Number(1000)).await.unwrap_err();
         assert_eq!(err.exit_code(), 5, "{err}");
         assert!(err.to_string().contains("#1000"), "{err}");
         assert_eq!(fake.call_count() - before, 1, "stopped after the first page");
@@ -633,16 +618,15 @@ mod tests {
                 let n = 100_000 - page;
                 Canned::json(
                     200,
-                    &format!(
+                    format!(
                         r#"{{"total_count":100000,"workflow_runs":[{{"id":{n},"run_number":{n}}}]}}"#
                     ),
                 )
             },
         ));
-        let err =
-            resolve_run(&testing::api(fake.clone()), &slug(), &RunRef::Number(5), &Term::piped())
-                .await
-                .unwrap_err();
+        let err = resolve_run(&testing::api(fake.clone()), &slug(), &RunRef::Number(5))
+            .await
+            .unwrap_err();
         assert_eq!(err.exit_code(), 2, "{err}");
         assert!(err.to_string().contains("pass the run's id"), "{err}");
         assert_eq!(fake.call_count(), NUMBER_SCAN_PAGES as usize);
@@ -658,7 +642,7 @@ mod tests {
         ));
         let r: RunRef =
             "https://git.example.org/other/repo/actions/runs/6442/jobs/1".parse().unwrap();
-        let run = resolve_run(&testing::api(fake), &slug(), &r, &Term::piped()).await.unwrap();
+        let run = resolve_run(&testing::api(fake), &slug(), &r).await.unwrap();
         assert_eq!(run.id.get(), 6442);
     }
 

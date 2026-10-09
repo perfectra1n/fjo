@@ -55,6 +55,8 @@ gea pr list
 gea pr create --fill                     # use the branch's commits for the title and body
 gea issue list --label bug --state all -L 50
 gea release create v0.1.0 ./dist/*        # create a release and upload its assets
+gea ci                                   # CI for the branch you are on; exit 1 red, 8 running
+gea ci logs 42                           # logs of the failed jobs in pull request 42's CI
 gea run watch 1234 --exit-status         # wait for an Actions run to finish
 ```
 
