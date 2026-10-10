@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.2.6](https://github.com/perfectra1n/fjo/compare/v0.2.5...v0.2.6) (2026-10-10)
+
+
+### Features
+
+* **ci:** fjo ci group, run/job refs across fjo run, pr checks summary and next hints ([77b5772](https://github.com/perfectra1n/fjo/commit/77b5772a63bd1aa5e96957103a072eba7d949fdc))
+
+
+### Bug Fixes
+
+* **pr:** anchor `pr create --fill` to the server's base commit ([a0a9044](https://github.com/perfectra1n/fjo/commit/a0a9044788ac546be561e7488e20b40bd40cb3f6))
+* **pr:** anchor `pr create --fill` to the server's base commit ([edb0d45](https://github.com/perfectra1n/fjo/commit/edb0d459b728067578718143c589ad9f519c6853)), closes [#30](https://github.com/perfectra1n/fjo/issues/30)
+
+
+### Documentation
+
+* fjo ci in the README, gh-differences and the exit-code table ([f7450f4](https://github.com/perfectra1n/fjo/commit/f7450f4841bfd6ffac8abee2bffc1220b3f029ca))
+* **spec:** CI porcelain design, ported from gea with measured Forgejo divergences ([6a9fd8e](https://github.com/perfectra1n/fjo/commit/6a9fd8eb871a2c91bf995e1fedf6dfd3ef0ee196))
+
+
+### Tests
+
+* **ci:** live fjo ci/run/pr checks tests against a real forgejo-runner ([4846837](https://github.com/perfectra1n/fjo/commit/4846837492da7e8f446620dfcb7804085ae0b80c))
+
+
+### Continuous Integration
+
+* **budget:** check the release profile directly and size the budget for step changes ([d24e8d9](https://github.com/perfectra1n/fjo/commit/d24e8d995e3cc34114bca566824c92021520b5ea))
+
+
+### Miscellaneous Chores
+
+* **deps:** bump yanked yoke-derive 0.8.3 to 0.8.4 ([9ea2daf](https://github.com/perfectra1n/fjo/commit/9ea2daf31a072559a407d170c45c479009d8c964))
+
 ## [0.2.5](https://github.com/perfectra1n/fjo/compare/v0.2.4...v0.2.5) (2026-09-22)
 
 
