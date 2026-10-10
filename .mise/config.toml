@@ -406,9 +406,28 @@ set -eu
 # macros-with-logic" rule held perfectly in the generated half; it was never
 # applied to the hand-written half. So if this gate goes red, look at layer 3
 # first, not at forgejo-client.
+#
+# How SIZE_BUDGET is meant to fail, and how it used to fail. It was 12 MiB
+# against a 12.20 MB binary: ~384 KiB of headroom, which one feature-sized
+# porcelain group (`fjo ci`, ~400 KiB) used up. So the gate went red over 9 KiB
+# of ordinary new commands while guarding against regressions a thousand times
+# larger. The size number was only ever a proxy for two kinds of failure, and
+# each now gets a check of the right granularity:
+#
+#   * The release profile losing a setting: opt-level "s" (5.6 MB), fat LTO
+#     (1.2 MB), codegen-units=1, panic=abort, strip. These are asserted
+#     directly below, so that failure names the setting rather than a byte
+#     count.
+#   * A step change in what is compiled in: an eager clap tree (~1 MB), a heavy
+#     new dependency, monomorphisation creeping into the generated layer.
+#     These are MiB-scale, so the budget leaves ~2 MiB of headroom for organic
+#     growth, still under the plan's 15 MB aspiration. Ordinary commands should
+#     not touch it for a long while. When growth does reach it, `cargo bloat`
+#     decides whether that is a step change (fix it) or the sum of many small
+#     honest additions (raise the budget, and record the measurement here).
 VERSION_BUDGET_MS=25
 HELP_BUDGET_MS=40
-SIZE_BUDGET=12582912   # 12 MiB; measured 12198872, so ~384 KiB of headroom
+SIZE_BUDGET=14680064   # 14 MiB; measured 12652544 (2026-10-10), ~2 MiB of headroom
 
 BIN=target/release/fjo
 CSV=$(mktemp)
@@ -436,18 +455,32 @@ bench() { # <label> <budget-ms> <command line>
 bench 'fjo --version'      "$VERSION_BUDGET_MS" "$BIN --version"
 bench 'fjo raw ... --help' "$HELP_BUDGET_MS"    "$BIN raw repo create-pull-request --help"
 
+# The release profile, checked setting by setting. Each line is the
+# `key = value` as Cargo.toml spells it inside [profile.release].
+profile=$(awk '/^\[/{in_sec = ($0 == "[profile.release]")} in_sec' Cargo.toml)
+for want in 'opt-level = "s"' 'lto = "fat"' 'codegen-units = 1' 'panic = "abort"' 'strip = "symbols"'; do
+  if ! printf '%s\n' "$profile" | grep -qxF "$want"; then
+    echo "error: [profile.release] in Cargo.toml no longer says: $want" >&2
+    echo "The size budget assumes it (see the comment above SIZE_BUDGET); restore it." >&2
+    fail=1
+  fi
+done
+
 bytes=$(stat -c%s "$BIN")
 printf '==> %-26s %8s bytes (budget %s)\n' 'release binary' "$bytes" "$SIZE_BUDGET"
 if [ "$bytes" -gt "$SIZE_BUDGET" ]; then
   echo "error: the release binary grew ($bytes > $SIZE_BUDGET bytes)." >&2
   echo "Inspect which code increased the binary size:" >&2
   echo "  cargo bloat --release --crates" >&2
-  echo "Reduce the added code or dependencies rather than raising SIZE_BUDGET." >&2
+  echo "A step change (a dependency, an eager command tree) is the bug this gate catches:" >&2
+  echo "fix that. Only if the growth is many small honest additions, raise SIZE_BUDGET" >&2
+  echo "and record the new measurement next to it." >&2
   fail=1
-# Only nag on a real MiB-scale win: the binary wobbles by a few KiB between
-# builds, and a note that fires on wobble is a note nobody reads.
-elif [ "$((SIZE_BUDGET - bytes))" -gt 1048576 ]; then
-  echo "note: the binary shrank; lower SIZE_BUDGET to $bytes in .mise/config.toml"
+# Only nag on a real MiB-scale win beyond the intended ~2 MiB of headroom: the
+# binary wobbles by a few KiB between builds, and a note that fires on every
+# green run is a note nobody reads.
+elif [ "$((SIZE_BUDGET - bytes))" -gt 3145728 ]; then
+  echo "note: the binary shrank by over 1 MiB; lower SIZE_BUDGET to ~$((bytes + 2097152)) in .mise/config.toml"
 fi
 
 exit "$fail"
