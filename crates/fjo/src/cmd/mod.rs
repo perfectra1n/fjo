@@ -24,6 +24,7 @@ pub mod alias;
 pub mod auth;
 pub mod block;
 pub mod browse;
+pub mod ci;
 pub mod completion;
 pub mod config;
 pub mod deploy_key;
@@ -43,6 +44,7 @@ pub mod reaction;
 pub mod release;
 pub mod repo;
 pub mod run;
+pub mod run_ref;
 pub mod search;
 pub mod secret;
 pub mod status;
@@ -105,6 +107,9 @@ pub enum Porcelain {
     /// Forgejo Actions runs
     #[command(name = "run")]
     Run(run::Args),
+    /// CI status and logs for a pull request, branch or commit
+    #[command(name = "ci", long_about = ci::LONG_ABOUT)]
+    Ci(ci::Args),
     /// Forgejo Actions workflows
     #[command(name = "workflow")]
     Workflow(workflow::Args),
@@ -195,6 +200,7 @@ impl Porcelain {
             Self::Project(a) => project::run(globals, a),
             Self::Release(a) => release::run(globals, a),
             Self::Run(a) => run::run(globals, a),
+            Self::Ci(a) => ci::run(globals, a),
             Self::Workflow(a) => workflow::run(globals, a),
             Self::Secret(a) => secret::run(globals, a),
             Self::Variable(a) => variable::run(globals, a),

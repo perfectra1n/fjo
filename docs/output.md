@@ -129,13 +129,13 @@ Two of those are subtle enough to be worth stating, because each was a real bug:
 | code | meaning |
 | --- | --- |
 | 0 | success — **including an empty result set** |
-| 1 | generic failure |
+| 1 | generic failure, including a failed check (`pr checks`) or failed CI (`ci`) |
 | 2 | usage error |
 | 4 | authentication or authorization required |
 | 5 | not found |
 | 6 | network or transport failure |
 | 7 | server error (5xx) |
-| 8 | rate limited |
+| 8 | rate limited, or checks/CI still pending (`pr checks`, `ci`) — both mean "wait and retry" |
 | 130 | interrupted |
 
 0–4 match `gh`. An empty list is success: `fjo pr list --json number` on a repository with no open pull requests prints `[]` and exits 0, so `if fjo pr list ...` tests reachability rather than emptiness.

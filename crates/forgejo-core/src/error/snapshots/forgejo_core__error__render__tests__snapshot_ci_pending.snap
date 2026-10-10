@@ -1,0 +1,16 @@
+---
+source: crates/forgejo-core/src/error/render.rs
+assertion_line: 2718
+expression: out
+---
+error: 2 workflow runs are still running for commit f36d1a7
+
+  commit:        f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed
+  target:        main
+  repository:    perf3ct/fjo
+  still running: ci.yml, claude-code-review.yml
+
+what to do:
+  nothing has failed yet; wait for the runs to finish.
+  1. fjo ci watch main -R perf3ct/fjo  (follow them to the end)
+  note: pending CI returns exit code 8. Rate limits also use this code.

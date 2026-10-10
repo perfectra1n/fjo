@@ -1,5 +1,6 @@
 ---
 source: crates/forgejo-core/src/error/render.rs
+assertion_line: 2596
 expression: "snap(ErrorKind::ChecksFailed\n{\n    slug: Some(\"perf3ct/fjo\".into()), pr: \"4212\".into(), failed:\n    vec![FailedCheck::new(\"build / test (pull_request)\",\n    Some(\"https://ci.example.org/runs/9\".into())),\n    FailedCheck::new(\"lint\", None),],\n}, c)"
 ---
 error: 2 checks on pull request 4212 failed
@@ -14,5 +15,5 @@ what to do:
   inspect the failed checks listed above.
   1. open each failed check's URL for details
   2. fjo pr checks 4212 -R perf3ct/fjo --web  (the same checks in a browser)
-  note: checks may come from external services. For Forgejo Actions, use
-        fjo run list.
+  note: checks may come from external services. For Forgejo Actions, fjo
+        ci logs 4212 -R perf3ct/fjo prints the failed jobs' logs.

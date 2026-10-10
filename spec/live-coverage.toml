@@ -76,17 +76,3 @@ unblock = "two-instance topology in the harness"
 [unreachable.activitypubRepositoryOutbox]
 reason = "federation outbox POST; requires a second instance and an HTTP-signed payload"
 unblock = "two-instance topology in the harness"
-
-# ---------------------------------------------------------------------------------------------
-# Actions logs.
-#
-# `repoGetActionJobLogs` IS covered: `live_actions.rs` dispatches a real workflow, resolves its
-# jobs (that call succeeds and yields job 1), then asks for that job's output and gets a 404 —
-# the job exists and the message names it; a job nobody started simply has no logs.
-#
-# The run-level route has no such reachable shape. It needs a run whose jobs have produced
-# output, and no runner ever attaches to the test instance.
-
-[unreachable.repoGetActionRunLogs]
-reason = "needs an Actions run whose jobs actually produced output; no runner attaches to the test instance, so every dispatched run is born `waiting` and stays there"
-unblock = "an act_runner sidecar registered against the test instance, which would also unblock artifact download/delete and ListActionTasks"

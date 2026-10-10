@@ -1,0 +1,11 @@
+---
+source: crates/fjo/src/cmd/ci/tests.rs
+assertion_line: 372
+expression: "view::render(&resolved(Some(\"main\")), &views, &testing::term(),\nnext.as_deref())"
+---
+PR #2626 (renovate/zip-9.x) at f36d1a7
+
+● running  lint.yml  run 2  #2
+✓ success  ci.yml    run 1  #1  1m01s
+
+next: fjo ci watch main

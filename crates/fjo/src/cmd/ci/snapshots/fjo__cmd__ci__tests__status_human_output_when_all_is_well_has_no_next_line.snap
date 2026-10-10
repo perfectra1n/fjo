@@ -1,0 +1,9 @@
+---
+source: crates/fjo/src/cmd/ci/tests.rs
+assertion_line: 362
+expression: "view::render(&resolved(None), &views, &testing::term(), None)"
+---
+PR #2626 (renovate/zip-9.x) at f36d1a7
+
+✓ success  ci.yml    run 1  #1  1m01s
+✓ skipped  docs.yml  run 2  #2

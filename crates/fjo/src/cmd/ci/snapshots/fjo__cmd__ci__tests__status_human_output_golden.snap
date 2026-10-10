@@ -1,0 +1,18 @@
+---
+source: crates/fjo/src/cmd/ci/tests.rs
+assertion_line: 348
+expression: "view::render(&resolved(Some(\"2626\")), &views, &testing::term(),\nnext.as_deref())"
+---
+PR #2626 (renovate/zip-9.x) at f36d1a7
+
+✗ cancelled  build.yml (pull_request)  run 6447  #3628
+✗ failure    ci.yml                    run 6442  #3623  6m44s
+    ✗ Fast Checks (fmt + static lints)  job 33898
+    ✗ Build - workspace                 job 33900
+● running    build.yml (push)          run 6446  #3627
+● waiting    claude-code-review.yml    run 6443  #3624
+    waiting: job review requires runs-on duck-runner-huge, but no runner matches all labels. The job will wait indefinitely. no runner is visible to this repository
+✓ skipped    docs.yml                  run 6445  #3626
+✓ success    pr-title.yml              run 6444  #3625  12s
+
+next: fjo ci logs 2626

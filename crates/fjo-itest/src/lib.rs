@@ -23,6 +23,9 @@
 #![allow(rustdoc::private_intra_doc_links)]
 
 pub mod coverage;
+pub mod runner;
+
+pub use runner::{RunnerGuard, shared_runner};
 
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -271,7 +274,7 @@ impl Instance {
             .with_env_var("FORGEJO__server__ROOT_URL", root_url)
             .with_env_var("FORGEJO__server__OFFLINE_MODE", "true")
             .with_env_var("FORGEJO__service__DISABLE_REGISTRATION", "true")
-            // Actions ON, though no runner ever attaches.
+            // Actions ON. No runner attaches unless a test asks for one (see below).
             //
             // This used to be `false`, with the note "nothing here needs a runner, and it
             // shortens startup". The first half stopped being true: with the unit disabled
@@ -282,7 +285,8 @@ impl Instance {
             //
             // Enabling it costs nothing here: `POST .../dispatches` returns 201 and the run is
             // born `waiting` and stays there forever with no runner, which is exactly the
-            // fixture the run lifecycle needs.
+            // fixture the run lifecycle needs. A runner attaches only when a test asks for one
+            // through `Instance::attach_runner` / `runner_or_skip!` (see `runner.rs`).
             .with_env_var("FORGEJO__actions__ENABLED", "true")
             // Quotas ON, for the same shape of reason.
             //

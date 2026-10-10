@@ -1,0 +1,12 @@
+---
+source: crates/fjo/src/cmd/pr/checks.rs
+assertion_line: 762
+expression: "human(&s, false)"
+---
+CHECK        STATE    AGE  DETAILS
+ci / build   success       /them/proj/actions/runs/6441/jobs/0
+ci / test    pending       /them/proj/actions/runs/6442/jobs/0
+ci / queued  pending       /them/proj/actions/runs/6443/jobs/0
+
+1 passed, 0 failed, 2 pending, 0 skipped
+next: fjo ci watch 42
