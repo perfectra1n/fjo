@@ -1,7 +1,17 @@
 //! `cargo xtask update-spec --version v1.27.2`.
 //!
-//! Fetches the Gitea Swagger template at a git tag and turns it into a canonical JSON
+//! Fetches the Gitea Swagger document at a git tag and turns it into a canonical JSON
 //! document the generator can read.
+//!
+//! ## Two upstream layouts
+//!
+//! Gitea 28 moved the document (see [`crate::spec::Layout`]). Up to 1.27 it is the Go template
+//! described next; from 28 it is `v1-swagger.generated.json`, plain JSON in which the version
+//! and sub-URL are literal sentinels (`0.0.0+GITEA-API-APP-VERSION`, `/GITEA-API-APP-SUBURL/`)
+//! that Gitea's `swaggerJsonServe` swaps at request time. Both sit inside JSON strings, so both
+//! are handled the same way — substitute, then pin — and both get the same "exactly these,
+//! exactly once" guard: [`check_placeholders`] for the template, [`check_sentinels`] for the
+//! generated file. [`check_upstream`] picks the one the text calls for.
 //!
 //! ## Why a Go template can be treated as JSON
 //!
@@ -44,6 +54,10 @@ pub const EXPECTED_PLACEHOLDERS: [&str; 2] = ["{{.SwaggerAppSubUrl}}", "{{.Swagg
 /// configured host URL at runtime, so the vendored spec pins the bare API root.
 pub const BASE_PATH: &str = "/api/v1";
 
+/// The generated file's stand-ins for the two template placeholders, exactly as Gitea 28's
+/// `routers/web/swagger_json.go` replaces them.
+pub const EXPECTED_SENTINELS: [&str; 2] = ["0.0.0+GITEA-API-APP-VERSION", "/GITEA-API-APP-SUBURL/"];
+
 pub fn run(root: &Path, version: &str, dry_run: bool, verify: bool) -> Result<()> {
     let (tag, bare) = normalize_version(version)?;
     let url = spec::source_url(&tag);
@@ -53,7 +67,8 @@ pub fn run(root: &Path, version: &str, dry_run: bool, verify: bool) -> Result<()
     let upstream_sha = sha256_hex(upstream.as_bytes());
     eprintln!("  {} bytes, sha256 {}", upstream.len(), upstream_sha);
 
-    check_placeholders(&upstream)?;
+    let layout = spec::Layout::for_tag(&tag);
+    check_upstream(&upstream)?;
 
     let json = canonicalize(&upstream, &bare)?;
     let canonical_sha = sha256_hex(json.as_bytes());
@@ -62,7 +77,7 @@ pub fn run(root: &Path, version: &str, dry_run: bool, verify: bool) -> Result<()
         tag: tag.clone(),
         version: bare.clone(),
         source: url,
-        upstream: "v1_json.tmpl".to_owned(),
+        upstream: layout.file_name().to_owned(),
         upstream_sha256: upstream_sha,
         canonical: spec::canonical_name(&bare),
         canonical_sha256: canonical_sha.clone(),
@@ -76,7 +91,7 @@ pub fn run(root: &Path, version: &str, dry_run: bool, verify: bool) -> Result<()
 
     if dry_run {
         eprintln!("dry run: nothing written");
-        eprintln!("  would write {}", spec::tmpl_path(root).display());
+        eprintln!("  would write {}", spec::spec_dir(root).join(layout.file_name()).display());
         eprintln!("  would write {}", spec::spec_dir(root).join(&lock.canonical).display());
         eprintln!("  would write {}", spec::lock_path(root).display());
         eprintln!("  canonical sha256 {canonical_sha}");
@@ -86,7 +101,20 @@ pub fn run(root: &Path, version: &str, dry_run: bool, verify: bool) -> Result<()
     let dir = spec::spec_dir(root);
     std::fs::create_dir_all(&dir)?;
     let mut wrote = 0;
-    wrote += usize::from(write_if_changed(&spec::tmpl_path(root), upstream.as_bytes())?);
+    wrote += usize::from(write_if_changed(&dir.join(layout.file_name()), upstream.as_bytes())?);
+    // A bump across the Gitea 28 move leaves the other layout's file behind, unreferenced by
+    // lock.toml — remove it, as `remove_stale_canonicals` does for the canonical JSON.
+    for other in [spec::Layout::Template, spec::Layout::Generated] {
+        let stale = dir.join(other.file_name());
+        if other != layout && stale.exists() {
+            std::fs::remove_file(&stale)?;
+            eprintln!(
+                "  removed:   {} (upstream moved to {})",
+                stale.display(),
+                layout.file_name()
+            );
+        }
+    }
     wrote += usize::from(write_if_changed(&dir.join(&lock.canonical), json.as_bytes())?);
 
     let lock_text = format!(
@@ -169,7 +197,7 @@ pub(crate) fn fetch(url: &str) -> Result<String> {
             format!(
                 "could not run curl: {e}\n  \
                  xtask deliberately has no HTTP client of its own; install curl or download \
-                 {url} by hand into spec/v1_json.tmpl"
+                 {url} by hand into spec/"
             )
         })?;
 
@@ -243,6 +271,51 @@ pub fn check_placeholders(s: &str) -> Result<()> {
     Ok(())
 }
 
+/// The guard for the Gitea 28 generated file: each sentinel exactly once.
+///
+/// Same reasoning as [`check_placeholders`]. A sentinel that vanished means the version or
+/// sub-URL is now spelled some other way, and one that appears twice means upstream substitutes
+/// in a second position — either way the substitution below would be silently incomplete.
+pub fn check_sentinels(s: &str) -> Result<()> {
+    for sentinel in EXPECTED_SENTINELS {
+        let n = s.matches(sentinel).count();
+        if n != 1 {
+            bail!(
+                "expected the sentinel {sentinel:?} exactly once in upstream's \
+                 v1-swagger.generated.json, found it {n} times.\n  \
+                 Gitea substitutes these at request time (routers/web/swagger_json.go); check \
+                 what it replaces now, then teach update_spec.rs about it."
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Whether text is in either upstream layout, and passes that layout's guard.
+///
+/// Template placeholders mean the 1.x layout, sentinels the 28.x one. Text with neither is not
+/// an upstream document at all (it may be canonical JSON, which `spec-diff --file` accepts on
+/// purpose), so that is an error here and the caller decides whether to tolerate it.
+pub fn check_upstream(s: &str) -> Result<()> {
+    if !find_placeholders(s).is_empty() {
+        return check_placeholders(s);
+    }
+    if EXPECTED_SENTINELS.iter().any(|x| s.contains(x)) {
+        return check_sentinels(s);
+    }
+    bail!(
+        "the upstream document has neither the Go-template placeholders ({}) nor Gitea 28's \
+         sentinels ({}); its layout has changed again",
+        EXPECTED_PLACEHOLDERS.join(", "),
+        EXPECTED_SENTINELS.join(", "),
+    )
+}
+
+/// Whether text is an upstream document (either layout) rather than canonical JSON.
+pub fn is_upstream(s: &str) -> bool {
+    !find_placeholders(s).is_empty() || EXPECTED_SENTINELS.iter().any(|x| s.contains(x))
+}
+
 /// Substitutes the placeholders, pins `info.version` and `basePath`, and re-serializes with
 /// **recursively sorted keys** and two-space indent.
 ///
@@ -253,8 +326,13 @@ pub fn canonicalize(template: &str, version: &str) -> Result<String> {
     // Substituting `AppSubUrl` with the empty string already yields `/api/v1`; we overwrite
     // `basePath` explicitly below anyway, so the substitution only has to make the document
     // parse.
-    let substituted =
-        template.replace("{{.SwaggerAppVer}}", version).replace("{{.SwaggerAppSubUrl}}", "");
+    // Gitea 28's sentinels are swapped the way its own `swaggerJsonServe` does it: the version
+    // for the version, and the sub-URL (with its trailing slash) for a bare `/`.
+    let substituted = template
+        .replace("{{.SwaggerAppVer}}", version)
+        .replace("{{.SwaggerAppSubUrl}}", "")
+        .replace(EXPECTED_SENTINELS[0], version)
+        .replace(EXPECTED_SENTINELS[1], "/");
 
     let mut value: Value = serde_json::from_str(&substituted).map_err(|e| {
         format!(
@@ -338,6 +416,36 @@ mod tests {
     fn rejects_a_repeated_known_placeholder() {
         let dup = format!("{TWO} {{{{.SwaggerAppVer}}}}");
         assert!(check_placeholders(&dup).is_err());
+    }
+
+    /// The shape of Gitea 28's `v1-swagger.generated.json`, sentinels and all.
+    const GENERATED: &str = r#"{"info":{"version":"0.0.0+GITEA-API-APP-VERSION"},
+                                "basePath":"/GITEA-API-APP-SUBURL/api/v1","paths":{}}"#;
+
+    #[test]
+    fn the_gitea_28_generated_file_passes_its_guard_and_canonicalizes() {
+        check_upstream(GENERATED).unwrap();
+        let out = canonicalize(GENERATED, "28.1.0").unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["info"]["version"], "28.1.0");
+        assert_eq!(v["basePath"], "/api/v1");
+        assert!(!out.contains("GITEA-API-APP"), "{out}");
+    }
+
+    #[test]
+    fn a_missing_or_repeated_sentinel_is_refused() {
+        let missing = GENERATED.replace("/GITEA-API-APP-SUBURL/api/v1", "/api/v1");
+        assert!(check_upstream(&missing).is_err());
+        let twice = format!("{GENERATED} 0.0.0+GITEA-API-APP-VERSION");
+        assert!(check_upstream(&twice).is_err());
+    }
+
+    #[test]
+    fn a_document_in_neither_layout_is_refused() {
+        let err = check_upstream(r#"{"info":{"version":"1"}}"#).unwrap_err().to_string();
+        assert!(err.contains("layout has changed again"), "{err}");
+        assert!(!is_upstream(r#"{"info":{"version":"1"}}"#));
+        assert!(is_upstream(TWO) && is_upstream(GENERATED));
     }
 
     #[test]

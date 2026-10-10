@@ -43,9 +43,9 @@ pub const DRIFT_EXIT_CODE: u8 = 3;
 pub enum Source {
     /// A Gitea release tag, e.g. `v1.27.3`.
     Tag(String),
-    /// A Gitea branch, e.g. `gitea` (the development branch) or `v16.0/gitea`.
+    /// A Gitea branch, e.g. `main` (the development branch) or `release/v1.27`.
     Branch(String),
-    /// An already-fetched `v1_json.tmpl` (or canonical JSON) on disk.
+    /// An already-fetched upstream document (either layout) or canonical JSON on disk.
     File(PathBuf),
 }
 
@@ -619,11 +619,11 @@ fn fetch_side(source: &Source, role: &str, version: &str) -> Result<(String, Sid
         (_, None) => bail!("{source:?} has neither a URL nor a path"),
     };
 
-    // Either the raw Go template or an already-canonical JSON document is accepted, so a
-    // report can be reproduced offline from a saved file. Only the template carries
-    // placeholders, and only then does the placeholder guard apply.
-    if !crate::update_spec::find_placeholders(&text).is_empty() {
-        crate::update_spec::check_placeholders(&text)?;
+    // An upstream document in either layout, or an already-canonical JSON document, is
+    // accepted, so a report can be reproduced offline from a saved file. Only an upstream
+    // document carries placeholders or sentinels, and only then does that layout's guard apply.
+    if crate::update_spec::is_upstream(&text) {
+        crate::update_spec::check_upstream(&text)?;
     }
     let json = crate::update_spec::canonicalize(&text, version)?;
     let sha256 = crate::spec::sha256_hex(json.as_bytes());
@@ -928,7 +928,7 @@ mod tests {
         );
         assert_eq!(
             Source::Branch("main".into()).url().unwrap(),
-            "https://raw.githubusercontent.com/go-gitea/gitea/refs/heads/main/templates/swagger/v1_json.tmpl"
+            "https://raw.githubusercontent.com/go-gitea/gitea/refs/heads/main/templates/swagger/v1-swagger.generated.json"
         );
         assert!(Source::File("x".into()).url().is_none());
     }
