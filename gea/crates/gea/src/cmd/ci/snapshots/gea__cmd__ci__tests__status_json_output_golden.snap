@@ -1,0 +1,48 @@
+---
+source: crates/gea/src/cmd/ci/tests.rs
+expression: "json_of(&selected, \"id,run_number,status,conclusion,event\")"
+---
+[
+  {
+    "id": 6447,
+    "run_number": 3628,
+    "status": "completed",
+    "conclusion": "cancelled",
+    "event": "pull_request"
+  },
+  {
+    "id": 6442,
+    "run_number": 3623,
+    "status": "completed",
+    "conclusion": "failure",
+    "event": "pull_request"
+  },
+  {
+    "id": 6446,
+    "run_number": 3627,
+    "status": "in_progress",
+    "conclusion": "",
+    "event": "push"
+  },
+  {
+    "id": 6443,
+    "run_number": 3624,
+    "status": "queued",
+    "conclusion": "",
+    "event": "pull_request"
+  },
+  {
+    "id": 6445,
+    "run_number": 3626,
+    "status": "completed",
+    "conclusion": "skipped",
+    "event": "pull_request"
+  },
+  {
+    "id": 6444,
+    "run_number": 3625,
+    "status": "completed",
+    "conclusion": "success",
+    "event": "pull_request"
+  }
+]

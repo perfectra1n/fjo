@@ -14,5 +14,5 @@ what to do:
   inspect the failed checks listed above.
   1. open each failed check's URL for details
   2. gea pr checks 4212 -R perf3ct/gea --web  (the same checks in a browser)
-  note: checks may come from external services. For Gitea Actions, use gea
-        run list.
+  note: checks may come from external services. For Gitea Actions, gea ci
+        logs 4212 -R perf3ct/gea prints the failed jobs' logs.

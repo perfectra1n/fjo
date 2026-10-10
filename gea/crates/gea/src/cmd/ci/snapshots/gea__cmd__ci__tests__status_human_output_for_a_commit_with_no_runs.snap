@@ -1,0 +1,5 @@
+---
+source: crates/gea/src/cmd/ci/tests.rs
+expression: out
+---
+PR #2626 (renovate/zip-9.x) at f36d1a7

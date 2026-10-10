@@ -36,10 +36,26 @@
 //! # Run ids
 //!
 //! `ActionWorkflowRun` carries both `id` (the database row, which the API path wants) and
-//! `run_number` (the number in the web UI's `/actions/runs/3`). The ID column prints the value the
-//! path wants, so what you read is what you can pass back. `NUMBER` is printed alongside precisely
-//! because the two differ once an instance has more than one repository, and mixing them up
-//! addresses a real run belonging to someone else.
+//! `run_number` (the per-repository counter). The ID column prints the value the path wants, so
+//! what you read is what you can pass back. `NUMBER` is printed alongside precisely because the
+//! two differ once an instance has more than one repository, and mixing them up addresses a real
+//! run belonging to someone else.
+//!
+//! Every `<RUN>` positional is a [`RunRef`], resolved by [`resolve_run`] before anything else
+//! happens, and accepts three forms:
+//!
+//! * `6442` — an id. **Only** if no run has that id (a 404) is it retried as a run number, and a
+//!   note on stderr says so; an id that is neither is still the server's 404. `delete` and
+//!   `rerun` never retry: a guess that acts on the wrong run cannot be taken back, so for them a
+//!   missing id is the 404, with a note to type `#6442` if the number was meant.
+//! * `#3623` — explicitly the run number, found by paging the run list newest first.
+//! * the run's web URL, `…/actions/runs/6442[/jobs/33898]` — the id in it (never retried as a
+//!   number: a URL's segment is always an id), and with `/jobs/<id>` that job, which
+//!   `view --log`, `logs` and `rerun` act on unless `--job` says otherwise.
+//!
+//! `--job` is a [`JobRef`]: a job id, or a job's name — an exact match, else an unambiguous
+//! substring. An ambiguous name is refused with the candidates listed, never guessed. See
+//! `run_ref.rs` for both.
 //!
 //! # No `run cancel`
 //!
@@ -57,6 +73,8 @@ use gitea_model::{ActionRunner, ActionWorkflowJob, ActionWorkflowRun};
 use crate::global::GlobalOpts;
 use crate::output::color;
 use crate::runtime::Runtime;
+
+use crate::cmd::run_ref::{Fallback, JobRef, RunRef, resolve_job, resolve_run};
 
 use crate::cmd::support;
 use crate::cmd::support::listing::{self as emit, Fields, Listing};
@@ -79,12 +97,12 @@ const STATUSES: &[&str] = &[
 /// Bounded rather than "one per job": a matrix build has dozens of jobs, and an unbounded burst
 /// against a self-hosted instance behind a reverse proxy trips its rate limit — after which
 /// `gitea_core::http`'s retry layer spends the whole win back in backoff.
-const LOG_CONCURRENCY: usize = 6;
+pub(crate) const LOG_CONCURRENCY: usize = 6;
 
 /// The field tables `--json` validates against. Items, never the envelopes the list endpoints
 /// wrap them in, because what the commands print is the items.
-const RUN_FIELDS: Fields = Fields::Op("GetWorkflowRun");
-const JOB_FIELDS: Fields = Fields::Op("getWorkflowJob");
+pub(crate) const RUN_FIELDS: Fields = Fields::Op("GetWorkflowRun");
+pub(crate) const JOB_FIELDS: Fields = Fields::Op("getWorkflowJob");
 const ARTIFACT_FIELDS: Fields = Fields::Op("getArtifact");
 const RUNNER_FIELDS: Fields = Fields::Op("getRepoRunner");
 
@@ -140,17 +158,17 @@ pub struct ListArgs {
 
 #[derive(Debug, ClapArgs)]
 pub struct ViewArgs {
-    /// The run id, as printed by `gea run list`
-    pub run: RunId,
+    /// The run: an id (6442), a run number (#3623), or the run's URL
+    pub run: RunRef,
     /// Print the run's logs instead of its summary
     #[arg(long)]
     pub log: bool,
     /// Print only the logs of the jobs that failed
     #[arg(long = "log-failed")]
     pub log_failed: bool,
-    /// Restrict `--log` to one job
-    #[arg(short = 'j', long, value_name = "JOB_ID")]
-    pub job: Option<JobId>,
+    /// Only this job: its id, or its name (an unambiguous part of it)
+    #[arg(short = 'j', long, value_name = "JOB")]
+    pub job: Option<JobRef>,
     /// Exit non-zero when the run did not succeed
     #[arg(long = "exit-status")]
     pub exit_status: bool,
@@ -161,26 +179,27 @@ pub struct ViewArgs {
 
 #[derive(Debug, ClapArgs)]
 pub struct OneArgs {
-    /// The run id
-    pub run: RunId,
+    /// The run: an id (6442), a run number (#3623), or the run's URL
+    pub run: RunRef,
 }
 
 #[derive(Debug, ClapArgs)]
 pub struct RerunArgs {
-    /// The run id
-    pub run: RunId,
+    /// The run: an id (6442), a run number (#3623), or the run's URL
+    pub run: RunRef,
     /// Only the jobs that failed, and the jobs that depend on them
     #[arg(long, conflicts_with = "job")]
     pub failed: bool,
-    /// Only this job, and the jobs that depend on it
-    #[arg(short = 'j', long, value_name = "JOB_ID")]
-    pub job: Option<JobId>,
+    /// Only this job, and the jobs that depend on it: its id, or its name (an unambiguous part
+    /// of it)
+    #[arg(short = 'j', long, value_name = "JOB")]
+    pub job: Option<JobRef>,
 }
 
 #[derive(Debug, ClapArgs)]
 pub struct DeleteArgs {
-    /// The run id
-    pub run: RunId,
+    /// The run: an id (6442), a run number (#3623), or the run's URL
+    pub run: RunRef,
     /// Skip the confirmation
     #[arg(long)]
     pub yes: bool,
@@ -188,11 +207,11 @@ pub struct DeleteArgs {
 
 #[derive(Debug, ClapArgs)]
 pub struct LogsArgs {
-    /// The run id
-    pub run: RunId,
-    /// Only this job's logs
-    #[arg(short = 'j', long, value_name = "JOB_ID")]
-    pub job: Option<JobId>,
+    /// The run: an id (6442), a run number (#3623), or the run's URL
+    pub run: RunRef,
+    /// Only this job: its id, or its name (an unambiguous part of it)
+    #[arg(short = 'j', long, value_name = "JOB")]
+    pub job: Option<JobRef>,
     /// Only the logs of jobs that failed
     #[arg(long)]
     pub failed: bool,
@@ -200,8 +219,8 @@ pub struct LogsArgs {
 
 #[derive(Debug, ClapArgs)]
 pub struct WatchArgs {
-    /// The run id
-    pub run: RunId,
+    /// The run: an id (6442), a run number (#3623), or the run's URL
+    pub run: RunRef,
     /// Seconds between polls
     #[arg(short = 'i', long, value_name = "SECONDS", default_value_t = 3,
           value_parser = clap::value_parser!(u64).range(1..=3600))]
@@ -213,8 +232,9 @@ pub struct WatchArgs {
 
 #[derive(Debug, ClapArgs)]
 pub struct ArtifactsArgs {
-    /// Only artifacts of this run; omit for the whole repository
-    pub run: Option<RunId>,
+    /// Only artifacts of this run: an id (6442), a run number (#3623), or the run's URL; omit for
+    /// the whole repository
+    pub run: Option<RunRef>,
     /// Only artifacts with this name
     #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
@@ -276,7 +296,7 @@ fn slug<'a>(rt: &'a Runtime, globals: &GlobalOpts) -> Result<&'a RepoSlug> {
 /// The generated client takes run and job ids as `i32` — the spec declares them `integer` with no
 /// format — while the ids themselves are `int64`. An id past `i32::MAX` is refused here with a
 /// message rather than wrapped into someone else's run.
-fn int(id: i64) -> Result<i32> {
+pub(crate) fn int(id: i64) -> Result<i32> {
     i32::try_from(id).map_err(|_| support::usage(format!("id {id} is out of range for this API")))
 }
 
@@ -292,6 +312,9 @@ async fn list(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &ListArgs) ->
     // yet" and sends the user looking for a workflow bug that is not there.
     if runs.is_empty() {
         warn_if_actions_disabled(rt, api, slug).await;
+        if let Some(note) = empty_branch_note(args) {
+            support::note(rt.term(), &note);
+        }
     }
     if runs.iter().any(|r| is_queued(&r.status)) {
         support::note(
@@ -322,6 +345,17 @@ async fn list(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &ListArgs) ->
                 support::ago(r.started_at.as_ref()),
             ]);
         }
+    })
+}
+
+/// What to say when `--branch` matched nothing.
+///
+/// Gitea records no `head_branch` on a `pull_request` run — the branch filter compares against
+/// that empty field, so a branch whose only CI is its pull request's lists nothing, and reads as
+/// "CI never ran". `gea ci` finds those runs by commit instead, so the note names it.
+fn empty_branch_note(args: &ListArgs) -> Option<String> {
+    args.branch.as_ref().map(|b| {
+        format!("pull_request runs carry no branch on Gitea; `gea ci {b}` finds them by commit")
     })
 }
 
@@ -377,16 +411,16 @@ async fn view(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &ViewArgs) ->
     // else: opening a browser tab should not also cost a job listing that is never read. Same
     // discipline `repo view` applies to its README.
     if args.web {
-        let run = api.run().view(&slug.owner, &slug.name, int(args.run.get())?).await?;
+        let run = resolve_run(api, slug, &args.run, Fallback::ToNumber).await?;
         return open_url(rt, &run.html_url);
     }
 
-    // Every remaining path needs both, and the two reads are independent — the jobs are keyed on
-    // the run id the caller already typed, not on anything the run object carries.
-    let (run, jobs) = fetch_view(api, slug, args.run).await?;
+    // Every remaining path needs both.
+    let (run, jobs) = fetch_view(api, slug, &args.run).await?;
 
     if args.log || args.log_failed {
-        print_logs(rt, globals, api, slug, args.run, &jobs, args.job, args.log_failed).await?;
+        let only = chosen_job(&jobs, &args.run, args.job.as_ref())?;
+        print_logs(rt, globals, api, slug, run.id, &jobs, only, args.log_failed).await?;
         return exit_status(args.exit_status, &run);
     }
 
@@ -468,43 +502,136 @@ fn exit_status(wanted: bool, run: &ActionWorkflowRun) -> Result<()> {
 
 async fn rerun(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &RerunArgs) -> Result<()> {
     let slug = slug(rt, globals)?;
-    let run = int(args.run.get())?;
-    let runs = api.run();
-    let what = if let Some(job) = args.job {
-        runs.rerun_job(&slug.owner, &slug.name, run, int(job.get())?).await?;
-        format!("job {job} of run {}", args.run)
-    } else if args.failed {
-        runs.rerun_failed(&slug.owner, &slug.name, run).await?;
-        format!("the failed jobs of run {}", args.run)
-    } else {
-        runs.rerun(&slug.owner, &slug.name, run).await?;
-        format!("run {}", args.run)
-    };
+    let (run, what) = rerun_run(api, slug, args).await?;
     support::note(
         rt.term(),
-        &format!("requested a rerun of {what}; follow it with `gea run watch {}`", args.run),
+        &format!("requested a rerun of {what}; follow it with `gea run watch {run}`"),
     );
     Ok(())
 }
 
+/// Resolve the run and ask for the rerun; the rerun's run id and its description.
+///
+/// [`Fallback::Never`]: a rerun acts, so a bare id that is not a run must not quietly become the
+/// run *numbered* that. Split from [`rerun`] so a `FakeTransport` test can assert that no `POST`
+/// is ever sent for such an id.
+async fn rerun_run(api: &Api, slug: &RepoSlug, args: &RerunArgs) -> Result<(RunId, String)> {
+    let run = resolve_run(api, slug, &args.run, Fallback::Never).await?;
+    // `--failed` is explicit, so it outranks a job URL; `--job` cannot be combined with it.
+    let job = if !args.failed && (args.job.is_some() || args.run.url_job().is_some()) {
+        let jobs = fetch_jobs(api, slug, run.id).await?;
+        chosen_job(&jobs, &args.run, args.job.as_ref())?
+    } else {
+        None
+    };
+    let scope = match (job, args.failed) {
+        (Some(job), _) => Rerun::Job(job),
+        (None, true) => Rerun::Failed,
+        (None, false) => Rerun::All,
+    };
+    Ok((run.id, request_rerun(api, slug, run.id, scope).await?))
+}
+
+/// The job a command should act on: `--job` when given, otherwise the job a pasted
+/// `…/jobs/<id>` URL points at, otherwise none (every job).
+///
+/// `--job` wins over the URL because it is the more deliberate of the two: the URL is whatever
+/// page happened to be open.
+fn chosen_job(
+    jobs: &[ActionWorkflowJob],
+    run: &RunRef,
+    job: Option<&JobRef>,
+) -> Result<Option<JobId>> {
+    if let Some(j) = job {
+        return resolve_job(jobs, j).map(|j| Some(j.id));
+    }
+    run.url_job().map(|id| resolve_job(jobs, &JobRef::Id(id)).map(|j| j.id)).transpose()
+}
+
+/// Which part of a finished run to run again — the three routes Gitea has for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rerun {
+    /// The whole run.
+    All,
+    /// Only the jobs that failed, and the jobs that depend on them. What `gea ci rerun` asks for.
+    Failed,
+    /// One job, and the jobs that depend on it.
+    Job(JobId),
+}
+
+/// Ask for a rerun, and say in words what was asked for.
+///
+/// Split out of [`rerun`] so `gea ci rerun` takes the same route `run rerun --failed` does
+/// rather than a copy of it that could drift, and so the description in the note is the same
+/// sentence in both.
+pub(crate) async fn request_rerun(
+    api: &Api,
+    slug: &RepoSlug,
+    run: RunId,
+    scope: Rerun,
+) -> Result<String> {
+    let id = int(run.get())?;
+    let runs = api.run();
+    Ok(match scope {
+        Rerun::Job(job) => {
+            runs.rerun_job(&slug.owner, &slug.name, id, int(job.get())?).await?;
+            format!("job {job} of run {run}")
+        }
+        Rerun::Failed => {
+            runs.rerun_failed(&slug.owner, &slug.name, id).await?;
+            format!("the failed jobs of run {run}")
+        }
+        Rerun::All => {
+            runs.rerun(&slug.owner, &slug.name, id).await?;
+            format!("run {run}")
+        }
+    })
+}
+
 async fn delete(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &DeleteArgs) -> Result<()> {
     let slug = slug(rt, globals)?;
-    support::confirm_runtime(
-        rt,
-        args.yes,
-        &format!("delete run {} of {} and its logs", args.run, slug),
-    )?;
-    api.run().delete(&slug.owner, &slug.name, int(args.run.get())?).await?;
-    support::note(rt.term(), &format!("deleted run {}", args.run));
+    let run =
+        delete_run(api, slug, &args.run, |prompt| support::confirm_runtime(rt, args.yes, prompt))
+            .await?;
+    support::note(rt.term(), &format!("deleted run {} (#{})", run.id, run.run_number));
     Ok(())
+}
+
+/// Resolve, confirm, delete; the run that was deleted.
+///
+/// Resolved before the prompt, so what is confirmed is the run that will go — by its id and its
+/// number, whichever of the two the user typed. [`Fallback::Never`], because `--yes` skips that
+/// prompt: `gea run delete 6442 --yes` run a second time, after 6442 is gone, would otherwise
+/// delete the unrelated run numbered #6442. Split from [`delete`] (with the prompt passed in) so a
+/// `FakeTransport` test can assert no `DELETE` is ever sent for such an id.
+async fn delete_run(
+    api: &Api,
+    slug: &RepoSlug,
+    r: &RunRef,
+    confirm: impl FnOnce(&str) -> Result<()>,
+) -> Result<ActionWorkflowRun> {
+    let run = resolve_run(api, slug, r, Fallback::Never).await?;
+    confirm(&delete_prompt(&run, slug))?;
+    api.run().delete(&slug.owner, &slug.name, int(run.id.get())?).await?;
+    Ok(run)
+}
+
+fn delete_prompt(run: &ActionWorkflowRun, slug: &RepoSlug) -> String {
+    format!(
+        "delete run {} (#{}, {}) of {slug} and its logs",
+        run.id,
+        run.run_number,
+        workflow_file(&run.path)
+    )
 }
 
 // ------------------------------------------------------------------------------------- logs
 
 async fn logs(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &LogsArgs) -> Result<()> {
     let slug = slug(rt, globals)?;
-    let jobs = fetch_jobs(api, slug, args.run).await?;
-    print_logs(rt, globals, api, slug, args.run, &jobs, args.job, args.failed).await
+    let (run, jobs) = fetch_view(api, slug, &args.run).await?;
+    let only = chosen_job(&jobs, &args.run, args.job.as_ref())?;
+    print_logs(rt, globals, api, slug, run.id, &jobs, only, args.failed).await
 }
 
 /// Concatenate the per-job plaintext logs.
@@ -513,7 +640,7 @@ async fn logs(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &LogsArgs) ->
 /// to get a run's logs — and it produces something you can pipe into `grep -n`, which is the whole
 /// reason a porcelain command exists here rather than `gea raw job logs` once per job.
 #[allow(clippy::too_many_arguments)]
-async fn print_logs(
+pub(crate) async fn print_logs(
     rt: &Runtime,
     globals: &GlobalOpts,
     api: &Api,
@@ -531,7 +658,8 @@ async fn print_logs(
 
     if wanted.is_empty() {
         let why = match (only, failed_only) {
-            (Some(id), _) => format!("this run has no job {id}"),
+            (Some(id), true) => format!("job {id} did not fail"),
+            (Some(id), false) => format!("this run has no job {id}"),
             (None, true) => "no job in this run failed".to_owned(),
             (None, false) => "this run has no jobs yet".to_owned(),
         };
@@ -542,24 +670,43 @@ async fn print_logs(
 
     let logs = fetch_logs(api, slug, &wanted).await?;
 
+    // A header per job, because a concatenation with no separators is unreadable once a run has
+    // three jobs — and none for a run of one job, where it would only be noise above the log.
+    let headed = jobs.len() > 1;
+    let sections = wanted
+        .iter()
+        .zip(&logs)
+        .map(|(job, text)| (headed.then(|| job_header(job)), text.as_str()));
+    emit::text(rt, globals, &concat_logs(sections))
+}
+
+/// `run logs`' per-job header: `==> build (job 11, failure)`. Prefixed with `==>` like `tail -f`
+/// on several files.
+fn job_header(job: &ActionWorkflowJob) -> String {
+    format!("==> {} (job {}, {})", job.name, job.id, outcome(&job.status, &job.conclusion))
+}
+
+/// Join job logs into one text stream, each under its header line when it has one.
+///
+/// Every log is made to end in a newline, so the next header always starts a line of its own
+/// even when a step's last output had none. Split out of [`print_logs`] so `gea ci logs`, whose
+/// header also names the workflow (`==> ci.yml / build (run 6442, job 11) <==`), shares the
+/// assembly and differs only in the words.
+pub(crate) fn concat_logs<'a>(
+    sections: impl IntoIterator<Item = (Option<String>, &'a str)>,
+) -> String {
     let mut out = String::new();
-    for (job, text) in wanted.iter().zip(&logs) {
-        // A header per job, because a concatenation with no separators is unreadable once a run
-        // has three jobs. Prefixed with `==>` like `tail -f` on several files.
-        if jobs.len() > 1 {
-            out.push_str(&format!(
-                "==> {} (job {}, {})\n",
-                job.name,
-                job.id,
-                outcome(&job.status, &job.conclusion)
-            ));
+    for (header, text) in sections {
+        if let Some(h) = header {
+            out.push_str(&h);
+            out.push('\n');
         }
         out.push_str(text);
         if !text.ends_with('\n') {
             out.push('\n');
         }
     }
-    emit::text(rt, globals, &out)
+    out
 }
 
 /// A run's jobs, every page of them.
@@ -567,7 +714,11 @@ async fn print_logs(
 /// The endpoint wraps the list in `{total_count, jobs}` and pages it, so a matrix build larger
 /// than the default page would otherwise lose jobs silently — and `run logs --failed` would then
 /// report "no job failed" for a run whose failing job sat on page two.
-async fn fetch_jobs(api: &Api, slug: &RepoSlug, run: RunId) -> Result<Vec<ActionWorkflowJob>> {
+pub(crate) async fn fetch_jobs(
+    api: &Api,
+    slug: &RepoSlug,
+    run: RunId,
+) -> Result<Vec<ActionWorkflowJob>> {
     const PAGE: i32 = 50;
     let run = int(run.get())?;
     let mut jobs = Vec::new();
@@ -587,25 +738,41 @@ async fn fetch_jobs(api: &Api, slug: &RepoSlug, run: RunId) -> Result<Vec<Action
     Ok(jobs)
 }
 
-/// The run and its jobs, concurrently.
+/// The run a [`RunRef`] names, and its jobs — each fetched once.
+///
+/// When the reference carries an id (a bare number or a URL), the run is resolved and the jobs of
+/// that id are read **concurrently**, since the id is very likely right. Only when resolution fell
+/// back to a run *number* — so the resolved id differs from the one guessed — are the guessed
+/// jobs discarded and the real run's read. `#N` has no id to guess, so it resolves first.
 ///
 /// `join!` rather than `try_join!` — and then unwrapped in a fixed order. `try_join!` returns
 /// whichever error *arrived* first, so a run that is both gone and unreadable would report a
 /// different reason depending on the network; unwrapping `run` first keeps the message stable.
-/// Split out from [`view`] so a `FakeTransport` test can assert both requests without a
+/// Split out from [`view`] so a `FakeTransport` test can assert the requests without a
 /// [`Runtime`].
-async fn fetch_view(
+pub(crate) async fn fetch_view(
     api: &Api,
     slug: &RepoSlug,
-    run_id: RunId,
+    r: &RunRef,
 ) -> Result<(ActionWorkflowRun, Vec<ActionWorkflowJob>)> {
-    let id = int(run_id.get())?;
-    // Bound rather than called inline: `api.run()` returns a borrow of `api`, and a temporary of
-    // it does not outlive the `join!` that awaits both futures.
-    let runs = api.run();
-    let (run, jobs) =
-        futures::join!(runs.view(&slug.owner, &slug.name, id), fetch_jobs(api, slug, run_id));
-    Ok((run?, jobs?))
+    let guess = match r {
+        RunRef::Bare(n) | RunRef::Url { run: n, .. } => *n,
+        RunRef::Number(_) => {
+            let run = resolve_run(api, slug, r, Fallback::ToNumber).await?;
+            let jobs = fetch_jobs(api, slug, run.id).await?;
+            return Ok((run, jobs));
+        }
+    };
+    let (run, jobs) = futures::join!(
+        resolve_run(api, slug, r, Fallback::ToNumber),
+        fetch_jobs(api, slug, RunId::new(guess))
+    );
+    let run = run?;
+    if run.id.get() == guess {
+        return Ok((run, jobs?));
+    }
+    let jobs = fetch_jobs(api, slug, run.id).await?;
+    Ok((run, jobs))
 }
 
 /// Every wanted job's log, [`LOG_CONCURRENCY`] at a time, **in `wanted` order**.
@@ -613,7 +780,7 @@ async fn fetch_view(
 /// `buffered` rather than `buffer_unordered`: the logs are zipped straight back onto `wanted` to
 /// build the output, and an unordered stream would file each job's log under a different job's
 /// `==>` header.
-async fn fetch_logs(
+pub(crate) async fn fetch_logs(
     api: &Api,
     slug: &RepoSlug,
     wanted: &[&ActionWorkflowJob],
@@ -626,7 +793,7 @@ async fn fetch_logs(
 
 /// One job's log as text, decoded lossily: a log can carry any bytes a step printed, and failing
 /// the whole command over one of them would be worse than a replacement character.
-async fn job_log(api: &Api, slug: &RepoSlug, job: JobId) -> Result<String> {
+pub(crate) async fn job_log(api: &Api, slug: &RepoSlug, job: JobId) -> Result<String> {
     let (_, mut body) = api.job().logs(&slug.owner, &slug.name, int(job.get())?).await?;
     let mut buf = Vec::new();
     while let Some(chunk) = body.next().await {
@@ -649,11 +816,12 @@ async fn job_log(api: &Api, slug: &RepoSlug, job: JobId) -> Result<String> {
 async fn watch(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &WatchArgs) -> Result<()> {
     let slug = slug(rt, globals)?;
     let interval = std::time::Duration::from_secs(args.interval);
-    let id = int(args.run.get())?;
+    // The first poll is the resolution itself; every later one is by the resolved id.
+    let mut run = resolve_run(api, slug, &args.run, Fallback::ToNumber).await?;
+    let id = int(run.id.get())?;
     let mut announced_wait = false;
 
     loop {
-        let run = api.run().view(&slug.owner, &slug.name, id).await?;
         if is_finished(&run.status) {
             support::note(
                 rt.term(),
@@ -670,7 +838,7 @@ async fn watch(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &WatchArgs) 
         // Diagnose once, not every poll: a run waiting on a label nobody offers will still be
         // waiting on the next poll, and repeating the explanation every three seconds is noise.
         if !announced_wait && is_queued(&run.status) {
-            let jobs = fetch_jobs(api, slug, args.run).await?;
+            let jobs = fetch_jobs(api, slug, run.id).await?;
             for line in diagnose_waiting(api, slug, &jobs).await {
                 support::note(rt.term(), &line);
             }
@@ -678,6 +846,7 @@ async fn watch(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &WatchArgs) 
         }
         support::note(rt.term(), &format!("run {} is {} …", run.id, run.status));
         tokio::time::sleep(interval).await;
+        run = api.run().view(&slug.owner, &slug.name, id).await?;
     }
 }
 
@@ -685,7 +854,7 @@ async fn watch(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &WatchArgs) 
 
 async fn jobs(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &OneArgs) -> Result<()> {
     let slug = slug(rt, globals)?;
-    let jobs = fetch_jobs(api, slug, args.run).await?;
+    let (_, jobs) = fetch_view(api, slug, &args.run).await?;
     let listing = Listing {
         fields: JOB_FIELDS,
         value: serde_json::to_value(&jobs).map_err(encode_failed)?,
@@ -724,10 +893,11 @@ async fn artifacts(
 ) -> Result<()> {
     let slug = slug(rt, globals)?;
     let limit = support::limit(None, globals);
-    let mut items: Vec<gitea_model::ActionArtifact> = match args.run {
-        Some(run) => {
+    let mut items: Vec<gitea_model::ActionArtifact> = match &args.run {
+        Some(r) => {
+            let run = resolve_run(api, slug, r, Fallback::ToNumber).await?;
             let q = query::GetArtifactsOfRunQuery { name: args.name.clone() };
-            api.run().artifacts(&slug.owner, &slug.name, int(run.get())?, &q).await?.artifacts
+            api.run().artifacts(&slug.owner, &slug.name, int(run.id.get())?, &q).await?.artifacts
         }
         None => {
             let q = query::GetArtifactsQuery { name: args.name.clone() };
@@ -867,7 +1037,11 @@ async fn candidate_runners(api: &Api, slug: &RepoSlug) -> (Vec<ActionRunner>, Ve
 ///
 /// A runner can take a job only if it carries **every** label the job asks for, which is why the
 /// check is a superset test rather than an intersection.
-async fn diagnose_waiting(api: &Api, slug: &RepoSlug, jobs: &[ActionWorkflowJob]) -> Vec<String> {
+pub(crate) async fn diagnose_waiting(
+    api: &Api,
+    slug: &RepoSlug,
+    jobs: &[ActionWorkflowJob],
+) -> Vec<String> {
     let (runners, unseen) = candidate_runners(api, slug).await;
     let mut lines: Vec<String> =
         jobs.iter().filter(|j| is_queued(&j.status)).map(|j| explain_job(j, &runners)).collect();
@@ -927,7 +1101,7 @@ fn explain_job(job: &ActionWorkflowJob, runners: &[ActionRunner]) -> String {
 }
 
 /// Warn when the repository has Actions turned off, which makes every listing empty.
-async fn warn_if_actions_disabled(rt: &Runtime, api: &Api, slug: &RepoSlug) {
+pub(crate) async fn warn_if_actions_disabled(rt: &Runtime, api: &Api, slug: &RepoSlug) {
     let Ok(repo) = api.repo().get(&slug.owner, &slug.name).await else { return };
     if !repo.has_actions {
         support::note(
@@ -944,7 +1118,7 @@ async fn warn_if_actions_disabled(rt: &Runtime, api: &Api, slug: &RepoSlug) {
 
 /// The run or job has reached an end state. Gitea says so with `status: completed`; the
 /// conclusion then says which end.
-fn is_finished(status: &str) -> bool {
+pub(crate) fn is_finished(status: &str) -> bool {
     status == "completed"
 }
 
@@ -952,29 +1126,29 @@ fn is_finished(status: &str) -> bool {
 /// produces, and the one this module goes out of its way to explain. `queued` is Gitea's name
 /// for a job waiting on a runner; `waiting` is one blocked on something else (an approval, a
 /// `needs:`), which is still worth a diagnosis because it is still not moving.
-fn is_queued(status: &str) -> bool {
+pub(crate) fn is_queued(status: &str) -> bool {
     matches!(status, "queued" | "waiting" | "pending")
 }
 
 /// What to print in a STATUS column: how it ended when it has ended, where it is otherwise.
-fn outcome<'a>(status: &'a str, conclusion: &'a str) -> &'a str {
+pub(crate) fn outcome<'a>(status: &'a str, conclusion: &'a str) -> &'a str {
     if conclusion.is_empty() { status } else { conclusion }
 }
 
 /// `ci.yml` from the run's `path`, which Gitea spells `<workflow file>@<ref>`.
-fn workflow_file(path: &str) -> &str {
+pub(crate) fn workflow_file(path: &str) -> &str {
     path.split_once('@').map_or(path, |(file, _)| file)
 }
 
 /// Labels as `a, b`, or a dash when there are none. A dash rather than an empty cell because in
 /// this table an empty `RUNS-ON` is itself the bug being looked for.
-fn labels(labels: &[String]) -> String {
+pub(crate) fn labels(labels: &[String]) -> String {
     if labels.is_empty() { "-".to_owned() } else { labels.join(", ") }
 }
 
 /// Wall-clock time between two timestamps, or nothing when either is unset — which is what a run
 /// that has not started, or not finished, reports.
-fn duration(
+pub(crate) fn duration(
     started: Option<&gitea_core::types::Timestamp>,
     completed: Option<&gitea_core::types::Timestamp>,
 ) -> String {
@@ -1297,12 +1471,268 @@ mod tests {
                 ),
         );
         let (run, jobs) =
-            fetch_view(&api_for(fake.clone()), &RepoSlug::new("o", "r"), RunId::new(7))
+            fetch_view(&api_for(fake.clone()), &RepoSlug::new("o", "r"), &RunRef::Bare(7))
                 .await
                 .unwrap();
         assert_eq!(run.id.get(), 7);
         assert_eq!(jobs.len(), 1);
         assert_eq!(fake.call_count(), 2, "{:?}", fake.calls());
+    }
+
+    fn paths(fake: &FakeTransport) -> Vec<String> {
+        fake.calls().into_iter().map(|c| c.path).collect()
+    }
+
+    const RUNS_PAGE: &str = r#"{"total_count":2,"workflow_runs":[{"id":6443,"run_number":3624},{"id":6442,"run_number":3623}]}"#;
+    const JOBS_6442: &str = r#"{"total_count":3,"jobs":[{"id":21,"name":"build (linux)"},{"id":22,"name":"build (macos)"},{"id":23,"name":"lint"}]}"#;
+
+    /// `run view '#3623'`: the number is found in the run list, and the jobs are then read by the
+    /// id it resolved to — never by the number, which is some other run's id or none at all.
+    #[tokio::test]
+    async fn view_accepts_a_run_number_by_listing_runs_then_reading_by_id() {
+        let get = || "GET".parse().unwrap();
+        let fake = Arc::new(
+            FakeTransport::new()
+                .on(get(), "/api/v1/repos/o/r/actions/runs", Canned::json(200, RUNS_PAGE))
+                .on(
+                    get(),
+                    "/api/v1/repos/o/r/actions/runs/6442/jobs",
+                    Canned::json(200, JOBS_6442),
+                ),
+        );
+        let r: RunRef = "#3623".parse().unwrap();
+        let (run, jobs) =
+            fetch_view(&api_for(fake.clone()), &RepoSlug::new("o", "r"), &r).await.unwrap();
+        assert_eq!((run.id.get(), run.run_number), (6442, 3623));
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(
+            paths(&fake),
+            ["/api/v1/repos/o/r/actions/runs", "/api/v1/repos/o/r/actions/runs/6442/jobs"]
+        );
+    }
+
+    /// A pasted run URL is its id: one read of the run, one of its jobs, nothing else.
+    #[tokio::test]
+    async fn view_accepts_a_run_url() {
+        let get = || "GET".parse().unwrap();
+        let fake = Arc::new(
+            FakeTransport::new()
+                .on(
+                    get(),
+                    "/api/v1/repos/o/r/actions/runs/6442",
+                    Canned::json(200, r#"{"id":6442,"run_number":3623}"#),
+                )
+                .on(
+                    get(),
+                    "/api/v1/repos/o/r/actions/runs/6442/jobs",
+                    Canned::json(200, JOBS_6442),
+                ),
+        );
+        let r: RunRef = "https://git.example.org/o/r/actions/runs/6442/jobs/23".parse().unwrap();
+        let (run, jobs) =
+            fetch_view(&api_for(fake.clone()), &RepoSlug::new("o", "r"), &r).await.unwrap();
+        assert_eq!(run.id.get(), 6442);
+        assert_eq!(fake.call_count(), 2, "{:?}", fake.calls());
+        // And the URL's `/jobs/23` is job 23 (an id, as Gitea 1.27 links it), for `view --log` and
+        // `logs`.
+        assert_eq!(chosen_job(&jobs, &r, None).unwrap(), Some(JobId::new(23)));
+    }
+
+    /// The reported bug: `gea run view 3623`, typed from the NUMBER column, was a bare 404. The
+    /// id is tried first; on its 404 the run numbered 3623 is used, and its jobs — not the jobs
+    /// of the id that did not exist — are what is shown.
+    #[tokio::test]
+    async fn view_falls_back_from_a_missing_id_to_the_run_number() {
+        let get = || "GET".parse().unwrap();
+        let missing = || Canned::json(404, r#"{"message":"run not found"}"#);
+        let fake = Arc::new(
+            FakeTransport::new()
+                .on(get(), "/api/v1/repos/o/r/actions/runs/3623", missing())
+                .on(get(), "/api/v1/repos/o/r/actions/runs/3623/jobs", missing())
+                .on(get(), "/api/v1/repos/o/r/actions/runs", Canned::json(200, RUNS_PAGE))
+                .on(
+                    get(),
+                    "/api/v1/repos/o/r/actions/runs/6442/jobs",
+                    Canned::json(200, JOBS_6442),
+                ),
+        );
+        let (run, jobs) =
+            fetch_view(&api_for(fake.clone()), &RepoSlug::new("o", "r"), &RunRef::Bare(3623))
+                .await
+                .unwrap();
+        assert_eq!(run.id.get(), 6442);
+        assert_eq!(jobs.iter().map(|j| j.id.get()).collect::<Vec<_>>(), [21, 22, 23]);
+        // The run itself is never read a second time by its resolved id.
+        assert!(!paths(&fake).iter().any(|p| p == "/api/v1/repos/o/r/actions/runs/6442"));
+    }
+
+    fn jobs_6442() -> Vec<ActionWorkflowJob> {
+        serde_json::from_str::<gitea_model::ActionWorkflowJobsResponse>(JOBS_6442).unwrap().jobs
+    }
+
+    /// `run logs 6442 --job lint`: a name nobody has to look up an id for.
+    #[test]
+    fn logs_job_picks_the_job_by_name() {
+        let jobs = jobs_6442();
+        let pick = |s: &str| chosen_job(&jobs, &RunRef::Bare(6442), Some(&s.parse().unwrap()));
+        assert_eq!(pick("lint").unwrap(), Some(JobId::new(23)));
+        assert_eq!(pick("MACOS").unwrap(), Some(JobId::new(22)));
+        assert_eq!(pick("21").unwrap(), Some(JobId::new(21)));
+        // No `--job` and no job URL: every job.
+        assert_eq!(chosen_job(&jobs, &RunRef::Bare(6442), None).unwrap(), None);
+    }
+
+    /// Bug this prevents: `--job build` silently printing one of a matrix's two `build` jobs.
+    #[test]
+    fn an_ambiguous_job_name_is_refused_naming_the_candidates() {
+        let jobs = jobs_6442();
+        let err =
+            chosen_job(&jobs, &RunRef::Bare(6442), Some(&"build".parse().unwrap())).unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("build (linux) (id 21)"), "{msg}");
+        assert!(msg.contains("build (macos) (id 22)"), "{msg}");
+    }
+
+    /// Both a job URL and `--job`: the flag is the deliberate choice, so it wins.
+    #[test]
+    fn job_flag_wins_over_a_job_url() {
+        let jobs = jobs_6442();
+        let r: RunRef = "https://h/o/r/actions/runs/6442/jobs/21".parse().unwrap();
+        assert_eq!(chosen_job(&jobs, &r, None).unwrap(), Some(JobId::new(21)));
+        assert_eq!(
+            chosen_job(&jobs, &r, Some(&"lint".parse().unwrap())).unwrap(),
+            Some(JobId::new(23))
+        );
+        let past: RunRef = "https://h/o/r/actions/runs/6442/jobs/9".parse().unwrap();
+        assert_eq!(chosen_job(&jobs, &past, None).unwrap_err().exit_code(), 5);
+    }
+
+    /// Bug this prevents: `run list --branch feature` printing nothing for a branch whose only CI
+    /// is its pull request's, which Gitea files under no branch at all.
+    #[test]
+    fn an_empty_branch_listing_points_at_gea_ci() {
+        let args = ListArgs { branch: Some("feature".into()), ..no_filters() };
+        let note = empty_branch_note(&args).unwrap();
+        assert!(note.contains("pull_request runs carry no branch"), "{note}");
+        assert!(note.contains("`gea ci feature`"), "{note}");
+        assert_eq!(empty_branch_note(&no_filters()), None);
+    }
+
+    /// Run 6442 is gone; the run *numbered* 6442 is some other run (id 9001).
+    fn id_6442_gone_but_numbered_6442_exists() -> Arc<FakeTransport> {
+        let get = || "GET".parse().unwrap();
+        Arc::new(
+            FakeTransport::new()
+                .on(
+                    get(),
+                    "/api/v1/repos/o/r/actions/runs/6442",
+                    Canned::json(404, r#"{"message":"run not found"}"#),
+                )
+                .on(
+                    get(),
+                    "/api/v1/repos/o/r/actions/runs",
+                    Canned::json(
+                        200,
+                        r#"{"total_count":1,"workflow_runs":[{"id":9001,"run_number":6442}]}"#,
+                    ),
+                )
+                .on(get(), "/api/v1/repos/o/r/actions/runs/9001/jobs", Canned::json(200, JOBS_6442))
+                .on(
+                    "DELETE".parse().unwrap(),
+                    "/api/v1/repos/o/r/actions/runs/9001",
+                    Canned::new(204),
+                ),
+        )
+    }
+
+    /// Only `GET`s: the command found nothing to act on, and acted on nothing.
+    fn assert_read_only(fake: &FakeTransport) {
+        let acted: Vec<_> = fake.calls().into_iter().filter(|c| c.method != "GET").collect();
+        assert!(acted.is_empty(), "{acted:?}");
+    }
+
+    /// The bug this prevents: `gea run delete 6442 --yes`, run a second time after 6442 is gone,
+    /// falling back to the run numbered #6442 and deleting it — an unrelated run, with `--yes`
+    /// having skipped the prompt that would have named it.
+    #[tokio::test]
+    async fn delete_never_falls_back_from_a_missing_id_to_a_run_number() {
+        let fake = id_6442_gone_but_numbered_6442_exists();
+        let err = delete_run(
+            &api_for(fake.clone()),
+            &RepoSlug::new("o", "r"),
+            &RunRef::Bare(6442),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 5, "{err:?}");
+        assert_read_only(&fake);
+
+        // `#6442` is explicit, and still reaches the run by its number.
+        let run = delete_run(
+            &api_for(fake.clone()),
+            &RepoSlug::new("o", "r"),
+            &RunRef::Number(6442),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(run.id.get(), 9001);
+    }
+
+    /// As for `delete`: a rerun of the wrong run burns runner time and posts statuses onto a
+    /// commit nobody asked about.
+    #[tokio::test]
+    async fn rerun_never_falls_back_from_a_missing_id_to_a_run_number() {
+        let fake = id_6442_gone_but_numbered_6442_exists();
+        for failed in [false, true] {
+            let args = RerunArgs { run: RunRef::Bare(6442), failed, job: None };
+            let err = rerun_run(&api_for(fake.clone()), &RepoSlug::new("o", "r"), &args)
+                .await
+                .unwrap_err();
+            assert_eq!(err.exit_code(), 5, "{err:?}");
+        }
+        assert_read_only(&fake);
+    }
+
+    /// The confirmation names the run that will actually be deleted, whichever form was typed.
+    #[test]
+    fn the_delete_prompt_names_the_resolved_id_and_number() {
+        let run = ActionWorkflowRun {
+            id: RunId::new(6442),
+            run_number: 3623,
+            path: "ci.yml@refs/heads/main".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            delete_prompt(&run, &RepoSlug::new("o", "r")),
+            "delete run 6442 (#3623, ci.yml) of o/r and its logs"
+        );
+    }
+
+    /// Every `<RUN>` takes all three forms on the command line, and a fourth is refused with a
+    /// message naming them — not the old "is not a number".
+    #[test]
+    fn run_positionals_take_ids_numbers_and_urls() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Harness {
+            #[command(subcommand)]
+            cmd: Cmd,
+        }
+        let m = Harness::try_parse_from(["gea", "view", "#3623", "--log", "-j", "lint"]).unwrap();
+        let Cmd::View(v) = m.cmd else { panic!("view") };
+        assert_eq!(v.run, RunRef::Number(3623));
+        assert_eq!(v.job, Some(JobRef::Name("lint".into())));
+        for sub in ["view", "rerun", "delete", "logs", "watch", "jobs", "artifacts"] {
+            let ok = Harness::try_parse_from(["gea", sub, "https://h/o/r/actions/runs/7"]);
+            assert!(ok.is_ok(), "{sub}");
+            let Err(err) = Harness::try_parse_from(["gea", sub, "run-seven"]) else {
+                panic!("{sub} accepted a non-run")
+            };
+            assert!(err.to_string().contains("a run number (`#3623`)"), "{sub}: {err}");
+        }
     }
 
     /// Bug this prevents: a matrix build bigger than one page losing its later jobs — and with
@@ -1346,6 +1776,29 @@ mod tests {
             fetch_logs(&api_for(fake.clone()), &RepoSlug::new("o", "r"), &wanted).await.unwrap();
         assert_eq!(logs, ["first\n", "second\n", "third\n"]);
         assert_eq!(fake.call_count(), wanted.len(), "{:?}", fake.calls());
+    }
+
+    /// The byte-for-byte shape `run logs` has always printed, now that `gea ci logs` shares the
+    /// assembly. Bug this prevents: a header glued onto the previous job's last line because that
+    /// log did not end in a newline, or a header appearing for a run with a single job.
+    #[test]
+    fn logs_concatenate_under_their_headers_and_always_end_in_a_newline() {
+        let build = ActionWorkflowJob {
+            id: JobId::new(11),
+            name: "build".into(),
+            status: "completed".into(),
+            conclusion: "failure".into(),
+            ..Default::default()
+        };
+        let out = concat_logs([
+            (Some(job_header(&build)), "no newline at the end"),
+            (Some("==> next".to_owned()), "line\n"),
+            (None, "bare"),
+        ]);
+        assert_eq!(
+            out,
+            "==> build (job 11, failure)\nno newline at the end\n==> next\nline\nbare\n"
+        );
     }
 
     #[test]
