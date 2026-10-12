@@ -3,10 +3,10 @@
 # `upstream_sha256` proves what we fetched; `canonical_sha256` proves what the
 # generator read and is the value stamped into every generated file's header.
 
-tag = "v1.27.3"
-version = "1.27.3"
-source = "https://raw.githubusercontent.com/go-gitea/gitea/refs/tags/v1.27.3/templates/swagger/v1_json.tmpl"
-upstream = "v1_json.tmpl"
-upstream_sha256 = "5a95a50cf527825dfb251071f1dea4634d1ec28adca93f408d1cbc2380779215"
-canonical = "gitea-v1.27.3.json"
-canonical_sha256 = "52a2fbe7f08adfa77ae3a0ef85dab6e05c9b399c5e115b84e154157255f9078c"
+tag = "v28.1.0"
+version = "28.1.0"
+source = "https://raw.githubusercontent.com/go-gitea/gitea/refs/tags/v28.1.0/templates/swagger/v1-swagger.generated.json"
+upstream = "v1-swagger.generated.json"
+upstream_sha256 = "b93ea023a8f166d3303b200b74cdbff9d0a69f0e26337ccd4ab93559db077558"
+canonical = "gitea-v28.1.0.json"
+canonical_sha256 = "04a8b04112e2144158f6f066454be32bd1e1c799eabbd3188195aeecbf188bfc"

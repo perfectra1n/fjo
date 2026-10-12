@@ -710,3 +710,103 @@ fn raw_rerun_attempt_and_job_operations_work_on_an_executed_run() {
         .assert_ok("raw run rerun-job");
     wait_new_attempt(&p, second, "raw run rerun-job");
 }
+
+/// Poll a run out of band until `done` accepts it, panicking with the last state and the
+/// runner's logs when it never does.
+fn wait_run(
+    p: &Pushed,
+    id: i64,
+    runner: &gea_itest::runner::RunnerGuard<'_>,
+    what: &str,
+    done: impl Fn(&Value) -> bool,
+) -> Value {
+    let started = Instant::now();
+    loop {
+        let run = p.run(id);
+        if done(&run) {
+            return run;
+        }
+        assert!(
+            started.elapsed() < RUN_DEADLINE,
+            "run {id} never {what}; last seen: {run}\nrunner logs:\n{}",
+            runner.logs()
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// The id of the first run on the pushed commit, once the server has created it.
+fn first_run(p: &Pushed, runner: &gea_itest::runner::RunnerGuard<'_>) -> i64 {
+    let started = Instant::now();
+    loop {
+        let (code, body) = p.repo.api("GET", &format!("actions/runs?head_sha={}", p.sha), None);
+        assert_eq!(code, 200, "{body}");
+        let v: Value = serde_json::from_str(&body).expect("runs");
+        if let Some(run) = v["workflow_runs"].as_array().and_then(|r| r.first()) {
+            return id_of(run);
+        }
+        assert!(
+            started.elapsed() < RUN_DEADLINE,
+            "no run appeared for {}\nrunner logs:\n{}",
+            p.sha,
+            runner.logs()
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Bug this prevents: Gitea 28's whole-run controls reaching the wrong route or decoding the
+/// wrong shape — the log archive in particular is declared with no schema and only
+/// `produces: application/zip`, which is the combination that once made a sibling route print
+/// nothing (see `response_type` in `overrides.toml`).
+///
+/// Cancel and force-cancel are each driven against a run whose only step sleeps far past the
+/// test, so the run cannot have finished on its own; the cancellation is read back through the
+/// API. Approval needs a run from a first-time fork contributor, which the harness cannot
+/// produce, so it is driven against a finished run and must be *refused* — by the route, with a
+/// 4xx that is not a 404, which is what proves the path and method are right.
+#[test]
+fn whole_run_controls_cancel_force_cancel_approve_and_download_logs() {
+    let inst = instance_or_skip!();
+    let runner = runner_or_skip!(inst);
+    cover!(raw: [
+        "getWorkflowRunLogs",
+        "cancelWorkflowRun",
+        "forceCancelWorkflowRun",
+        "approveWorkflowRun",
+    ]);
+
+    let marker = unique_marker("archive");
+    let done =
+        Pushed::new(inst, "run-ctl", "feature-done", "[push]", &[("quick", &echo_unseen(&marker))]);
+    let id = id_of(&done.wait(1, runner)[0]);
+    let run = id.to_string();
+    let (owner, name) = (done.repo.owner.as_str(), done.repo.name.as_str());
+
+    let archive = done._dir.path().join("logs.zip");
+    let archive_arg = archive.display().to_string();
+    inst.gea(["raw", "repo", "get-workflow-run-logs", owner, name, &run, "--output", &archive_arg])
+        .assert_ok("gea raw repo get-workflow-run-logs");
+    let bytes = std::fs::read(&archive).expect("the archive was written");
+    assert!(bytes.starts_with(b"PK\x03\x04"), "not a zip archive: {} bytes", bytes.len());
+
+    let approved = inst.gea(["raw", "repo", "approve-workflow-run", owner, name, &run]);
+    assert!(!approved.ok(), "a finished run needs no approval:\n{}", approved.stdout);
+    assert!(
+        approved.stderr.contains("HTTP 4") && !approved.stderr.contains("HTTP 404"),
+        "the route should refuse the approval, not be missing:\n{}",
+        approved.stderr
+    );
+
+    for (prefix, command) in
+        [("run-cancel", "cancel-workflow-run"), ("run-force", "force-cancel-workflow-run")]
+    {
+        let slow = Pushed::new(inst, prefix, "feature-slow", "[push]", &[("slow", "sleep 600")]);
+        let id = first_run(&slow, runner);
+        let run = id.to_string();
+        inst.gea(["raw", "repo", command, &slow.repo.owner, &slow.repo.name, &run])
+            .assert_ok(&format!("gea raw repo {command}"));
+        let after = wait_run(&slow, id, runner, "was cancelled", |r| r["status"] == "completed");
+        assert_eq!(after["conclusion"], "cancelled", "{command} left the run {after}");
+    }
+}

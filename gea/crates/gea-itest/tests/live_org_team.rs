@@ -647,6 +647,24 @@ fn editing_a_team_keeps_the_units_and_permission_it_was_not_asked_to_change() {
         "team edit cleared the unit list, hiding the team's repositories from its members: {after}"
     );
 
+    // `--unit` replaces the set, and goes out as `units_map` alone: Gitea 28 answers a body
+    // carrying both `units` and `units_map` with `400 only one of units or units_map can be
+    // set`, and a team read back always has a map.
+    inst.gea(["team", "edit", org.name(), "Dev", "--unit", "repo.code", "--permission", "read"])
+        .assert_ok("gea team edit --unit");
+    let (code, body) = inst.api("GET", &format!("teams/{id}"), None);
+    assert_eq!(code, 200, "{body}");
+    let after: serde_json::Value = serde_json::from_str(&body).expect("a team");
+    assert_eq!(after["units_map"]["repo.code"], "read", "the unit level did not stick: {after}");
+    let reachable: BTreeSet<&str> = after["units_map"]
+        .as_object()
+        .expect("a units map")
+        .iter()
+        .filter(|(_, level)| *level != "none")
+        .map(|(unit, _)| unit.as_str())
+        .collect();
+    assert_eq!(reachable, BTreeSet::from(["repo.code"]), "--unit did not replace the set: {after}");
+
     // Bare list, then the filtered form — which is a different route (`teamSearch`) behind one
     // command, so both are driven.
     let run = inst.gea(["team", "list", org.name(), "--limit", "100", "--json", "name"]);

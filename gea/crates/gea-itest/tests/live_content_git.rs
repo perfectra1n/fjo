@@ -26,6 +26,7 @@
 //! nothing is refused.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use gea_itest::{TestRepo, cover, instance_or_skip};
 
@@ -1304,23 +1305,18 @@ fn the_wiki_porcelain_creates_reads_edits_and_deletes_a_page() {
     assert_eq!(code, 404, "the page survived its own deletion");
 }
 
-/// A defect, recorded rather than asserted away: `gea wiki edit -b <text>` with no `--title`
-/// renames the page to `unnamed`.
+/// Bug this prevents: `gea wiki edit -b <text>` with no `--title` destroying the page's name.
 ///
-/// `cmd/wiki/mod.rs` builds the PATCH body with `title: args.title.clone()` and a comment
-/// saying "Omitted means keep unchanged". Gitea does not agree. `EditWikiPage` runs the
-/// submitted title through its web-path normaliser unconditionally, and an absent title
-/// normalises to `unnamed` — so the most ordinary invocation of the command, changing a page's
-/// text, silently destroys its name, prints `Updated unnamed`, and exits 0.
+/// The spec marks `CreateWikiPageOptions.title` optional, and `edit` used to omit it when not
+/// renaming. Gitea disagreed twice: 1.27 normalised the absent title to `unnamed`, so changing a
+/// page's text silently renamed it and exited 0; Gitea 28 rejects the body outright with
+/// `422 [Title]: Required`. `edit` now resends the current title — it reads the page first
+/// anyway — and this checks the server kept the name.
 ///
-/// This is precisely the class of bug the live plane exists for: a `FakeTransport` returns the
-/// page the fixture author wrote, so it confirms the comment rather than the server. The fix is
-/// for `edit` to send the current title when the user did not ask for a rename — the command
-/// already fetches the page first, so the value is in hand. Until then this test is the record
-/// of what the server does, and it will fail the moment the fix lands, which is the point: the
-/// person fixing it should be the one to delete it.
+/// A `FakeTransport` could not have found either half: it returns the page the fixture author
+/// wrote, so it confirms the author's reading of the spec rather than the server's.
 #[test]
-fn editing_a_wiki_page_without_a_title_renames_it_to_unnamed() {
+fn editing_a_wiki_page_without_a_title_keeps_its_name() {
     let inst = instance_or_skip!();
     cover!(porcelain: ["wiki edit"], hits: ["repoEditWikiPage"]);
     let repo = TestRepo::create_initialized(inst, "wiki-rename");
@@ -1340,12 +1336,12 @@ fn editing_a_wiki_page_without_a_title_renames_it_to_unnamed() {
         .iter()
         .map(|p| p["title"].as_str().unwrap_or_default().to_owned())
         .collect();
-    assert_eq!(
-        pages,
-        vec!["unnamed".to_owned()],
-        "the page kept its name, which means `gea wiki edit` now sends the current title. \
-         That is the correct behaviour — delete this test and the defect note above it."
-    );
+    assert_eq!(pages, vec!["Keep My Name".to_owned()], "the edit renamed the page");
+
+    let (code, body) = repo.api("GET", "wiki/page/Keep-My-Name", None);
+    assert_eq!(code, 200, "{body}");
+    let page: serde_json::Value = serde_json::from_str(&body).expect("a page");
+    assert_eq!(page["content_base64"], "djI=", "the new content was not committed: {page}");
 }
 
 // ------------------------------------------------------------------------------- webhooks
@@ -1530,6 +1526,55 @@ fn a_deploy_key_is_added_read_back_and_removed_with_the_access_it_was_given() {
         .assert_ok("gea deploy-key delete");
     let (code, _) = repo.api("GET", &format!("keys/{id}"), None);
     assert_eq!(code, 404, "the deploy key survived its own deletion");
+}
+
+/// Gitea 28's HTTPS deploy token, proved by using it rather than by reading it back.
+///
+/// A token that is created, listed and stored as read-only, but does not authenticate git, would
+/// pass every out-of-band read. The repository is private, so `git ls-remote` with the token in
+/// the URL succeeding — and without it failing — is the only evidence the token does its job.
+#[test]
+fn a_deploy_token_authenticates_git_over_https_to_a_private_repository() {
+    let inst = instance_or_skip!();
+    cover!(raw: ["repoCreateDeployToken"]);
+    let repo = TestRepo::create_initialized(inst, "deploy-token");
+
+    let created = inst.gea([
+        "raw",
+        "repo",
+        "create-deploy-token",
+        &repo.owner,
+        &repo.name,
+        "--title",
+        "itest https token",
+        "--read-only",
+    ]);
+    created.assert_ok("gea raw repo create-deploy-token");
+    let created = created.json();
+    assert_eq!(created["key_type"], "token", "{created}");
+    assert_eq!(created["read_only"], true, "{created}");
+    let token = created["token"].as_str().filter(|t| !t.is_empty());
+    let token = token.unwrap_or_else(|| panic!("the token is only shown once, here: {created}"));
+
+    let (scheme, rest) = inst.base_url.split_once("://").expect("a base URL with a scheme");
+    let ls_remote = |auth: &str| {
+        Command::new("git")
+            .args(["ls-remote", &format!("{scheme}://{auth}{rest}/{}.git", repo.slug())])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("HOME", std::env::temp_dir())
+            .output()
+            .expect("git should run")
+    };
+    let anonymous = ls_remote("");
+    assert!(!anonymous.status.success(), "the repository is meant to be private");
+    let with_token = ls_remote(&format!("deploy:{token}@"));
+    assert!(
+        with_token.status.success(),
+        "the deploy token did not authenticate git:\n{}",
+        String::from_utf8_lossy(&with_token.stderr)
+    );
+    assert!(String::from_utf8_lossy(&with_token.stdout).contains("refs/heads/main"));
 }
 
 // ------------------------------------------------------------------------------ git hooks

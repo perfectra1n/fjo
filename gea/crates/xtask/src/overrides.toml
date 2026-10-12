@@ -185,6 +185,11 @@ command = "update-oauth2-application"
 group = "user"
 command = "delete-oauth2-application"
 
+[op.createCurrentUserRepo]
+group = "repo"
+command = "create-current-user-repo"
+why = "Gitea 28 re-tagged it `user`; pinned so `gea raw repo create-current-user-repo` keeps working"
+
 # ---------------------------------------------------------------------------------------------
 # [newtype] — Model.field → ID newtype
 # ---------------------------------------------------------------------------------------------

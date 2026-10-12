@@ -2,7 +2,7 @@
 
 A command-line interface for [Gitea](https://about.gitea.com), with commands similar to `gh`.
 
-Use `gea pr`, `gea issue`, and `gea repo` for common tasks. For other API operations, use `gea raw` or `gea api`. The generated `raw` commands cover all 482 operations in the bundled Gitea 1.27.3 API specification, and 471 of them are driven against a real Gitea by the integration suite.
+Use `gea pr`, `gea issue`, and `gea repo` for common tasks. For other API operations, use `gea raw` or `gea api`. The generated `raw` commands cover all 537 operations in the bundled Gitea 28.1.0 API specification, and 532 of them are driven against a real Gitea by the integration suite.
 
 ## Install
 
@@ -74,9 +74,9 @@ Use `gea --help` to list command groups, or add `--help` to any command.
 
 The contract plane checks that every generated command composes the request its metadata declares — method, path substitution, per-parameter encoding, query keys, body types. It runs in the ordinary test suite and needs no Docker.
 
-The live plane boots a throwaway Gitea 1.27.3 and drives real lifecycles against it. It is the only thing that can show the server disagreeing with its own published specification, and it regularly does.
+The live plane boots a throwaway Gitea 28.1.0 and drives real lifecycles against it. It is the only thing that can show the server disagreeing with its own published specification, and it regularly does.
 
-No operation is exempted in [`spec/live-coverage.toml`](spec/live-coverage.toml). Eleven are not yet driven live: six Actions reads and reruns that need a workflow run to have actually executed on a runner, and five cheap routes whose tests are simply not written yet. `.mise/config.toml` names each one, and the budget only goes down.
+No operation is exempted in [`spec/live-coverage.toml`](spec/live-coverage.toml). Five are not yet driven live: cheap routes whose tests are simply not written yet. `.mise/config.toml` names each one, and the budget only goes down.
 
 ```bash
 mise run test             # hermetic: contract plane included, no Docker

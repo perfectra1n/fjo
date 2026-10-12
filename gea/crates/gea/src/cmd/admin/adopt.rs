@@ -48,7 +48,7 @@ pub enum Cmd {
 
 #[derive(Debug, ClapArgs)]
 pub struct List {
-    /// Only paths matching this substring
+    /// Only paths matching this glob, as `owner` or `owner/name` (e.g. `alice/*`)
     #[arg(value_name = "PATTERN")]
     pub pattern: Option<String>,
 }
@@ -78,7 +78,7 @@ pub async fn run(api: &Api, globals: &GlobalOpts, emit: &mut Emit<'_>, cmd: &Cmd
         Cmd::List(a) => {
             let mut q = gitea_client::query::AdminUnadoptedListQuery::default();
             if let Some(p) = &a.pattern {
-                q = q.with_pattern(p);
+                q = q.with_query(p);
             }
             let cap = support::item_cap(globals);
             let (paths, total) = if globals.paginate {

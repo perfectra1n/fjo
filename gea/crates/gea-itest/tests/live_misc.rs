@@ -865,3 +865,33 @@ fn mirror_sync_reaches_the_push_endpoint_and_refuses_when_there_is_no_mirror_at_
     pull_only.assert_code(2, "gea mirror sync --pull on a repository that is not a pull mirror");
     pull_only.assert_says("not a pull mirror");
 }
+
+/// Gitea 28's instance-wide package listing, which only an admin may read.
+///
+/// The filter is what is worth checking: `q` and `type` are query parameters a server is free to
+/// ignore, and an ignored filter still answers 200 with *a* list. So the package uploaded here
+/// must be found by its name, and a filter on a type it is not must not find it.
+#[test]
+fn the_admin_package_listing_finds_an_upload_by_name_and_type() {
+    let inst = instance_or_skip!();
+    cover!(raw: ["adminListPackages"]);
+    let pkg = unique_package_name(inst, "admin-pkg");
+    upload_generic_package(inst, &inst.user, &pkg, "1.0.0", "payload.txt", "admin listing");
+
+    let names = |args: &[&str]| -> Vec<String> {
+        let mut all = vec!["raw", "admin", "list-packages"];
+        all.extend_from_slice(args);
+        let run = inst.gea(all);
+        run.assert_ok("gea raw admin list-packages");
+        run.json()
+            .as_array()
+            .unwrap_or_else(|| panic!("expected an array: {}", run.stdout))
+            .iter()
+            .filter_map(|p| p["name"].as_str().map(str::to_owned))
+            .collect()
+    };
+    assert_eq!(names(&["--q", &pkg, "--type", "generic"]), vec![pkg.clone()]);
+    assert!(names(&["--q", &pkg, "--type", "npm"]).is_empty(), "the type filter was ignored");
+
+    let _ = inst.api("DELETE", &format!("packages/{}/generic/{pkg}", inst.user), None);
+}
