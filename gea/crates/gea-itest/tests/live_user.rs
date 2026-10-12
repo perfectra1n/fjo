@@ -300,25 +300,43 @@ fn patching_one_profile_setting_leaves_the_others_alone() {
 /// `POST /user/avatar` answers `204`, so "it worked" is unobservable from the response. Gitea
 /// serves the default avatar from a hash of the email and a custom one from a hash of the file,
 /// which makes `avatar_url` the out-of-band witness.
+///
+/// # Why this runs as an account of its own
+///
+/// It used to run as the shared admin, and failed about one run in five when the rest of this
+/// file ran beside it, with `avatar_url` unchanged after a successful upload. The cause is in
+/// Gitea, not gea. With Gravatar disabled, Gitea makes a user's default avatar lazily, inside
+/// `AvatarLink` — the function that renders a user into *any* API response — and
+/// `GenerateRandomAvatar` writes only the `avatar` column from whatever user object that request
+/// loaded. On a fresh instance the admin starts with no avatar, and every parallel test renders
+/// the admin into its responses (as a repository owner, an issue poster, …). A request that
+/// loaded the admin before the default existed and rendered it after this test's upload wrote
+/// the default hash back over the uploaded one, leaving `use_custom_avatar` set on the default
+/// image: the URL read exactly as it had before the upload. A dedicated account is rendered by
+/// nothing else, so there is no stale copy of it left to write back.
 #[test]
 fn uploading_an_avatar_changes_the_url_and_deleting_it_restores_the_default() {
     let inst = instance_or_skip!();
     cover!(raw: ["userUpdateAvatar", "userDeleteAvatar"]);
+    let user = inst
+        .scoped_user("avatar", &["write:user", "read:user"])
+        .unwrap_or_else(|e| panic!("could not create the avatar test's own account: {e}"));
 
     let url_now = || {
-        expect_json("GET /user", inst.api("GET", "user", None))["avatar_url"]
+        expect_json("GET /user", inst.api_as(&user.token, "GET", "user", None))["avatar_url"]
             .as_str()
             .unwrap_or_default()
             .to_owned()
     };
     let default_url = url_now();
 
-    inst.gea(["raw", "user", "update-avatar", "--image", TINY_PNG])
+    inst.gea_as(&user.token, ["raw", "user", "update-avatar", "--image", TINY_PNG])
         .assert_ok("gea raw user update-avatar");
     let uploaded = url_now();
     assert_ne!(uploaded, default_url, "avatar_url did not move, so nothing was stored");
 
-    inst.gea(["raw", "user", "delete-avatar"]).assert_ok("gea raw user delete-avatar");
+    inst.gea_as(&user.token, ["raw", "user", "delete-avatar"])
+        .assert_ok("gea raw user delete-avatar");
     assert_eq!(url_now(), default_url, "deleting the avatar did not restore the default");
 }
 
