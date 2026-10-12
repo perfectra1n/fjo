@@ -156,7 +156,7 @@ pub(super) const OP_TRANSFER: OpMeta = OpMeta {
             BodyField {
                 pointer: "/team_ids",
                 flag: "team-ids",
-                ty: ValueTy::List,
+                ty: ValueTy::IntList,
                 required: false,
                 enum_values: &[],
                 help: "ID of the team or teams to add to the repository",

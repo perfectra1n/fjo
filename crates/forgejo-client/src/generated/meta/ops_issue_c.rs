@@ -280,7 +280,7 @@ pub(super) const OP_CREATE_ISSUE: OpMeta = OpMeta {
             BodyField {
                 pointer: "/labels",
                 flag: "labels",
-                ty: ValueTy::List,
+                ty: ValueTy::IntList,
                 required: false,
                 enum_values: &[],
                 help: "list of label ids",

@@ -243,6 +243,56 @@ fn a_raw_issue_can_be_created_read_edited_listed_and_deleted() {
     assert_eq!(code, 404, "the issue survived its own deletion: HTTP {code}: {body}");
 }
 
+/// Bug this prevents: an integer-list body field sent as JSON strings (`["3","2"]`), which the
+/// server rejects.
+///
+/// `CreateIssueOption.labels` is a `[]int64`, unlike the heterogeneous `IssueLabelsOption.labels`
+/// that `add-label` takes below, so there is no name form to fall back on: the ids have to go out
+/// as JSON numbers or the issue is never created. The labels are seeded and the issue read back
+/// with `curl`, so a failure here can only be the flag's encoding.
+#[test]
+fn a_raw_issue_created_with_label_ids_carries_both_labels() {
+    let inst = instance_or_skip!();
+    cover!(raw: ["issueCreateIssue"]);
+    let repo = TestRepo::create(inst, "raw-issue-label-ids");
+
+    let mut ids = Vec::new();
+    for (name, color) in [("first", "e11d21"), ("second", "00ff00")] {
+        let (code, body) = repo.api(
+            "POST",
+            "labels",
+            Some(&format!(r##"{{"name":"{name}","color":"#{color}"}}"##)),
+        );
+        assert!((200..300).contains(&code), "seeding label {name:?} failed: HTTP {code}: {body}");
+        let label: serde_json::Value = serde_json::from_str(&body).expect("the created label");
+        ids.push(label["id"].as_i64().unwrap_or_else(|| panic!("the label has no id: {body}")));
+    }
+
+    let created = inst
+        .fjo([
+            "raw",
+            "issue",
+            "create-issue",
+            &repo.owner,
+            &repo.name,
+            "--title",
+            "t",
+            "--labels",
+            &ids[0].to_string(),
+            "--labels",
+            &ids[1].to_string(),
+        ])
+        .assert_ok("fjo raw issue create-issue --labels <id> --labels <id>")
+        .json();
+    let index = created["number"].as_i64().expect("the created issue carries a number");
+
+    assert_eq!(
+        names(&read_issue(&repo, index)["labels"], "name"),
+        ["first", "second"],
+        "create-issue did not attach both labels it was given by id"
+    );
+}
+
 /// `/repos/issues/search` is the one issue read that is not scoped to a repository, so it is the
 /// one where a query parameter placed in the path — or under the wrong wire name — still returns
 /// a plausible-looking list of somebody else's issues.

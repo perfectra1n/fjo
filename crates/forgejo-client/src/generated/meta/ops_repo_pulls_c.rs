@@ -148,7 +148,7 @@ pub(super) const OP_CREATE_PULL_REQUEST: OpMeta = OpMeta {
             BodyField {
                 pointer: "/labels",
                 flag: "labels",
-                ty: ValueTy::List,
+                ty: ValueTy::IntList,
                 required: false,
                 enum_values: &[],
                 help: "",

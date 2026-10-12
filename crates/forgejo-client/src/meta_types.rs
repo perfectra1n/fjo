@@ -60,6 +60,9 @@ pub enum ValueTy {
     DateTime,
     /// A repeated flag collecting into a list.
     List,
+    /// A repeated integer flag collecting into a list, sent as JSON numbers. Kept apart from
+    /// [`ValueTy::List`] because a body `[]int64` given `["3","2"]` is rejected by the server.
+    IntList,
     /// Nested JSON that cannot be expressed as a flag; supply via `--body-file`.
     Json,
     /// A file path whose contents are uploaded.
