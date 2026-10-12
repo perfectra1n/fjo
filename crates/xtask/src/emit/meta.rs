@@ -259,9 +259,10 @@ fn values(enums: &EnumTable, declared: Option<&Vec<String>>, ty: &RustType) -> V
 /// * An open enum is a `Str`. `ParamMeta::enum_values` carries the known values separately, and
 ///   layer 2 only *suggests* them — the server may accept a value our pinned spec does not list,
 ///   and rejecting it locally would make the CLI less capable than `curl`.
-/// * `Vec<T>` collapses to `List`, losing the element type. `ValueTy` has no parameterised list
-///   variant; the eleven affected query parameters are all arrays of strings or ids, where
-///   clap's own parse of the repeated value is enough.
+/// * `Vec<T>` collapses to `List`, losing the element type, except that a list of integers is
+///   `IntList`. A query string is text either way, but a body field is JSON, and Forgejo's
+///   `[]int64` fields (`CreateIssueOption.labels`, `CreatePullRequestOption.labels`,
+///   `TransferRepoOption.team_ids`) refuse an array of strings.
 /// * `BTreeMap<String, T>` becomes `Json`. `ValueTy` has no map variant, and the eleven affected
 ///   body fields (`config` on every webhook, `units_map`, `DispatchWorkflow.inputs`) are
 ///   free-form key/value bags. `Json` says "hand me an object", which `--body-file` and a
@@ -276,6 +277,14 @@ fn value_ty(ty: &RustType) -> Result<TokenStream> {
         RustType::F64 => quote! { ValueTy::Float },
         RustType::String | RustType::OpenEnum(_) => quote! { ValueTy::Str },
         RustType::Timestamp => quote! { ValueTy::DateTime },
+        RustType::Vec(inner)
+            if matches!(
+                **inner,
+                RustType::I32 | RustType::I64 | RustType::U64 | RustType::Newtype(_)
+            ) =>
+        {
+            quote! { ValueTy::IntList }
+        }
         RustType::Vec(_) => quote! { ValueTy::List },
         RustType::Map(_) | RustType::Json => quote! { ValueTy::Json },
         RustType::File => quote! { ValueTy::File },

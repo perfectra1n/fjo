@@ -275,7 +275,9 @@ where
 fn matched_strings(m: &ArgMatches, id: &str, ty: ValueTy) -> Vec<String> {
     match ty {
         ValueTy::Bool => matched_many::<bool>(m, id).iter().map(bool::to_string).collect(),
-        ValueTy::Int => matched_many::<i64>(m, id).iter().map(i64::to_string).collect(),
+        ValueTy::Int | ValueTy::IntList => {
+            matched_many::<i64>(m, id).iter().map(i64::to_string).collect()
+        }
         ValueTy::Float => matched_many::<f64>(m, id).iter().map(f64::to_string).collect(),
         _ => matched_many::<String>(m, id),
     }
@@ -290,6 +292,10 @@ fn matched_json(m: &ArgMatches, id: &str, ty: ValueTy, flag: &str) -> Result<Opt
         ValueTy::Float => matched_one::<f64>(m, id).map(Value::from),
         ValueTy::List => {
             let vs = matched_many::<String>(m, id);
+            (!vs.is_empty()).then(|| Value::Array(vs.into_iter().map(Value::from).collect()))
+        }
+        ValueTy::IntList => {
+            let vs = matched_many::<i64>(m, id);
             (!vs.is_empty()).then(|| Value::Array(vs.into_iter().map(Value::from).collect()))
         }
         ValueTy::Json => match matched_one::<String>(m, id) {

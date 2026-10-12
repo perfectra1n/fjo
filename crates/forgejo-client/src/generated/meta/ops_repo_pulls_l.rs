@@ -107,7 +107,7 @@ pub(super) const OP_LIST_PULL_REQUESTS: OpMeta = OpMeta {
             wire: "labels",
             flag: "labels",
             location: In::Query,
-            ty: ValueTy::List,
+            ty: ValueTy::IntList,
             required: false,
             repeatable: true,
             encoding: PathEncoding::Segment,

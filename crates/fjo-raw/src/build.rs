@@ -404,7 +404,8 @@ fn path_flag_arg(p: &'static ParamMeta, long: &str) -> Arg {
 }
 
 fn body_field_arg(f: &'static BodyField, long: &str) -> Arg {
-    value_arg(body_id(f.flag), long, f.ty, f.ty == ValueTy::List).help(help_text(
+    let repeatable = matches!(f.ty, ValueTy::List | ValueTy::IntList);
+    value_arg(body_id(f.flag), long, f.ty, repeatable).help(help_text(
         f.help,
         f.enum_values,
         f.required,
@@ -428,7 +429,7 @@ fn value_arg(id: String, long: &str, ty: ValueTy, repeatable: bool) -> Arg {
             .num_args(0..=1)
             .require_equals(true)
             .default_missing_value("true"),
-        ValueTy::Int => a.value_name("N").value_parser(value_parser!(i64)),
+        ValueTy::Int | ValueTy::IntList => a.value_name("N").value_parser(value_parser!(i64)),
         ValueTy::Float => a.value_name("NUM").value_parser(value_parser!(f64)),
         ValueTy::DateTime => a.value_name("RFC3339"),
         ValueTy::File => a.value_name("PATH").value_hint(ValueHint::FilePath),
