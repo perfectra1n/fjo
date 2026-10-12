@@ -13,10 +13,15 @@ name: Release Please
 # `simple` therefore keeps the release version in .release-please-manifest.json and
 # leaves every crate at its own version — the same arrangement kopiur uses.
 #
-# The consequence is that crates/fjo/Cargo.toml no longer tracks the release, so
-# release.yaml's verify job reads the manifest file instead. `fjo --version` still
-# reports the crate version, which will lag the tag until the crates are published
-# and there is a reason for them to agree.
+# The one crate that must agree is fjo, because `fjo --version` prints its
+# CARGO_PKG_VERSION. release-please-config.json lists crates/fjo/Cargo.toml and
+# fjo's Cargo.lock entry under `extra-files`, so the release PR bumps both. Both
+# are needed because every build runs with --locked. The Cargo.lock jsonpath
+# compares `@.name.value`, not `@.name`, because release-please's TOML parser
+# wraps every value as {start, end, value}. Without `.value` the filter matches
+# nothing and only logs a warning. The other crates keep their own versions, and
+# fjo's unit test `the_crate_version_is_the_release_version` fails a release PR
+# that forgets the bump.
 
 on:
   push:
