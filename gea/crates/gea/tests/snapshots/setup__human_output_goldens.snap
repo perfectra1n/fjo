@@ -9,7 +9,7 @@ git.example.org (https://git.example.org)
   - Active account: true
   - Credential store: hosts.toml (mode 0600)
   - Token kept in: nowhere gea can find one
-  - Web session: none (run `gea auth login --with-password` for gea project)
+  - Web session: none (run `gea auth login --with-password` for gea web)
   - Token: hidden; use `gea auth token` to print it
   - Token scopes: read:repository, write:issue
 

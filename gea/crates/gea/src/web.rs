@@ -186,8 +186,8 @@ async fn execute(
 /// One authenticated web request, with the whole session lifecycle around it.
 ///
 /// This is the single implementation of the mint/retry/persist rule described in the module
-/// comment, and both `gea web` and `gea project` go through it. Two copies of a retry rule are
-/// two places for it to drift, and that rule *is* the reliability story.
+/// comment, and every web request goes through it. Two copies of a retry rule are two places
+/// for it to drift, and that rule *is* the reliability story.
 pub(crate) async fn request(
     rt: &mut Runtime,
     method: Method,

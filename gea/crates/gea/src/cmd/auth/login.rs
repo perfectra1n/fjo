@@ -50,7 +50,7 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["with_token", "token"])]
     pub web: bool,
 
-    /// Sign in with a password, for the web-only routes (`gea web`, `gea project`)
+    /// Sign in with a password, for the web-only routes (`gea web`)
     ///
     /// Yields a session rather than a token. Gitea's web routes accept no token at all, so
     /// this is the only way to reach the features it never gave an API.

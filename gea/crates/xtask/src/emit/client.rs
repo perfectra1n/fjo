@@ -1357,7 +1357,7 @@ mod tests {
         let async_fns: usize =
             ops_files().map(|f| f.contents.matches("pub async fn ").count()).sum();
         assert_eq!(async_fns, ir().operations.len(), "one async method per operation");
-        assert_eq!(async_fns, 482, "the spec has 482 operations");
+        assert_eq!(async_fns, 537, "the spec has 537 operations");
     }
 
     /// The streaming halves, the group constructors, and the `Api` accessors are the only other
@@ -1376,7 +1376,7 @@ mod tests {
             })
             .count();
         let groups = ir().groups.len();
-        assert_eq!(paged_arrays, 83, "paginated array-returning operations");
+        assert_eq!(paged_arrays, 94, "paginated array-returning operations");
         // one `new` and one `Api` accessor per group, plus one stream per paginated array.
         assert_eq!(plain, paged_arrays + 2 * groups);
     }
@@ -1512,8 +1512,11 @@ mod tests {
     }
 
     /// Cheap heuristic for the assertion above: does the line contain a string literal at all.
+    ///
+    /// Comments are excluded: a doc comment is never a request path, and Gitea 28 quotes a path
+    /// template in `repoGetSingleCommit`'s description.
     fn in_a_str_literal(line: &str) -> bool {
-        line.contains('"')
+        !line.trim_start().starts_with("//") && line.contains('"')
     }
 
     #[test]

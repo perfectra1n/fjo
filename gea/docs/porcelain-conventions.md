@@ -26,7 +26,7 @@ If a command does none of these, leave it to `gea raw` and say so in the group's
 
 ## Addressing by title, not id
 
-`gea project` follows a convention `gea milestone` already set: **the user names things by title, never by numeric id.** Gitea's project routes are all `/projects/{id}/{columnID}`, and nobody knows that a board called `Roadmap` is id 3 — the same reasoning that put `milestone_by_title` in `crates/gea/src/cmd/issue/shared.rs` and is written out in full in `crates/gea/src/cmd/milestone.rs`'s module doc.
+`gea project` follows a convention `gea milestone` already set: **the user names things by title, never by numeric id.** Gitea's project routes are all `/projects/{id}/columns/{column_id}`, and nobody knows that a board called `Roadmap` is id 3 — the same reasoning that put `milestone_by_title` in `crates/gea/src/cmd/issue/shared.rs` and is written out in full in `crates/gea/src/cmd/milestone.rs`'s module doc.
 
 The corollary `gea milestone` established holds here too: an **ambiguous** title is refused, not guessed. Gitea does not require titles to be unique — real testing found two milestones called `1.0` on the same repository — and `gea milestone` answers that by listing the colliding ids and telling the user to rename or delete one; it will not guess which was meant. `gea project` lists the matches the same way, and adds the one thing `gea milestone` does not have: `--id` is accepted as a single escape hatch, so an ambiguous project or column can be pinned to one of the ids the error just listed instead of requiring a rename.
 

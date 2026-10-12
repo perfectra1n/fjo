@@ -1,89 +1,153 @@
-//! The web operations behind `gea project`, and the title→id resolution they all need.
+//! The REST operations behind `gea project`, and the title→id resolution they all need.
 //!
 //! # Why every verb resolves a title
 //!
-//! Gitea's project routes are `/projects/{id}` and `/projects/{id}/{columnID}`. Nobody knows
-//! that `Roadmap` is 3 or that its `Done` column is 12, and a command that demanded those
-//! numbers would be `gea web` with extra steps. So each verb reads the index (or the board) and
+//! Gitea's project routes are `/projects/{id}` and `/projects/{id}/columns/{column_id}`. Nobody
+//! knows that `Roadmap` is 3 or that its `Done` column is 12, and a command that demanded those
+//! numbers would be `gea raw` with extra steps. So each verb reads the listing (or the board) and
 //! maps the name the user typed onto the id the route wants.
 //!
 //! An **ambiguous** name is refused with the matches listed, never guessed. Gitea is perfectly
 //! willing to hold two boards called `Roadmap`, exactly as it holds two milestones called `1.0`
 //! — which real testing found, and which is why `gea milestone` established this rule first.
+//!
+//! # History
+//!
+//! Gitea had no REST API for projects before 28, so this module used to drive the web routes
+//! behind the board UI with a session cookie and scrape the board's HTML. Gitea 28 added the API
+//! and this moved onto it, as `docs/layers.md` planned: the commands now need only a token, and
+//! the markup parser and its captured fixtures are gone.
 
+use futures::{StreamExt, TryStreamExt};
+use gitea_client::Api;
 use gitea_core::error::{Error, ErrorKind, Result};
-use gitea_core::http::Method;
-use gitea_core::web::WebBody;
+use gitea_model::{
+    CreateProjectColumnOption, CreateProjectOption, EditProjectColumnOption, EditProjectOption,
+    EditProjectOptionState, MoveProjectColumnsOption, MoveProjectIssueOption,
+};
 
-use super::parse::{Board, ProjectRef, parse_board, parse_index};
+use super::model::{Board, Card, Column, ProjectRef};
 use crate::global::GlobalOpts;
 use crate::runtime::Runtime;
 
-/// Which board tree to talk to: a repository's, or an owner's.
+/// The most boards, columns or cards one listing is drained to. A board with more than this is
+/// not something a terminal table serves, and an unbounded walk is a hang waiting to happen.
+const RESOLVE_CAP: usize = 1000;
+
+/// Whose boards: a repository's, an organization's, the signed-in user's, or — read-only —
+/// another user's.
 ///
-/// Gitea exposes the same verbs under both `/{owner}/{repo}/projects` and
-/// `/{owner}/-/projects`, so this is the only thing that differs between them.
-pub struct Scope {
-    base: String,
+/// Gitea serves the same API under `/repos/{o}/{r}/projects`, `/orgs/{org}/projects` and
+/// `/user/projects`. A user's boards can be *managed* only by that user, through `/user`;
+/// anyone else gets the public listing at `/users/{u}/projects` and nothing more.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Scope {
+    Repo { owner: String, repo: String },
+    Org(String),
+    Me,
+    User(String),
 }
 
 impl Scope {
-    pub fn resolve(rt: &Runtime, globals: &GlobalOpts, owner: Option<&str>) -> Result<Self> {
-        match owner {
-            // The `-` is Gitea's own placeholder for "this owner, not a repository".
-            Some(o) => Ok(Self { base: format!("{o}/-/projects") }),
-            None => {
-                let repo = rt.repo(globals)?;
-                Ok(Self { base: format!("{}/{}/projects", repo.slug.owner, repo.slug.name) })
-            }
+    /// `--owner` names an organization or a user, and the API addresses the two differently,
+    /// so which one it is gets asked rather than assumed.
+    pub async fn resolve(
+        rt: &Runtime,
+        globals: &GlobalOpts,
+        api: &Api,
+        owner: Option<&str>,
+    ) -> Result<Self> {
+        let Some(owner) = owner else {
+            let repo = rt.repo(globals)?;
+            return Ok(Self::Repo { owner: repo.slug.owner.clone(), repo: repo.slug.name.clone() });
+        };
+        match api.org().get(owner).await {
+            Ok(_) => return Ok(Self::Org(owner.to_owned())),
+            Err(e) if is_not_found(&e) => {}
+            Err(e) => return Err(e),
         }
-    }
-
-    pub fn index(&self) -> &str {
-        &self.base
-    }
-
-    pub fn board(&self, id: i64) -> String {
-        format!("{}/{id}", self.base)
-    }
-
-    pub fn column(&self, project: i64, column: i64) -> String {
-        format!("{}/{project}/{column}", self.base)
+        let me = api.user().get_current().await?;
+        if me.login.eq_ignore_ascii_case(owner) {
+            Ok(Self::Me)
+        } else {
+            Ok(Self::User(owner.to_owned()))
+        }
     }
 }
 
-/// Every board on the index, for one state.
-pub async fn list(rt: &mut Runtime, scope: &Scope, state: &str) -> Result<Vec<ProjectRef>> {
-    // `all` is two requests rather than a `state=all` guess: the template offers only open and
-    // closed, and a query value Gitea does not understand would silently return one of them.
-    let states: &[&str] = if state == "all" { &["open", "closed"] } else { &[state] };
-    let mut out = Vec::new();
-    for s in states {
-        let path = format!("{}?state={s}", scope.index());
-        let resp = crate::web::request(rt, Method::GET, &path, WebBody::None).await?;
-        out.extend(parse_index(&resp.text())?);
-    }
-    Ok(out)
+/// Run one project operation at whichever owner the scope names.
+///
+/// The three route families take the same arguments after their owner prefix, and the
+/// generated user methods are the repository ones with a `current_` prefix, so one macro keeps
+/// each operation written once rather than three times.
+macro_rules! at {
+    ($api:expr, $scope:expr, $repo_fn:ident / $user_fn:ident ( $($arg:expr),* $(,)? )) => {
+        match $scope {
+            Scope::Repo { owner, repo } => $api.repo().$repo_fn(owner, repo, $($arg),*).await,
+            Scope::Org(org) => $api.org().$repo_fn(org, $($arg),*).await,
+            Scope::Me => $api.user().$user_fn($($arg),*).await,
+            Scope::User(name) => Err(read_only(name)),
+        }
+    };
+}
+
+/// The same, for the streaming listings, which are collected rather than awaited.
+macro_rules! all {
+    ($api:expr, $scope:expr, $repo_fn:ident / $user_fn:ident ( $($arg:expr),* $(,)? )) => {
+        match $scope {
+            Scope::Repo { owner, repo } => {
+                $api.repo().$repo_fn(owner, repo, $($arg,)* &Default::default())
+                    .take(RESOLVE_CAP).try_collect().await
+            }
+            Scope::Org(org) => {
+                $api.org().$repo_fn(org, $($arg,)* &Default::default())
+                    .take(RESOLVE_CAP).try_collect().await
+            }
+            Scope::Me => {
+                $api.user().$user_fn($($arg,)* &Default::default())
+                    .take(RESOLVE_CAP).try_collect().await
+            }
+            Scope::User(name) => Err(read_only(name)),
+        }
+    };
+}
+
+/// Every board in one state.
+pub async fn list(api: &Api, scope: &Scope, state: &str) -> Result<Vec<ProjectRef>> {
+    let state = Some(state.to_owned());
+    let boards: Vec<gitea_model::Project> = match scope {
+        Scope::Repo { owner, repo } => {
+            let q = gitea_client::query::RepoListProjectsQuery { state, ..Default::default() };
+            api.repo().list_projects(owner, repo, &q).take(RESOLVE_CAP).try_collect().await?
+        }
+        Scope::Org(org) => {
+            let q = gitea_client::query::OrgListProjectsQuery { state, ..Default::default() };
+            api.org().list_projects(org, &q).take(RESOLVE_CAP).try_collect().await?
+        }
+        Scope::Me => {
+            let q =
+                gitea_client::query::UserCurrentListProjectsQuery { state, ..Default::default() };
+            api.user().current_list_projects(&q).take(RESOLVE_CAP).try_collect().await?
+        }
+        Scope::User(name) => {
+            let q = gitea_client::query::UserListProjectsQuery { state, ..Default::default() };
+            api.user().list_projects(name, &q).take(RESOLVE_CAP).try_collect().await?
+        }
+    };
+    Ok(boards.into_iter().map(ProjectRef::from).collect())
 }
 
 /// The board a user named, by title or by `--id`.
-pub async fn find(
-    rt: &mut Runtime,
-    scope: &Scope,
-    name: &str,
-    id: Option<i64>,
-) -> Result<ProjectRef> {
+pub async fn find(api: &Api, scope: &Scope, name: &str, id: Option<i64>) -> Result<ProjectRef> {
+    // Closed boards are searched too: closing one must not make it unreachable, which is the
+    // rule `gea milestone list -s all` already follows.
+    let all = list(api, scope, "all").await?;
     if let Some(id) = id {
-        let all = list(rt, scope, "all").await?;
         return all
             .into_iter()
             .find(|p| p.id == id)
             .ok_or_else(|| not_found(&format!("no board with id {id}")));
     }
-
-    // Closed boards are searched too: closing one must not make it unreachable, which is the
-    // rule `gea milestone list -s all` already follows.
-    let all = list(rt, scope, "all").await?;
     let mut hits: Vec<ProjectRef> = all.into_iter().filter(|p| p.title == name).collect();
     match hits.len() {
         1 => Ok(hits.remove(0)),
@@ -99,16 +163,26 @@ pub async fn find(
     }
 }
 
-/// A board's full contents.
-pub async fn view(rt: &mut Runtime, scope: &Scope, id: i64) -> Result<Board> {
-    let resp = crate::web::request(rt, Method::GET, &scope.board(id), WebBody::None).await?;
-    parse_board(&resp.text())
+/// A board's full contents: its columns in order, and each column's cards.
+pub async fn view(api: &Api, scope: &Scope, board: &ProjectRef) -> Result<Board> {
+    let mut columns: Vec<gitea_model::ProjectColumn> =
+        all!(api, scope, list_project_columns / current_list_project_columns(board.id))?;
+    columns.sort_by_key(|c| (c.sorting, c.id));
+    let mut out = Vec::with_capacity(columns.len());
+    for column in columns {
+        let issues: Vec<gitea_model::Issue> = all!(
+            api,
+            scope,
+            list_project_column_issues / current_list_project_column_issues(board.id, column.id)
+        )?;
+        out.push(Column::new(column, issues.into_iter().map(Card::from).collect()));
+    }
+    Ok(Board { id: board.id, title: board.title.clone(), columns: out })
 }
 
 /// A column on a board, by title.
 pub fn column_of(board: &Board, name: &str) -> Result<i64> {
-    let hits: Vec<&super::parse::Column> =
-        board.columns.iter().filter(|c| c.title == name).collect();
+    let hits: Vec<&Column> = board.columns.iter().filter(|c| c.title == name).collect();
     match hits.len() {
         1 => Ok(hits[0].id),
         0 => {
@@ -128,81 +202,128 @@ pub fn column_of(board: &Board, name: &str) -> Result<i64> {
 }
 
 pub async fn create(
-    rt: &mut Runtime,
+    api: &Api,
     scope: &Scope,
     title: &str,
     description: &str,
-    template: u8,
-) -> Result<()> {
-    // Lowercase field names, and `card_type` 1 ("images and text") to match what the web UI
-    // creates -- both established by driving a real instance, not by reading the Go structs,
-    // whose field names are NOT what the form binding reads.
-    let form = vec![
-        ("title".to_owned(), title.to_owned()),
-        ("content".to_owned(), description.to_owned()),
-        ("template_type".to_owned(), template.to_string()),
-        ("card_type".to_owned(), "1".to_owned()),
-    ];
-    let path = format!("{}/new", scope.index());
-    expect_ok(rt, Method::POST, &path, WebBody::Form(form)).await
+    template: &str,
+) -> Result<ProjectRef> {
+    // `images_and_text` matches what the web UI creates, so a board made here looks the same as
+    // one made by hand.
+    let body = CreateProjectOption {
+        title: title.to_owned(),
+        description: Some(description.to_owned()),
+        template_type: Some(template.to_owned()),
+        card_type: Some("images_and_text".to_owned()),
+    };
+    let made: gitea_model::Project =
+        at!(api, scope, create_project / current_create_project(&body))?;
+    Ok(made.into())
 }
 
-pub async fn set_state(rt: &mut Runtime, scope: &Scope, id: i64, action: &str) -> Result<()> {
-    let path = format!("{}/{action}", scope.board(id));
-    expect_ok(rt, Method::POST, &path, WebBody::None).await
+pub async fn set_state(api: &Api, scope: &Scope, id: i64, closed: bool) -> Result<()> {
+    let state = if closed { EditProjectOptionState::Closed } else { EditProjectOptionState::Open };
+    let body = EditProjectOption { state: Some(state), ..Default::default() };
+    let _: gitea_model::Project = at!(api, scope, edit_project / current_edit_project(id, &body))?;
+    Ok(())
 }
 
-pub async fn add_column(
-    rt: &mut Runtime,
-    scope: &Scope,
-    id: i64,
-    title: &str,
-    color: &str,
-) -> Result<()> {
-    let form = vec![
-        ("title".to_owned(), title.to_owned()),
-        ("sorting".to_owned(), "0".to_owned()),
-        ("color".to_owned(), color.to_owned()),
-    ];
-    let path = format!("{}/columns/new", scope.board(id));
-    expect_ok(rt, Method::POST, &path, WebBody::Form(form)).await
+pub async fn delete(api: &Api, scope: &Scope, id: i64) -> Result<()> {
+    at!(api, scope, delete_project / current_delete_project(id))
 }
 
+pub async fn add_column(api: &Api, scope: &Scope, id: i64, title: &str, color: &str) -> Result<()> {
+    let body = CreateProjectColumnOption {
+        title: title.to_owned(),
+        color: Some(color.to_owned()).filter(|c| !c.is_empty()),
+    };
+    let _: gitea_model::ProjectColumn =
+        at!(api, scope, create_project_column / current_create_project_column(id, &body))?;
+    Ok(())
+}
+
+/// Rename or recolour a column. The body is a partial update, so only what changes is sent and
+/// the column's position is left alone.
 pub async fn edit_column(
-    rt: &mut Runtime,
+    api: &Api,
     scope: &Scope,
     id: i64,
-    column: &super::parse::Column,
-    title: &str,
-    color: &str,
+    column: i64,
+    title: Option<&str>,
+    color: Option<&str>,
 ) -> Result<()> {
-    // `sorting` is sent back as it was. The form takes all three fields, so omitting it would
-    // renumber the column to 0 and silently move it to the front -- an edit of the title
-    // quietly reordering the board is the kind of surprise that erodes trust in a tool.
-    let form = vec![
-        ("title".to_owned(), title.to_owned()),
-        ("sorting".to_owned(), column.sorting.to_string()),
-        ("color".to_owned(), color.to_owned()),
-    ];
-    expect_ok(rt, Method::PUT, &scope.column(id, column.id), WebBody::Form(form)).await
+    let body = EditProjectColumnOption {
+        title: title.map(str::to_owned),
+        color: color.map(str::to_owned),
+        sorting: None,
+    };
+    let _: gitea_model::ProjectColumn =
+        at!(api, scope, edit_project_column / current_edit_project_column(id, column, &body))?;
+    Ok(())
 }
 
 /// Write a new column order for a whole board.
-pub async fn reorder_columns(
-    rt: &mut Runtime,
-    scope: &Scope,
-    id: i64,
-    ordered: &[i64],
-) -> Result<()> {
-    let columns: Vec<serde_json::Value> = ordered
+pub async fn reorder_columns(api: &Api, scope: &Scope, id: i64, ordered: &[i64]) -> Result<()> {
+    let body = MoveProjectColumnsOption { column_ids: ordered.to_vec() };
+    at!(api, scope, move_project_columns / current_move_project_columns(id, &body))
+}
+
+pub async fn delete_column(api: &Api, scope: &Scope, id: i64, column: &Column) -> Result<()> {
+    // Checked here rather than left to the server, so the refusal says what to do about it.
+    if column.default {
+        return Err(Error::new(ErrorKind::Usage(format!(
+            "{:?} is the board's default column, where issues land when no column is given, and \
+             Gitea will not delete it. Make another column the default first.",
+            column.title
+        ))));
+    }
+    at!(api, scope, delete_project_column / current_delete_project_column(id, column.id))
+}
+
+/// Put an issue on a board, in `column`.
+///
+/// Unlike the web route this replaced, which *set* an issue's whole collection of boards and so
+/// had to be sent the ones it was already on, the API adds one placement and leaves the issue's
+/// other boards alone.
+pub async fn add_card(api: &Api, scope: &Scope, id: i64, column: i64, issue: i64) -> Result<()> {
+    at!(
+        api,
+        scope,
+        add_issue_to_project_column / current_add_issue_to_project_column(id, column, issue)
+    )
+}
+
+/// Move an issue that is already on a board into another of its columns.
+pub async fn move_card(api: &Api, scope: &Scope, id: i64, column: i64, issue: i64) -> Result<()> {
+    let body = MoveProjectIssueOption { column_id: column, sorting: None };
+    at!(api, scope, move_project_issue / current_move_project_issue(id, issue, &body))
+}
+
+/// The column an issue lands in when none is named: the board's default, as in the web UI.
+pub fn default_column(board: &Board) -> Result<i64> {
+    board
+        .columns
         .iter()
-        .enumerate()
-        .map(|(i, cid)| serde_json::json!({ "columnID": cid, "sorting": i }))
-        .collect();
-    let body = serde_json::to_vec(&serde_json::json!({ "columns": columns }))
-        .map_err(|e| Error::new(ErrorKind::Usage(format!("could not build the reorder: {e}"))))?;
-    let path = format!("{}/move", scope.board(id));
-    expect_ok(rt, Method::POST, &path, WebBody::Json(body)).await
+        .find(|c| c.default)
+        .or_else(|| board.columns.first())
+        .map(|c| c.id)
+        .ok_or_else(|| {
+            Error::new(ErrorKind::Usage(format!(
+                "{:?} has no columns to put the issue in; add one with `gea project column add`",
+                board.title
+            )))
+        })
+}
+
+fn read_only(user: &str) -> Error {
+    Error::new(ErrorKind::Usage(format!(
+        "{user} is another user, and Gitea lets only a user manage their own boards. Their boards \
+         can be listed (`gea project list --owner {user}`); to change one, sign in as {user}."
+    )))
+}
+
+fn is_not_found(e: &Error) -> bool {
+    matches!(e.kind(), ErrorKind::ResourceNotFound { .. } | ErrorKind::RouteNotFound { .. })
 }
 
 /// Where a column should end up.
@@ -219,7 +340,7 @@ pub enum Move<'a> {
 /// Pure, and separated from the request for exactly that reason: off-by-one is the entire risk
 /// in a reorder, and this is the part a test can pin without a server. Every case below was a
 /// wrong answer in a first draft.
-pub fn reordered(columns: &[super::parse::Column], moving: i64, to: Move<'_>) -> Result<Vec<i64>> {
+pub fn reordered(columns: &[Column], moving: i64, to: Move<'_>) -> Result<Vec<i64>> {
     let mut ids: Vec<i64> = columns.iter().map(|c| c.id).collect();
     let Some(from) = ids.iter().position(|id| *id == moving) else {
         return Err(not_found("that column is not on this board"));
@@ -254,100 +375,6 @@ pub fn reordered(columns: &[super::parse::Column], moving: i64, to: Move<'_>) ->
     Ok(ids)
 }
 
-pub async fn delete_column(
-    rt: &mut Runtime,
-    scope: &Scope,
-    id: i64,
-    column: &super::parse::Column,
-) -> Result<()> {
-    // Checked here rather than left to the server. Gitea refuses this with a bare
-    // `errors.New`, which `ctx.ServerError` renders as a 500 with no message -- so a user who
-    // tried it got "500 Internal Server Error" for a mistake they could have fixed instantly.
-    if column.default {
-        return Err(Error::new(ErrorKind::Usage(format!(
-            "{:?} is the board's default column, where issues land when no column is given, and \
-             Gitea will not delete it. Make another column the default first.",
-            column.title
-        ))));
-    }
-    let sent = expect_ok(rt, Method::DELETE, &scope.column(id, column.id), WebBody::None).await;
-    // Gitea answers this refusal with a 500 carrying no message, so if one arrives anyway --
-    // the `default` flag above is read from a star in the template and may not survive every
-    // layout -- say what it almost certainly means rather than relaying "500".
-    sent.map_err(|e| {
-        if e.to_string().contains("500") {
-            return Error::new(ErrorKind::Usage(format!(
-                "Gitea refused to delete {:?} and gave no reason (it answers a 500 here). The \
-                 usual cause is that this is the board's default column, which it will not \
-                 delete; make another column the default first.",
-                column.title
-            )));
-        }
-        e
-    })
-}
-
-/// Set the boards issues are on. An issue lands in a newly added board's default column.
-///
-/// `projects` is the **whole** set, not an addition: Gitea's route diffs it against the issue's
-/// current boards and removes the ones missing from it. Callers pass the boards the issue is
-/// already on together with the new one.
-pub async fn add_cards(
-    rt: &mut Runtime,
-    scope: &Scope,
-    projects: &[i64],
-    issues: &[i64],
-) -> Result<()> {
-    // Single comma-joined fields, not repeated parameters -- verified against a real instance.
-    let join = |ids: &[i64]| ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-    let base = scope.index().trim_end_matches("/projects");
-    let path = format!("{base}/issues/projects");
-    let form = vec![("issue_ids".to_owned(), join(issues)), ("id".to_owned(), join(projects))];
-    expect_ok(rt, Method::POST, &path, WebBody::Form(form)).await
-}
-
-/// Move issues into a column.
-///
-/// `ids` are **internal database ids**, not per-repo issue numbers. They are equal in a
-/// repository whose issues were all created in it and diverge as soon as one is transferred, and
-/// a move posted with the wrong one silently targets a different issue.
-pub async fn move_cards(
-    rt: &mut Runtime,
-    scope: &Scope,
-    project: i64,
-    column: i64,
-    ids: &[i64],
-) -> Result<()> {
-    let issues: Vec<serde_json::Value> = ids
-        .iter()
-        .enumerate()
-        .map(|(i, id)| serde_json::json!({ "issueID": id, "sorting": i }))
-        .collect();
-    let body = serde_json::to_vec(&serde_json::json!({ "issues": issues }))
-        .map_err(|e| Error::new(ErrorKind::Usage(format!("could not build the move: {e}"))))?;
-    let path = format!("{}/move", scope.column(project, column));
-    expect_ok(rt, Method::POST, &path, WebBody::Json(body)).await
-}
-
-/// Send, and turn anything that is not a success into an error.
-///
-/// Web routes answer a refused write with a JSON `{"message": …}` and a 4xx, or with a redirect
-/// back to the page. Neither is an `Err` from the transport's point of view, so without this a
-/// failed write would look exactly like a successful one.
-async fn expect_ok(rt: &mut Runtime, method: Method, path: &str, body: WebBody) -> Result<()> {
-    let resp = crate::web::request(rt, method, path, body).await?;
-    if resp.status.is_success() || resp.status.is_redirection() {
-        return Ok(());
-    }
-    let said = serde_json::from_slice::<serde_json::Value>(&resp.body)
-        .ok()
-        .and_then(|v| v["message"].as_str().map(str::to_owned));
-    Err(Error::new(ErrorKind::Usage(match said {
-        Some(m) => format!("Gitea refused that: {m}"),
-        None => format!("Gitea answered {} to {path}", resp.status),
-    })))
-}
-
 fn not_found(msg: &str) -> Error {
     Error::new(ErrorKind::Usage(msg.to_owned()))
 }
@@ -355,7 +382,7 @@ fn not_found(msg: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::project::parse::Column;
+    use crate::cmd::project::model::Column;
 
     fn board() -> Vec<Column> {
         ["Backlog", "To Do", "Doing", "Done"]

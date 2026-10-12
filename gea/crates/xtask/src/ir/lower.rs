@@ -991,11 +991,17 @@ fn pagination(query: &[Param], response_name: Option<&str>) -> Pagination {
 /// tracks the API's own structure rather than an arbitrary alphabetical split, so a new endpoint
 /// lands in the file a reader would look in.
 ///
+/// Gitea 28 added a projects API under `/user`, `/users/{username}`, `/orgs/{org}` and each
+/// repository, about fifteen operations per owner. The `/user` ones are all `userCurrent*`, so a
+/// first-letter split piles every one of them into `ops_user_c.rs`; giving `projects` its own
+/// bucket wherever it appears keeps the board API in one place under each owner.
+///
 /// Other groups are one file each. When a group busts the cap, the emitter fails and names this
 /// function; add a rule here rather than raising the cap.
 fn sub_bucket(group: &str, path: &str) -> String {
     if group != "repo" {
-        return "mod".to_owned();
+        let projects = path.split('/').any(|seg| seg == "projects");
+        return if projects { "projects" } else { "mod" }.to_owned();
     }
     let Some(rest) = path.strip_prefix("/repos/") else {
         return "misc".to_owned();
@@ -1019,6 +1025,7 @@ fn sub_bucket(group: &str, path: &str) -> String {
             "collaborators"
         }
         "wiki" => "wiki",
+        "projects" => "projects",
         _ => "misc",
     }
     .to_owned()
@@ -1149,9 +1156,9 @@ mod vendored {
         l.classify();
         let request_models = l.find_request_models();
 
-        // The seed set is 120 `$ref` bodies naming 81 definitions; the closure adds the nested
-        // ones (`CreateFileOptions.author: Identity`, `ChangeFilesOptions.files[]`).
-        assert_eq!(request_models.len(), 89, "{request_models:?}");
+        // The seed set is the 139 `$ref` bodies; the closure adds the nested definitions they
+        // reach (`CreateFileOptions.author: Identity`, `ChangeFilesOptions.files[]`).
+        assert_eq!(request_models.len(), 96, "{request_models:?}");
 
         let mut structs = 0;
         for name in &request_models {
@@ -1168,7 +1175,7 @@ mod vendored {
                 );
             }
         }
-        assert_eq!(structs, 88, "the 88 request-body structs");
+        assert_eq!(structs, 95, "the 95 request-body structs");
     }
 
     /// The other half: the response policy is unchanged, because weakening it would put an
@@ -1237,12 +1244,12 @@ mod vendored {
     }
 
     #[test]
-    fn four_hundred_and_eighty_two_operations_with_no_name_collisions() {
+    fn five_hundred_and_thirty_seven_operations_with_no_name_collisions() {
         // The M2 exit criterion. A collision found here costs an `overrides.toml` entry; the
         // same collision found after the emitters land costs a renamed public command.
         let ir = ir();
-        assert_eq!(ir.operations.len(), 482);
-        assert_eq!(ir.name_counts(), (482, 482));
+        assert_eq!(ir.operations.len(), 537);
+        assert_eq!(ir.name_counts(), (537, 537));
     }
 
     #[test]
@@ -1252,7 +1259,7 @@ mod vendored {
         let text =
             std::fs::read_to_string(crate::spec::name_lock_path(&crate::workspace_root())).unwrap();
         let locked: BTreeMap<String, crate::name_lock::Entry> = toml::from_str(&text).unwrap();
-        assert_eq!(locked.len(), 482);
+        assert_eq!(locked.len(), 537);
         for op in &ir().operations {
             let e = locked
                 .get(&op.op_id)
@@ -1390,12 +1397,12 @@ mod vendored {
         // revisiting rather than silently degrading every affected command to `--body-file`.
         //
         // The exact breakdown, so a spec bump that shifts it fails loudly:
-        //   120  $ref to a definition with typed properties  -> flags
+        //   139  $ref to a definition with typed properties  -> flags
         //     1  inline `type: string` (renderMarkdownRaw)    -> a bare String body
         // No body is a free-form object (Forgejo's `ForgeLike` was), so none is untyped JSON.
         let bodies: Vec<&Body> = ir().operations.iter().filter_map(|o| o.body.as_ref()).collect();
-        assert_eq!(bodies.len(), 121);
-        assert_eq!(bodies.iter().filter(|b| matches!(b.ty, RustType::Model(_))).count(), 120);
+        assert_eq!(bodies.len(), 140);
+        assert_eq!(bodies.iter().filter(|b| matches!(b.ty, RustType::Model(_))).count(), 139);
         assert_eq!(bodies.iter().filter(|b| b.ty == RustType::Json).count(), 0);
         assert_eq!(bodies.iter().filter(|b| b.ty == RustType::String).count(), 1);
 
@@ -1516,8 +1523,12 @@ mod tests {
         assert_eq!(sub_bucket("repo", "/repos/{owner}/{repo}/git/trees/{sha}"), "git");
         assert_eq!(sub_bucket("repo", "/repos/{owner}/{repo}"), "misc");
         assert_eq!(sub_bucket("repo", "/repos/search"), "misc");
-        // Only `repo` is large enough to need splitting today.
+        assert_eq!(sub_bucket("repo", "/repos/{owner}/{repo}/projects/{id}"), "projects");
+        // Outside `repo`, only the projects API is split out.
         assert_eq!(sub_bucket("user", "/user/keys"), "mod");
+        assert_eq!(sub_bucket("user", "/user/projects/{id}/columns"), "projects");
+        assert_eq!(sub_bucket("user", "/users/{username}/projects"), "projects");
+        assert_eq!(sub_bucket("org", "/orgs/{org}/projects"), "projects");
     }
 
     #[test]

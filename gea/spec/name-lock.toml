@@ -4,7 +4,7 @@
 # spec bump would change one, so a rename is always a reviewed, documented decision
 # rather than something that happens to people. See crates/xtask/src/name_lock.rs.
 #
-# spec: gitea v1.27.3, 482 operations
+# spec: gitea v28.1.0, 537 operations
 
 ActionsDisableWorkflow = { group = "workflow", command = "disable", fn = "disable" }
 ActionsDispatchWorkflow = { group = "workflow", command = "dispatch", fn = "dispatch" }
@@ -39,11 +39,14 @@ adminGetAllEmails = { group = "admin", command = "get-all-emails", fn = "get_all
 adminGetAllOrgs = { group = "admin", command = "get-all-orgs", fn = "get_all_orgs" }
 adminGetHook = { group = "admin", command = "get-hook", fn = "get_hook" }
 adminListHooks = { group = "admin", command = "list-hooks", fn = "list_hooks" }
+adminListPackages = { group = "admin", command = "list-packages", fn = "list_packages" }
 adminListUserBadges = { group = "admin", command = "list-user-badges", fn = "list_user_badges" }
 adminRenameUser = { group = "admin", command = "rename-user", fn = "rename_user" }
 adminSearchEmails = { group = "admin", command = "search-emails", fn = "search_emails" }
 adminSearchUsers = { group = "admin", command = "search-users", fn = "search_users" }
 adminUnadoptedList = { group = "admin", command = "unadopted-list", fn = "unadopted_list" }
+approveWorkflowRun = { group = "repo", command = "approve-workflow-run", fn = "approve_workflow_run" }
+cancelWorkflowRun = { group = "repo", command = "cancel-workflow-run", fn = "cancel_workflow_run" }
 createCurrentUserRepo = { group = "repo", command = "create-current-user-repo", fn = "create_current_user_repo" }
 createFork = { group = "repo", command = "create-fork", fn = "create_fork" }
 createOrgRepo = { group = "org", command = "create-org-repo", fn = "create_org_repo" }
@@ -68,6 +71,7 @@ deleteUserSecret = { group = "user", command = "delete-user-secret", fn = "delet
 deleteUserVariable = { group = "user", command = "delete-user-variable", fn = "delete_user_variable" }
 downloadActionsRunJobLogs = { group = "job", command = "logs", fn = "logs" }
 downloadArtifact = { group = "artifact", command = "download", fn = "download" }
+forceCancelWorkflowRun = { group = "repo", command = "force-cancel-workflow-run", fn = "force_cancel_workflow_run" }
 generateRepo = { group = "repo", command = "generate-repo", fn = "generate_repo" }
 getAdminRunner = { group = "admin", command = "get-admin-runner", fn = "get_admin_runner" }
 getAdminRunners = { group = "admin", command = "get-admin-runners", fn = "get_admin_runners" }
@@ -107,6 +111,7 @@ getVerificationToken = { group = "user", command = "get-verification-token", fn 
 getVersion = { group = "misc", command = "get-version", fn = "get_version" }
 getWorkflowJob = { group = "job", command = "view", fn = "view" }
 getWorkflowRunAttempt = { group = "run", command = "attempt", fn = "attempt" }
+getWorkflowRunLogs = { group = "repo", command = "get-workflow-run-logs", fn = "get_workflow_run_logs" }
 getWorkflowRuns = { group = "run", command = "list", fn = "list" }
 issueAddAssignees = { group = "issue", command = "add-assignees", fn = "add_assignees" }
 issueAddLabel = { group = "issue", command = "add-label", fn = "add_label" }
@@ -198,12 +203,15 @@ notifyNewAvailable = { group = "notify", command = "new-available", fn = "new_av
 notifyReadList = { group = "notify", command = "read-list", fn = "read_list" }
 notifyReadRepoList = { group = "notify", command = "read-repo-list", fn = "read_repo_list" }
 notifyReadThread = { group = "notify", command = "read-thread", fn = "read_thread" }
+orgAddIssueToProjectColumn = { group = "org", command = "add-issue-to-project-column", fn = "add_issue_to_project_column" }
 orgAddTeamMember = { group = "org", command = "add-team-member", fn = "add_team_member" }
 orgAddTeamRepository = { group = "org", command = "add-team-repository", fn = "add_team_repository" }
 orgConcealMember = { group = "org", command = "conceal-member", fn = "conceal_member" }
 orgCreate = { group = "org", command = "create", fn = "create" }
 orgCreateHook = { group = "org", command = "create-hook", fn = "create_hook" }
 orgCreateLabel = { group = "org", command = "create-label", fn = "create_label" }
+orgCreateProject = { group = "org", command = "create-project", fn = "create_project" }
+orgCreateProjectColumn = { group = "org", command = "create-project-column", fn = "create_project_column" }
 orgCreateRunnerRegistrationToken = { group = "org", command = "create-runner-registration-token", fn = "create_runner_registration_token" }
 orgCreateTeam = { group = "org", command = "create-team", fn = "create_team" }
 orgDelete = { group = "org", command = "delete", fn = "delete" }
@@ -211,16 +219,22 @@ orgDeleteAvatar = { group = "org", command = "delete-avatar", fn = "delete_avata
 orgDeleteHook = { group = "org", command = "delete-hook", fn = "delete_hook" }
 orgDeleteLabel = { group = "org", command = "delete-label", fn = "delete_label" }
 orgDeleteMember = { group = "org", command = "delete-member", fn = "delete_member" }
+orgDeleteProject = { group = "org", command = "delete-project", fn = "delete_project" }
+orgDeleteProjectColumn = { group = "org", command = "delete-project-column", fn = "delete_project_column" }
 orgDeleteRepos = { group = "org", command = "delete-repos", fn = "delete_repos" }
 orgDeleteTeam = { group = "org", command = "delete-team", fn = "delete_team" }
 orgEdit = { group = "org", command = "edit", fn = "edit" }
 orgEditHook = { group = "org", command = "edit-hook", fn = "edit_hook" }
 orgEditLabel = { group = "org", command = "edit-label", fn = "edit_label" }
+orgEditProject = { group = "org", command = "edit-project", fn = "edit_project" }
+orgEditProjectColumn = { group = "org", command = "edit-project-column", fn = "edit_project_column" }
 orgEditTeam = { group = "org", command = "edit-team", fn = "edit_team" }
 orgGet = { group = "org", command = "get", fn = "get" }
 orgGetAll = { group = "org", command = "get-all", fn = "get_all" }
 orgGetHook = { group = "org", command = "get-hook", fn = "get_hook" }
 orgGetLabel = { group = "org", command = "get-label", fn = "get_label" }
+orgGetProject = { group = "org", command = "get-project", fn = "get_project" }
+orgGetProjectColumn = { group = "org", command = "get-project-column", fn = "get_project_column" }
 orgGetTeam = { group = "org", command = "get-team", fn = "get_team" }
 orgGetUserPermissions = { group = "org", command = "get-user-permissions", fn = "get_user_permissions" }
 orgIsMember = { group = "org", command = "is-member", fn = "is_member" }
@@ -231,6 +245,9 @@ orgListCurrentUserOrgs = { group = "org", command = "list-current-user-orgs", fn
 orgListHooks = { group = "org", command = "list-hooks", fn = "list_hooks" }
 orgListLabels = { group = "org", command = "list-labels", fn = "list_labels" }
 orgListMembers = { group = "org", command = "list-members", fn = "list_members" }
+orgListProjectColumnIssues = { group = "org", command = "list-project-column-issues", fn = "list_project_column_issues" }
+orgListProjectColumns = { group = "org", command = "list-project-columns", fn = "list_project_columns" }
+orgListProjects = { group = "org", command = "list-projects", fn = "list_projects" }
 orgListPublicMembers = { group = "org", command = "list-public-members", fn = "list_public_members" }
 orgListRepos = { group = "org", command = "list-repos", fn = "list_repos" }
 orgListTeamActivityFeeds = { group = "org", command = "list-team-activity-feeds", fn = "list_team_activity_feeds" }
@@ -240,9 +257,13 @@ orgListTeamRepo = { group = "org", command = "list-team-repo", fn = "list_team_r
 orgListTeamRepos = { group = "org", command = "list-team-repos", fn = "list_team_repos" }
 orgListTeams = { group = "org", command = "list-teams", fn = "list_teams" }
 orgListUserOrgs = { group = "org", command = "list-user-orgs", fn = "list_user_orgs" }
+orgMoveProjectColumns = { group = "org", command = "move-project-columns", fn = "move_project_columns" }
+orgMoveProjectIssue = { group = "org", command = "move-project-issue", fn = "move_project_issue" }
 orgPublicizeMember = { group = "org", command = "publicize-member", fn = "publicize_member" }
+orgRemoveIssueFromProjectColumn = { group = "org", command = "remove-issue-from-project-column", fn = "remove_issue_from_project_column" }
 orgRemoveTeamMember = { group = "org", command = "remove-team-member", fn = "remove_team_member" }
 orgRemoveTeamRepository = { group = "org", command = "remove-team-repository", fn = "remove_team_repository" }
+orgSetDefaultProjectColumn = { group = "org", command = "set-default-project-column", fn = "set_default_project_column" }
 orgUpdateAvatar = { group = "org", command = "update-avatar", fn = "update_avatar" }
 organizationBlockUser = { group = "org", command = "organization-block-user", fn = "organization_block_user" }
 organizationCheckUserBlock = { group = "org", command = "organization-check-user-block", fn = "organization_check_user_block" }
@@ -255,6 +276,7 @@ renderMarkdown = { group = "misc", command = "render-markdown", fn = "render_mar
 renderMarkdownRaw = { group = "misc", command = "render-markdown-raw", fn = "render_markdown_raw" }
 renderMarkup = { group = "misc", command = "render-markup", fn = "render_markup" }
 repoAddCollaborator = { group = "repo", command = "add-collaborator", fn = "add_collaborator" }
+repoAddIssueToProjectColumn = { group = "repo", command = "add-issue-to-project-column", fn = "add_issue_to_project_column" }
 repoAddPushMirror = { group = "repo", command = "add-push-mirror", fn = "add_push_mirror" }
 repoAddTeam = { group = "repo", command = "add-team", fn = "add_team" }
 repoAddTopic = { group = "repo", command = "add-topic", fn = "add_topic" }
@@ -267,9 +289,12 @@ repoCheckTeam = { group = "repo", command = "check-team", fn = "check_team" }
 repoCompareDiff = { group = "repo", command = "compare-diff", fn = "compare_diff" }
 repoCreateBranch = { group = "repo", command = "create-branch", fn = "create_branch" }
 repoCreateBranchProtection = { group = "repo", command = "create-branch-protection", fn = "create_branch_protection" }
+repoCreateDeployToken = { group = "repo", command = "create-deploy-token", fn = "create_deploy_token" }
 repoCreateFile = { group = "repo", command = "create-file", fn = "create_file" }
 repoCreateHook = { group = "repo", command = "create-hook", fn = "create_hook" }
 repoCreateKey = { group = "repo", command = "create-key", fn = "create_key" }
+repoCreateProject = { group = "repo", command = "create-project", fn = "create_project" }
+repoCreateProjectColumn = { group = "repo", command = "create-project-column", fn = "create_project_column" }
 repoCreatePullRequest = { group = "repo", command = "create-pull-request", fn = "create_pull_request" }
 repoCreatePullReview = { group = "repo", command = "create-pull-review", fn = "create_pull_review" }
 repoCreatePullReviewCommentReply = { group = "repo", command = "create-pull-review-comment-reply", fn = "create_pull_review_comment_reply" }
@@ -290,6 +315,8 @@ repoDeleteFile = { group = "repo", command = "delete-file", fn = "delete_file" }
 repoDeleteGitHook = { group = "repo", command = "delete-git-hook", fn = "delete_git_hook" }
 repoDeleteHook = { group = "repo", command = "delete-hook", fn = "delete_hook" }
 repoDeleteKey = { group = "repo", command = "delete-key", fn = "delete_key" }
+repoDeleteProject = { group = "repo", command = "delete-project", fn = "delete_project" }
+repoDeleteProjectColumn = { group = "repo", command = "delete-project-column", fn = "delete_project_column" }
 repoDeletePullReview = { group = "repo", command = "delete-pull-review", fn = "delete_pull_review" }
 repoDeletePullReviewRequests = { group = "repo", command = "delete-pull-review-requests", fn = "delete_pull_review_requests" }
 repoDeletePushMirror = { group = "repo", command = "delete-push-mirror", fn = "delete_push_mirror" }
@@ -308,6 +335,8 @@ repoEdit = { group = "repo", command = "edit", fn = "edit" }
 repoEditBranchProtection = { group = "repo", command = "edit-branch-protection", fn = "edit_branch_protection" }
 repoEditGitHook = { group = "repo", command = "edit-git-hook", fn = "edit_git_hook" }
 repoEditHook = { group = "repo", command = "edit-hook", fn = "edit_hook" }
+repoEditProject = { group = "repo", command = "edit-project", fn = "edit_project" }
+repoEditProjectColumn = { group = "repo", command = "edit-project-column", fn = "edit_project_column" }
 repoEditPullRequest = { group = "repo", command = "edit-pull-request", fn = "edit_pull_request" }
 repoEditRelease = { group = "repo", command = "edit-release", fn = "edit_release" }
 repoEditReleaseAttachment = { group = "repo", command = "edit-release-attachment", fn = "edit_release_attachment" }
@@ -337,6 +366,8 @@ repoGetLanguages = { group = "repo", command = "get-languages", fn = "get_langua
 repoGetLatestRelease = { group = "repo", command = "get-latest-release", fn = "get_latest_release" }
 repoGetLicenses = { group = "repo", command = "get-licenses", fn = "get_licenses" }
 repoGetNote = { group = "repo", command = "get-note", fn = "get_note" }
+repoGetProject = { group = "repo", command = "get-project", fn = "get_project" }
+repoGetProjectColumn = { group = "repo", command = "get-project-column", fn = "get_project_column" }
 repoGetPullRequest = { group = "repo", command = "get-pull-request", fn = "get_pull_request" }
 repoGetPullRequestByBaseHead = { group = "repo", command = "get-pull-request-by-base-head", fn = "get_pull_request_by_base_head" }
 repoGetPullRequestCommits = { group = "repo", command = "get-pull-request-commits", fn = "get_pull_request_commits" }
@@ -369,6 +400,9 @@ repoListHooks = { group = "repo", command = "list-hooks", fn = "list_hooks" }
 repoListKeys = { group = "repo", command = "list-keys", fn = "list_keys" }
 repoListPinnedIssues = { group = "repo", command = "list-pinned-issues", fn = "list_pinned_issues" }
 repoListPinnedPullRequests = { group = "repo", command = "list-pinned-pull-requests", fn = "list_pinned_pull_requests" }
+repoListProjectColumnIssues = { group = "repo", command = "list-project-column-issues", fn = "list_project_column_issues" }
+repoListProjectColumns = { group = "repo", command = "list-project-columns", fn = "list_project_columns" }
+repoListProjects = { group = "repo", command = "list-projects", fn = "list_projects" }
 repoListPullRequests = { group = "repo", command = "list-pull-requests", fn = "list_pull_requests" }
 repoListPullReviews = { group = "repo", command = "list-pull-reviews", fn = "list_pull_reviews" }
 repoListPushMirrors = { group = "repo", command = "list-push-mirrors", fn = "list_push_mirrors" }
@@ -386,12 +420,16 @@ repoMergePullRequest = { group = "repo", command = "merge-pull-request", fn = "m
 repoMergeUpstream = { group = "repo", command = "merge-upstream", fn = "merge_upstream" }
 repoMigrate = { group = "repo", command = "migrate", fn = "migrate" }
 repoMirrorSync = { group = "repo", command = "mirror-sync", fn = "mirror_sync" }
+repoMoveProjectColumns = { group = "repo", command = "move-project-columns", fn = "move_project_columns" }
+repoMoveProjectIssue = { group = "repo", command = "move-project-issue", fn = "move_project_issue" }
 repoNewPinAllowed = { group = "repo", command = "new-pin-allowed", fn = "new_pin_allowed" }
 repoPullRequestIsMerged = { group = "repo", command = "pull-request-is-merged", fn = "pull_request_is_merged" }
 repoPushMirrorSync = { group = "repo", command = "push-mirror-sync", fn = "push_mirror_sync" }
+repoRemoveIssueFromProjectColumn = { group = "repo", command = "remove-issue-from-project-column", fn = "remove_issue_from_project_column" }
 repoRenameBranch = { group = "repo", command = "rename-branch", fn = "rename_branch" }
 repoResolvePullReviewComment = { group = "repo", command = "resolve-pull-review-comment", fn = "resolve_pull_review_comment" }
 repoSearch = { group = "repo", command = "search", fn = "search" }
+repoSetDefaultProjectColumn = { group = "repo", command = "set-default-project-column", fn = "set_default_project_column" }
 repoSigningKey = { group = "repo", command = "signing-key", fn = "signing_key" }
 repoSigningKeySSH = { group = "repo", command = "signing-key-ssh", fn = "signing_key_ssh" }
 repoSubmitPullReview = { group = "repo", command = "submit-pull-review", fn = "submit_pull_review" }
@@ -433,28 +471,44 @@ userCreateHook = { group = "user", command = "create-hook", fn = "create_hook" }
 userCreateOAuth2Application = { group = "user", command = "create-oauth2-application", fn = "create_oauth2_application" }
 userCreateRunnerRegistrationToken = { group = "user", command = "create-runner-registration-token", fn = "create_runner_registration_token" }
 userCreateToken = { group = "user", command = "create-token", fn = "create_token" }
+userCurrentAddIssueToProjectColumn = { group = "user", command = "current-add-issue-to-project-column", fn = "current_add_issue_to_project_column" }
 userCurrentCheckFollowing = { group = "user", command = "current-check-following", fn = "current_check_following" }
 userCurrentCheckStarring = { group = "user", command = "current-check-starring", fn = "current_check_starring" }
 userCurrentCheckSubscription = { group = "user", command = "current-check-subscription", fn = "current_check_subscription" }
+userCurrentCreateProject = { group = "user", command = "current-create-project", fn = "current_create_project" }
+userCurrentCreateProjectColumn = { group = "user", command = "current-create-project-column", fn = "current_create_project_column" }
 userCurrentDeleteFollow = { group = "user", command = "current-delete-follow", fn = "current_delete_follow" }
 userCurrentDeleteGPGKey = { group = "user", command = "current-delete-gpg-key", fn = "current_delete_gpg_key" }
 userCurrentDeleteKey = { group = "user", command = "current-delete-key", fn = "current_delete_key" }
+userCurrentDeleteProject = { group = "user", command = "current-delete-project", fn = "current_delete_project" }
+userCurrentDeleteProjectColumn = { group = "user", command = "current-delete-project-column", fn = "current_delete_project_column" }
 userCurrentDeleteStar = { group = "user", command = "current-delete-star", fn = "current_delete_star" }
 userCurrentDeleteSubscription = { group = "user", command = "current-delete-subscription", fn = "current_delete_subscription" }
+userCurrentEditProject = { group = "user", command = "current-edit-project", fn = "current_edit_project" }
+userCurrentEditProjectColumn = { group = "user", command = "current-edit-project-column", fn = "current_edit_project_column" }
 userCurrentGetGPGKey = { group = "user", command = "current-get-gpg-key", fn = "current_get_gpg_key" }
 userCurrentGetKey = { group = "user", command = "current-get-key", fn = "current_get_key" }
+userCurrentGetProject = { group = "user", command = "current-get-project", fn = "current_get_project" }
+userCurrentGetProjectColumn = { group = "user", command = "current-get-project-column", fn = "current_get_project_column" }
 userCurrentListFollowers = { group = "user", command = "current-list-followers", fn = "current_list_followers" }
 userCurrentListFollowing = { group = "user", command = "current-list-following", fn = "current_list_following" }
 userCurrentListGPGKeys = { group = "user", command = "current-list-gpg-keys", fn = "current_list_gpg_keys" }
 userCurrentListKeys = { group = "user", command = "current-list-keys", fn = "current_list_keys" }
+userCurrentListProjectColumnIssues = { group = "user", command = "current-list-project-column-issues", fn = "current_list_project_column_issues" }
+userCurrentListProjectColumns = { group = "user", command = "current-list-project-columns", fn = "current_list_project_columns" }
+userCurrentListProjects = { group = "user", command = "current-list-projects", fn = "current_list_projects" }
 userCurrentListRepos = { group = "user", command = "current-list-repos", fn = "current_list_repos" }
 userCurrentListStarred = { group = "user", command = "current-list-starred", fn = "current_list_starred" }
 userCurrentListSubscriptions = { group = "user", command = "current-list-subscriptions", fn = "current_list_subscriptions" }
+userCurrentMoveProjectColumns = { group = "user", command = "current-move-project-columns", fn = "current_move_project_columns" }
+userCurrentMoveProjectIssue = { group = "user", command = "current-move-project-issue", fn = "current_move_project_issue" }
 userCurrentPostGPGKey = { group = "user", command = "current-post-gpg-key", fn = "current_post_gpg_key" }
 userCurrentPostKey = { group = "user", command = "current-post-key", fn = "current_post_key" }
 userCurrentPutFollow = { group = "user", command = "current-put-follow", fn = "current_put_follow" }
 userCurrentPutStar = { group = "user", command = "current-put-star", fn = "current_put_star" }
 userCurrentPutSubscription = { group = "user", command = "current-put-subscription", fn = "current_put_subscription" }
+userCurrentRemoveIssueFromProjectColumn = { group = "user", command = "current-remove-issue-from-project-column", fn = "current_remove_issue_from_project_column" }
+userCurrentSetDefaultProjectColumn = { group = "user", command = "current-set-default-project-column", fn = "current_set_default_project_column" }
 userCurrentTrackedTimes = { group = "user", command = "current-tracked-times", fn = "current_tracked_times" }
 userDeleteAccessToken = { group = "user", command = "delete-access-token", fn = "delete_access_token" }
 userDeleteAvatar = { group = "user", command = "delete-avatar", fn = "delete_avatar" }
@@ -478,6 +532,7 @@ userListFollowing = { group = "user", command = "list-following", fn = "list_fol
 userListGPGKeys = { group = "user", command = "list-gpg-keys", fn = "list_gpg_keys" }
 userListHooks = { group = "user", command = "list-hooks", fn = "list_hooks" }
 userListKeys = { group = "user", command = "list-keys", fn = "list_keys" }
+userListProjects = { group = "user", command = "list-projects", fn = "list_projects" }
 userListRepos = { group = "user", command = "list-repos", fn = "list_repos" }
 userListStarred = { group = "user", command = "list-starred", fn = "list_starred" }
 userListSubscriptions = { group = "user", command = "list-subscriptions", fn = "list_subscriptions" }

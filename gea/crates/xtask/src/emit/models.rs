@@ -1055,10 +1055,10 @@ mod vendored {
     }
 
     #[test]
-    fn the_seventeen_open_enums_are_all_emitted() {
+    fn the_twenty_two_open_enums_are_all_emitted() {
         let c = &file("generated/enums.rs").contents;
         assert_eq!(c.matches("crate::open_enum! {").count(), ir().open_enums.len());
-        assert_eq!(ir().open_enums.len(), 17);
+        assert_eq!(ir().open_enums.len(), 22);
     }
 }
 

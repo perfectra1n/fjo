@@ -23,9 +23,9 @@
 //! - **enum / date-time / int64 / uint64** — schema nodes anywhere inside `definitions`,
 //!   found by [`crate::swagger::Schema::walk`]. This includes array `items`, map values, and
 //!   definitions that are themselves a scalar alias (`Duration`, `TimeStamp`). Counting only
-//!   top-level properties undercounts int64 against the 174 this reports.
+//!   top-level properties undercounts int64 against the 179 this reports.
 //! - **defs with required** — definitions declaring a non-empty `required` list, top level
-//!   only. Only 38 of 222 do, which is why nearly every generated field is `#[serde(default)]`.
+//!   only. Only 43 of 225 do, which is why nearly every generated field is `#[serde(default)]`.
 
 use std::collections::BTreeMap;
 
@@ -33,7 +33,7 @@ use crate::Result;
 use crate::swagger::{ParamIn, Spec};
 
 /// The version these expectations were verified against.
-pub const EXPECTED_VERSION: &str = "1.27.3";
+pub const EXPECTED_VERSION: &str = "28.1.0";
 
 pub struct Stats {
     pub paths: usize,
@@ -55,7 +55,7 @@ pub struct Stats {
     pub tag_counts: BTreeMap<String, usize>,
 }
 
-/// The independently verified counts for Gitea v1.27.3.
+/// The independently verified counts for Gitea v28.1.0.
 struct Expected {
     paths: usize,
     operations: usize,
@@ -75,30 +75,30 @@ struct Expected {
 }
 
 const EXPECTED: Expected = Expected {
-    paths: 308,
-    operations: 482,
-    definitions: 222,
+    paths: 342,
+    operations: 537,
+    definitions: 225,
     tags: 9,
-    path_params: 956,
-    query_params: 412,
-    body_params: 121,
+    path_params: 1091,
+    query_params: 443,
+    body_params: 140,
     form_data_params: 3,
-    enum_properties: 37,
-    date_time_props: 101,
-    int64_props: 174,
+    enum_properties: 42,
+    date_time_props: 105,
+    int64_props: 179,
     uint64_props: 2,
-    defs_with_required: 38,
+    defs_with_required: 43,
     polymorphism: 0,
     tag_counts: &[
-        ("admin", 32),
+        ("admin", 33),
         ("issue", 72),
         ("miscellaneous", 14),
         ("notification", 7),
-        ("organization", 67),
+        ("organization", 83),
         ("package", 9),
-        ("repository", 202),
+        ("repository", 222),
         ("settings", 4),
-        ("user", 76),
+        ("user", 93),
     ],
 };
 
@@ -291,11 +291,11 @@ mod tests {
     /// The layout the milestone specifies, verbatim. A test rather than a comment because the
     /// column widths are the sort of thing a well-meaning cleanup silently reflows.
     const GOLDEN: &str = "\
-paths                308      operations         482      definitions        222
-tags                   9      path params        956      query params       412
-body params          121      formData params      3      enum properties     37
-date-time props      101      int64 props        174      uint64 props         2
-defs with required    38      allOf/oneOf/anyOf/not/discriminator   0
+paths                342      operations         537      definitions        225
+tags                   9      path params       1091      query params       443
+body params          140      formData params      3      enum properties     42
+date-time props      105      int64 props        179      uint64 props         2
+defs with required    43      allOf/oneOf/anyOf/not/discriminator   0
 ";
 
     fn known_good() -> Stats {

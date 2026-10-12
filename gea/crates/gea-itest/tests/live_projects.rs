@@ -3,7 +3,8 @@
 //! # Why none of this can be covered by a `FakeTransport`
 //!
 //! Everything layer 0 rests on is a fact about Gitea that no specification states, because
-//! Projects has no REST API and the routes behind the board UI are not described anywhere. A
+//! the routes behind the board UI are not described anywhere (Projects had no REST API at all
+//! before Gitea 28; the one 28 added is driven at the end of this file). A
 //! mock answers with whatever the test author believed, so it agrees with itself by
 //! construction — and the whole risk of this layer is that the author's belief is wrong. Four
 //! beliefs in particular are load-bearing, and each was wrong at least once while this was being
@@ -187,13 +188,16 @@ fn password_or_skip(inst: &Instance) -> Option<&'static str> {
     }
 }
 
-/// The whole point of the layer: a credential that reaches a route the API does not have.
+/// The layer's credential: a web session reaches the board page an API token cannot.
 ///
-/// Deliberately asserts the *negative* first. If `/api/v1` could serve a board, none of this
-/// code would need to exist, and a future Gitea that adds the endpoint should make this test
-/// fail loudly so the layer can be retired rather than silently kept.
+/// This used to assert the *negative* first — that `/api/v1` served no board — so a Gitea that
+/// added the endpoint would fail here rather than leave layer 0 silently kept. Gitea 28 did add
+/// it, and the premise now reads the other way round: the API serves projects, so `gea project`
+/// is retirable onto layer 2 (`gea raw repo list-projects` and friends, driven in
+/// `projects_are_reachable_through_the_rest_api_at_every_owner`). Until that re-targeting lands,
+/// the session half below is still what `gea project` stands on.
 #[test]
-fn the_api_has_no_projects_endpoint_but_the_web_session_reaches_one() {
+fn the_web_session_reaches_the_board_and_the_api_now_does_too() {
     let inst = instance_or_skip!();
     cover!(porcelain: ["auth login"]);
     let Some(pass) = password_or_skip(inst) else { return };
@@ -201,14 +205,8 @@ fn the_api_has_no_projects_endpoint_but_the_web_session_reaches_one() {
     let repo = TestRepo::create_initialized(inst, "web-session");
     enable_projects(&repo);
 
-    // The premise. If this starts returning 200, upstream shipped the API and layer 0's
-    // project half is retirable -- see the retirement note in docs/layers.md.
-    let (api_code, _) = repo.api("GET", "/projects", None);
-    assert!(
-        !(200..300).contains(&api_code),
-        "the REST API unexpectedly served a projects endpoint ({api_code}); if upstream has \
-         added it, layer 0's project half is retirable -- see docs/layers.md"
-    );
+    let (api_code, body) = repo.api("GET", "/projects", None);
+    assert_eq!(api_code, 200, "Gitea 28 serves projects over the REST API: {body}");
 
     let s = Session::login(inst, "reaches", pass);
     let (code, out, err) = s.run(&["web", "GET", &format!("{}/projects", repo.slug()), "-i"]);
@@ -236,8 +234,6 @@ fn a_board_round_trips_through_the_porcelain() {
         "project card move",
         "project delete"
     ]);
-    let Some(pass) = password_or_skip(inst) else { return };
-
     let repo = TestRepo::create_initialized(inst, "board");
     enable_projects(&repo);
     let (code, body) = repo.api(
@@ -247,16 +243,15 @@ fn a_board_round_trips_through_the_porcelain() {
     );
     assert!((200..300).contains(&code), "seeding an issue failed ({code}): {body}");
 
-    let s = Session::login(inst, "board", pass);
     let r = repo.flag();
     let repo_flag: [&str; 2] = [r[0].as_str(), r[1].as_str()];
 
     let run = |args: &[&str]| {
         let mut full = args.to_vec();
         full.extend_from_slice(&repo_flag);
-        let (code, out, err) = s.run(&full);
-        assert_eq!(code, Some(0), "`gea {}` failed\nstdout: {out}\nstderr: {err}", args.join(" "));
-        out
+        let run = inst.gea(&full);
+        run.assert_ok(&format!("gea {}", args.join(" ")));
+        run.stdout.clone()
     };
 
     run(&["project", "create", "Roadmap", "--from-template", "basic-kanban"]);
@@ -267,9 +262,8 @@ fn a_board_round_trips_through_the_porcelain() {
     run(&["project", "card", "add", "1", "--project", "Roadmap"]);
     run(&["project", "card", "move", "1", "--to", "Review"]);
 
-    // Read the board back through the parser, and assert on the structure rather than on a
-    // substring: a parser that found nothing would still "contain" very little and pass a
-    // laxer check.
+    // Assert on the structure rather than on a substring: a board that came back empty would
+    // still "contain" very little and pass a laxer check.
     let json = run(&["project", "view", "Roadmap", "--json"]);
     let board: serde_json::Value = serde_json::from_str(&json)
         .unwrap_or_else(|e| panic!("view --json is not JSON: {e}\n{json}"));
@@ -285,12 +279,9 @@ fn a_board_round_trips_through_the_porcelain() {
 
     let cards = review["cards"].as_array().expect("a cards array");
     assert_eq!(cards.len(), 1, "the card should have moved into Review:\n{json}");
-    // The title is entity-escaped in the markup; a parser that skipped decoding would return
-    // `Fix &lt;script&gt; &amp; &#34;quotes&#34;` and look almost right.
-    assert_eq!(
-        cards[0]["title"], "Fix <script> & \"quotes\"",
-        "card titles must be entity-decoded"
-    );
+    // Markup-hostile on purpose: the board used to be scraped from HTML, where this title is
+    // entity-escaped, and it must still arrive exactly as written.
+    assert_eq!(cards[0]["title"], "Fix <script> & \"quotes\"", "the card title was mangled");
 
     run(&["project", "delete", "Roadmap", "--yes"]);
 }
@@ -305,21 +296,18 @@ fn a_board_round_trips_through_the_porcelain() {
 fn adding_a_card_to_a_second_board_leaves_it_on_the_first() {
     let inst = instance_or_skip!();
     cover!(porcelain: ["project create", "project card add", "project view"]);
-    let Some(pass) = password_or_skip(inst) else { return };
-
     let repo = TestRepo::create_initialized(inst, "twoboards");
     enable_projects(&repo);
     let (code, body) = repo.api("POST", "/issues", Some(r#"{"title":"on two boards"}"#));
     assert!((200..300).contains(&code), "seeding an issue failed ({code}): {body}");
 
-    let s = Session::login(inst, "twoboards", pass);
     let r = repo.flag();
     let run = |args: &[&str]| {
         let mut full = args.to_vec();
         full.extend_from_slice(&[r[0].as_str(), r[1].as_str()]);
-        let (code, out, err) = s.run(&full);
-        assert_eq!(code, Some(0), "`gea {}` failed\nstdout: {out}\nstderr: {err}", args.join(" "));
-        out
+        let run = inst.gea(&full);
+        run.assert_ok(&format!("gea {}", args.join(" ")));
+        run.stdout.clone()
     };
 
     for board in ["First", "Second"] {
@@ -424,25 +412,17 @@ fn a_raw_json_move_is_accepted_without_any_csrf_token() {
     let s = Session::login(inst, "rawmove", pass);
     let r = repo.flag();
 
-    // Build a board through the porcelain, then drive the move through layer 0 directly.
-    let (code, _, err) = s.run(&[
-        "project",
-        "create",
-        "Raw",
-        "--from-template",
-        "basic-kanban",
-        r[0].as_str(),
-        r[1].as_str(),
-    ]);
-    assert_eq!(code, Some(0), "creating the board failed: {err}");
+    // Build a board through the porcelain (over the API, with the token), then drive the move
+    // through layer 0 with the session.
+    inst.gea(["project", "create", "Raw", "--from-template", "basic-kanban", &r[0], &r[1]])
+        .assert_ok("gea project create");
 
     // The issue has to be ON the board before it can be moved between columns: Gitea's
     // MoveIssues answers 500, not 4xx, when asked to move an issue the project does not hold.
-    let (code, _, err) =
-        s.run(&["project", "card", "add", "1", "--project", "Raw", r[0].as_str(), r[1].as_str()]);
-    assert_eq!(code, Some(0), "putting the issue on the board failed: {err}");
+    inst.gea(["project", "card", "add", "1", "--project", "Raw", &r[0], &r[1]])
+        .assert_ok("gea project card add");
 
-    let (_, ids, _) = s.run(&["project", "view", "Raw", "--json", r[0].as_str(), r[1].as_str()]);
+    let ids = inst.gea(["project", "view", "Raw", "--json", &r[0], &r[1]]).stdout.clone();
     let board: serde_json::Value = serde_json::from_str(&ids).unwrap_or_default();
     let project_id = board["id"].as_i64().unwrap_or(1);
     let column_id =
@@ -473,19 +453,16 @@ fn a_boards_state_and_its_columns_can_be_changed_and_removed() {
         "project column delete",
         "project list"
     ]);
-    let Some(pass) = password_or_skip(inst) else { return };
-
     let repo = TestRepo::create_initialized(inst, "lifecycle");
-    let s = Session::login(inst, "lifecycle", pass);
     let r = repo.flag();
     let repo_flag: [&str; 2] = [r[0].as_str(), r[1].as_str()];
 
     let run = |args: &[&str]| {
         let mut full = args.to_vec();
         full.extend_from_slice(&repo_flag);
-        let (code, out, err) = s.run(&full);
-        assert_eq!(code, Some(0), "`gea {}` failed\nstdout: {out}\nstderr: {err}", args.join(" "));
-        out
+        let run = inst.gea(&full);
+        run.assert_ok(&format!("gea {}", args.join(" ")));
+        run.stdout.clone()
     };
 
     run(&["project", "create", "Ops", "--from-template", "basic-kanban"]);
@@ -514,8 +491,8 @@ fn a_boards_state_and_its_columns_can_be_changed_and_removed() {
     assert_eq!(titles.last(), Some(&"Icebox"), "--last should put it at the end: {titles:?}");
 
     // Icebox is the renamed Backlog, which is the board's DEFAULT column. Gitea will not
-    // delete that one, and answers a bare 500 rather than saying so, so gea refuses first.
-    let (code, _, err) = s.run(&[
+    // delete that one, so gea refuses first and says why.
+    let refused = inst.gea([
         "project",
         "column",
         "delete",
@@ -525,6 +502,7 @@ fn a_boards_state_and_its_columns_can_be_changed_and_removed() {
         repo_flag[0],
         repo_flag[1],
     ]);
+    let (code, err) = (refused.code, refused.stderr.clone());
     assert_ne!(code, Some(0), "deleting the default column must be refused");
     assert!(
         err.contains("default column"),
@@ -591,4 +569,318 @@ fn a_session_can_be_exported_and_imported_on_another_machine() {
     let (code, out, err) = to.run(&["web", "GET", &format!("{}/projects", repo.slug()), "-i"]);
     assert_eq!(code, Some(0), "the imported session should work\nstdout: {out}\nstderr: {err}");
     assert!(out.contains("200"), "expected the board page:\n{out}");
+}
+
+/// `--owner` names an organization or a user, and the API addresses each differently.
+///
+/// Bug this prevents: `--owner` resolving to the wrong route family, which answers a 404 that
+/// reads exactly like "no such board". An organization's boards live under `/orgs`, the
+/// signed-in user's under `/user`, and another user's can only be listed — a change to one has
+/// to be refused up front with the reason, not sent to a route that cannot honour it.
+#[test]
+fn owner_boards_resolve_to_the_organization_the_user_or_a_read_only_listing() {
+    let inst = instance_or_skip!();
+    cover!(porcelain: ["project create", "project list", "project close", "project delete"]);
+
+    let org = ScratchOrg::create(inst, "owner-board-org");
+    let me = inst.user.clone();
+    for (owner, title) in [(org.name.as_str(), "Org board"), (me.as_str(), "My board")] {
+        inst.gea(["project", "create", title, "--owner", owner]).assert_ok("gea project create");
+        let listed = inst.gea(["project", "list", "--owner", owner, "--json", "title"]);
+        listed.assert_ok("gea project list --owner");
+        let titles: Vec<String> = listed
+            .json()
+            .as_array()
+            .expect("an array")
+            .iter()
+            .filter_map(|b| b["title"].as_str().map(str::to_owned))
+            .collect();
+        assert!(titles.contains(&title.to_owned()), "{owner} does not list {title}: {titles:?}");
+        inst.gea(["project", "close", title, "--owner", owner]).assert_ok("gea project close");
+        inst.gea(["project", "delete", title, "--owner", owner, "--yes"])
+            .assert_ok("gea project delete");
+    }
+
+    // Another user: the public listing works, a change is refused before any request is sent.
+    let other = inst.scoped_user("board-other", &["read:user"]).expect("a second user");
+    let other_login = other.name.clone();
+    inst.gea(["project", "list", "--owner", &other_login]).assert_ok("listing another's boards");
+    let refused = inst.gea(["project", "create", "Theirs", "--owner", &other_login]);
+    assert_ne!(refused.code, Some(0), "creating a board for another user must be refused");
+    assert!(
+        refused.stderr.contains("only a user manage their own boards"),
+        "the refusal should say why:\n{}",
+        refused.stderr
+    );
+}
+
+// ------------------------------------------------------------------------- the REST projects API
+
+/// Where a project lives, and how the 16 commands that manage it are addressed there.
+///
+/// Gitea 28 serves the same board API under three owners, and the generated commands differ
+/// only in group, command prefix and leading path arguments: `gea raw repo create-project O R`,
+/// `gea raw org create-project ORG`, `gea raw user current-create-project`. One driver therefore
+/// covers all three, which is also the strongest check that they really are the same API.
+struct Owner {
+    group: &'static str,
+    prefix: &'static str,
+    /// The positional arguments that precede the project id.
+    leading: Vec<String>,
+    /// The projects collection, relative to `/api/v1`, for out-of-band reads.
+    base: String,
+}
+
+impl Owner {
+    fn raw(&self, inst: &Instance, command: &str, rest: &[&str]) -> gea_itest::Run {
+        let command = format!("{}{command}", self.prefix);
+        let mut args: Vec<&str> = vec!["raw", self.group, &command];
+        args.extend(self.leading.iter().map(String::as_str));
+        args.extend_from_slice(rest);
+        inst.gea(args)
+    }
+
+    fn get(&self, inst: &Instance, path: &str) -> (i32, serde_json::Value) {
+        let (code, body) = inst.api("GET", &format!("{}/{path}", self.base), None);
+        (code, serde_json::from_str(&body).unwrap_or(serde_json::Value::Null))
+    }
+}
+
+/// A project that deletes itself, so a failed assertion does not leave a board on the shared
+/// admin account — the one owner here that outlives the test.
+struct ProjectGuard<'a> {
+    inst: &'a Instance,
+    path: String,
+}
+
+impl Drop for ProjectGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.inst.api("DELETE", &self.path, None);
+    }
+}
+
+/// An organization with one repository, both deleted on drop, repository first because Gitea
+/// refuses to delete an organization that still owns one.
+struct ScratchOrg<'a> {
+    inst: &'a Instance,
+    name: String,
+    repo: String,
+}
+
+impl<'a> ScratchOrg<'a> {
+    fn create(inst: &'a Instance, prefix: &str) -> Self {
+        let name = inst.unique_repo_name(prefix);
+        let (code, body) = inst.api("POST", "orgs", Some(&format!(r#"{{"username":"{name}"}}"#)));
+        assert!((200..300).contains(&code), "creating the org {name} failed ({code}): {body}");
+        let org = Self { inst, name, repo: "board".to_owned() };
+        let (code, body) = inst.api(
+            "POST",
+            &format!("orgs/{}/repos", org.name),
+            Some(r#"{"name":"board","auto_init":true}"#),
+        );
+        assert!((200..300).contains(&code), "creating the org repository failed ({code}): {body}");
+        org
+    }
+}
+
+impl Drop for ScratchOrg<'_> {
+    fn drop(&mut self) {
+        let _ = self.inst.api("DELETE", &format!("repos/{}/{}", self.name, self.repo), None);
+        let _ = self.inst.api("DELETE", &format!("orgs/{}", self.name), None);
+    }
+}
+
+/// Open an issue out of band and return its **global** id.
+///
+/// The project routes take the database id, not the `#N` a user sees — the spec says so on
+/// every `issue_id`, and passing the index would silently target whichever issue in the whole
+/// instance happens to have that id.
+fn open_issue(inst: &Instance, repo_slug: &str) -> i64 {
+    let (code, body) =
+        inst.api("POST", &format!("repos/{repo_slug}/issues"), Some(r#"{"title":"card"}"#));
+    assert!((200..300).contains(&code), "opening an issue failed ({code}): {body}");
+    let issue: serde_json::Value = serde_json::from_str(&body).expect("an issue");
+    issue["id"].as_i64().unwrap_or_else(|| panic!("no issue id in {issue}"))
+}
+
+fn ids(v: &serde_json::Value) -> Vec<i64> {
+    v.as_array()
+        .unwrap_or_else(|| panic!("expected an array, got {v}"))
+        .iter()
+        .filter_map(|x| x["id"].as_i64())
+        .collect()
+}
+
+/// Every one of the 16 project commands at one owner, each mutation read back out of band.
+fn drive_project_lifecycle(inst: &Instance, owner: &Owner, issue: i64) {
+    let issue = issue.to_string();
+
+    let project = owner
+        .raw(inst, "create-project", &["--title", "Roadmap", "--description", "the plan"])
+        .assert_ok("create-project")
+        .json();
+    let pid = project["id"].as_i64().unwrap_or_else(|| panic!("no project id in {project}"));
+    let _guard = ProjectGuard { inst, path: format!("{}/{pid}", owner.base) };
+    let p = pid.to_string();
+
+    let listed = owner.raw(inst, "list-projects", &[]).assert_ok("list-projects").json();
+    assert!(ids(&listed).contains(&pid), "the new project is not listed: {listed}");
+
+    let got = owner.raw(inst, "get-project", &[&p]).assert_ok("get-project").json();
+    assert_eq!(got["title"], "Roadmap", "{got}");
+
+    // Close and reopen: `state` is the one enum in the body, and a closed board refuses cards.
+    owner
+        .raw(inst, "edit-project", &[&p, "--title", "Roadmap 2", "--state", "closed"])
+        .assert_ok("edit-project");
+    let (_, back) = owner.get(inst, &p);
+    assert_eq!(back["title"], "Roadmap 2", "the rename did not stick: {back}");
+    assert_eq!(back["state"], "closed", "the close did not stick: {back}");
+    owner.raw(inst, "edit-project", &[&p, "--state", "open"]).assert_ok("edit-project (reopen)");
+
+    let todo = owner
+        .raw(inst, "create-project-column", &[&p, "--title", "Todo", "--color", "#00ff00"])
+        .assert_ok("create-project-column")
+        .json();
+    let done = owner
+        .raw(inst, "create-project-column", &[&p, "--title", "Done"])
+        .assert_ok("create-project-column")
+        .json();
+    let (a, b) = (todo["id"].as_i64().unwrap(), done["id"].as_i64().unwrap());
+    let (sa, sb) = (a.to_string(), b.to_string());
+
+    let columns =
+        owner.raw(inst, "list-project-columns", &[&p]).assert_ok("list-project-columns").json();
+    assert!(ids(&columns).contains(&a) && ids(&columns).contains(&b), "{columns}");
+
+    let got =
+        owner.raw(inst, "get-project-column", &[&p, &sa]).assert_ok("get-project-column").json();
+    assert_eq!(got["title"], "Todo", "{got}");
+
+    owner
+        .raw(inst, "edit-project-column", &[&p, &sa, "--title", "Doing"])
+        .assert_ok("edit-project-column");
+    let (_, back) = owner.get(inst, &format!("{p}/columns/{sa}"));
+    assert_eq!(back["title"], "Doing", "the column rename did not stick: {back}");
+
+    // `column_ids` is a body `[]int64`: sent as strings, the server rejects the whole move.
+    let (_, before) = owner.get(inst, &format!("{p}/columns"));
+    let mut order = ids(&before);
+    order.reverse();
+    let mut args: Vec<String> = vec![p.clone()];
+    for id in &order {
+        args.extend(["--column-ids".to_owned(), id.to_string()]);
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    owner.raw(inst, "move-project-columns", &args).assert_ok("move-project-columns");
+    let (_, after) = owner.get(inst, &format!("{p}/columns"));
+    assert_eq!(ids(&after), order, "the columns were not reordered: {after}");
+
+    owner
+        .raw(inst, "set-default-project-column", &[&p, &sb])
+        .assert_ok("set-default-project-column");
+    let (_, back) = owner.get(inst, &format!("{p}/columns/{sb}"));
+    assert_eq!(back["default"], true, "Done is not the default column: {back}");
+
+    owner
+        .raw(inst, "add-issue-to-project-column", &[&p, &sa, &issue])
+        .assert_ok("add-issue-to-project-column");
+    let cards = owner
+        .raw(inst, "list-project-column-issues", &[&p, &sa])
+        .assert_ok("list-project-column-issues")
+        .json();
+    let want: i64 = issue.parse().unwrap();
+    assert_eq!(ids(&cards), vec![want], "the card is not in Doing: {cards}");
+
+    owner
+        .raw(inst, "move-project-issue", &[&p, &issue, "--column-id", &sb])
+        .assert_ok("move-project-issue");
+    let (_, in_a) = owner.get(inst, &format!("{p}/columns/{sa}/issues"));
+    let (_, in_b) = owner.get(inst, &format!("{p}/columns/{sb}/issues"));
+    assert!(ids(&in_a).is_empty(), "the card is still in Doing: {in_a}");
+    assert_eq!(ids(&in_b), vec![want], "the card did not reach Done: {in_b}");
+
+    owner
+        .raw(inst, "remove-issue-from-project-column", &[&p, &sb, &issue])
+        .assert_ok("remove-issue-from-project-column");
+    let (_, in_b) = owner.get(inst, &format!("{p}/columns/{sb}/issues"));
+    assert!(ids(&in_b).is_empty(), "the card survived its removal: {in_b}");
+
+    owner.raw(inst, "delete-project-column", &[&p, &sa]).assert_ok("delete-project-column");
+    let (code, _) = owner.get(inst, &format!("{p}/columns/{sa}"));
+    assert_eq!(code, 404, "the column survived its deletion");
+
+    owner.raw(inst, "delete-project", &[&p]).assert_ok("delete-project");
+    let (code, _) = owner.get(inst, &p);
+    assert_eq!(code, 404, "the project survived its deletion");
+}
+
+/// Gitea 28's projects API, driven through layer 2 at every owner it is served under.
+#[test]
+fn projects_are_reachable_through_the_rest_api_at_every_owner() {
+    let inst = instance_or_skip!();
+    cover!(raw: [
+        "repoListProjects", "repoCreateProject", "repoGetProject", "repoEditProject",
+        "repoDeleteProject", "repoListProjectColumns", "repoCreateProjectColumn",
+        "repoGetProjectColumn", "repoEditProjectColumn", "repoDeleteProjectColumn",
+        "repoMoveProjectColumns", "repoSetDefaultProjectColumn", "repoListProjectColumnIssues",
+        "repoAddIssueToProjectColumn", "repoRemoveIssueFromProjectColumn", "repoMoveProjectIssue",
+    ]);
+    cover!(raw: [
+        "orgListProjects", "orgCreateProject", "orgGetProject", "orgEditProject",
+        "orgDeleteProject", "orgListProjectColumns", "orgCreateProjectColumn",
+        "orgGetProjectColumn", "orgEditProjectColumn", "orgDeleteProjectColumn",
+        "orgMoveProjectColumns", "orgSetDefaultProjectColumn", "orgListProjectColumnIssues",
+        "orgAddIssueToProjectColumn", "orgRemoveIssueFromProjectColumn", "orgMoveProjectIssue",
+    ]);
+    cover!(raw: [
+        "userCurrentListProjects", "userCurrentCreateProject", "userCurrentGetProject",
+        "userCurrentEditProject", "userCurrentDeleteProject", "userCurrentListProjectColumns",
+        "userCurrentCreateProjectColumn", "userCurrentGetProjectColumn",
+        "userCurrentEditProjectColumn", "userCurrentDeleteProjectColumn",
+        "userCurrentMoveProjectColumns", "userCurrentSetDefaultProjectColumn",
+        "userCurrentListProjectColumnIssues", "userCurrentAddIssueToProjectColumn",
+        "userCurrentRemoveIssueFromProjectColumn", "userCurrentMoveProjectIssue",
+        "userListProjects",
+    ]);
+
+    let repo = TestRepo::create_initialized(inst, "rest-board");
+    enable_projects(&repo);
+    let in_repo = Owner {
+        group: "repo",
+        prefix: "",
+        leading: vec![repo.owner.clone(), repo.name.clone()],
+        base: format!("repos/{}/projects", repo.slug()),
+    };
+    drive_project_lifecycle(inst, &in_repo, open_issue(inst, &repo.slug()));
+
+    let org = ScratchOrg::create(inst, "rest-board-org");
+    let in_org = Owner {
+        group: "org",
+        prefix: "",
+        leading: vec![org.name.clone()],
+        base: format!("orgs/{}/projects", org.name),
+    };
+    drive_project_lifecycle(inst, &in_org, open_issue(inst, &format!("{}/board", org.name)));
+
+    let mine = Owner {
+        group: "user",
+        prefix: "current-",
+        leading: vec![],
+        base: "user/projects".to_owned(),
+    };
+    drive_project_lifecycle(inst, &mine, open_issue(inst, &repo.slug()));
+
+    // The public listing of somebody's boards, the one read with no `current-` twin.
+    let created = mine
+        .raw(inst, "create-project", &["--title", "Public board"])
+        .assert_ok("create-project")
+        .json();
+    let pid = created["id"].as_i64().unwrap();
+    let _guard = ProjectGuard { inst, path: format!("user/projects/{pid}") };
+    let listed = inst
+        .gea(["raw", "user", "list-projects", inst.user.as_str()])
+        .assert_ok("gea raw user list-projects")
+        .json();
+    assert!(ids(&listed).contains(&pid), "{} does not list its own board: {listed}", inst.user);
 }

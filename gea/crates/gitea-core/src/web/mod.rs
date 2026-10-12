@@ -42,7 +42,7 @@
 ///
 /// Referenced by error messages when a response does not have the shape this module expects,
 /// which is the one moment a version mismatch is worth mentioning to a user.
-pub const VERIFIED_AGAINST: &str = "1.27.3";
+pub const VERIFIED_AGAINST: &str = "28.1.0";
 
 /// The cookie Gitea sets for a signed-in session: `[session] COOKIE_NAME`, whose default is
 /// this. Forgejo renamed its own to `session`, which is why a script written for one of the two

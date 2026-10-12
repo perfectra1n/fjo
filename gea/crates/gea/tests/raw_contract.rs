@@ -114,7 +114,7 @@ fn scalar_text(ty: ValueTy, name: &str, nth: usize, upload: &Path) -> String {
         // hash at least means the table is not uniformly `true`, so a binding that ignored the
         // value and hard-coded one would fail on roughly half the fields.
         ValueTy::Bool => (if hash(name).is_multiple_of(2) { "true" } else { "false" }).to_owned(),
-        ValueTy::Int => sentinel_number(name, nth).to_string(),
+        ValueTy::Int | ValueTy::IntList => sentinel_number(name, nth).to_string(),
         ValueTy::Float => format!("{}.{nth}", sentinel_number(name, nth)),
         ValueTy::DateTime => sentinel_timestamp(name, nth),
         // A `Json` field is the one case where the flag's text is itself structured. Passing it
@@ -138,6 +138,9 @@ fn expected_json(ty: ValueTy, texts: &[String]) -> Value {
         ValueTy::Int => Value::from(texts[0].parse::<i64>().expect("the sentinel is an integer")),
         ValueTy::Float => Value::from(texts[0].parse::<f64>().expect("the sentinel is a float")),
         ValueTy::List => Value::Array(texts.iter().cloned().map(Value::from).collect()),
+        ValueTy::IntList => Value::Array(
+            texts.iter().map(|t| Value::from(t.parse::<i64>().expect("an integer"))).collect(),
+        ),
         ValueTy::Json => serde_json::from_str(&texts[0]).expect("the sentinel is an object"),
         ValueTy::Str | ValueTy::DateTime | ValueTy::File => Value::from(texts[0].clone()),
     }
@@ -659,6 +662,7 @@ fn ty_name(ty: ValueTy) -> &'static str {
         ValueTy::Str => "string",
         ValueTy::DateTime => "datetime",
         ValueTy::List => "list",
+        ValueTy::IntList => "int-list",
         ValueTy::Json => "json",
         ValueTy::File => "file",
     }

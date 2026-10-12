@@ -451,9 +451,10 @@ async fn edit(
         message: Some(args.message.clone().unwrap_or_else(|| {
             format!("Update {}", args.title.as_deref().unwrap_or(&current.title))
         })),
-        // Omitted means "keep unchanged": the field is only a rename, and sending an empty
-        // string for it says the same thing the long way round.
-        title: args.title.clone(),
+        // Never omitted, though the spec marks it optional: an absent title renamed the page to
+        // `unnamed` on Gitea 1.27, and Gitea 28 rejects it with `422 [Title]: Required`. Not
+        // renaming means resending the title the page already has.
+        title: Some(args.title.clone().unwrap_or_else(|| current.title.clone())),
     };
     let page = api
         .repo()

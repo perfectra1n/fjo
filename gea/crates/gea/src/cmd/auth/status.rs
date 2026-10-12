@@ -64,7 +64,7 @@ const FIELDS: &[FieldSpec] = &[
     FieldSpec {
         name: "web_session",
         kind: FieldKind::Str,
-        doc: "the web session for gea web and gea project: where it is kept and when it lapses",
+        doc: "the web session for gea web: where it is kept and when it lapses",
     },
     FieldSpec { name: "is_admin", kind: FieldKind::Bool, doc: "site administrator" },
     FieldSpec { name: "error", kind: FieldKind::Str, doc: "why authentication failed, or null" },
@@ -129,7 +129,7 @@ struct Row {
     ///
     /// A login may hold a token, a session, both, or neither — they authenticate different
     /// transports and neither substitutes for the other (see `gitea_core::web`). Reporting
-    /// only the token would leave someone whose `gea project` commands started failing with
+    /// only the token would leave someone whose `gea web` commands started failing with
     /// nothing to look at, which is the question `auth status` exists to answer.
     ///
     /// Read from the store and never checked over the network: a session is verified by being
@@ -263,7 +263,7 @@ struct Pending {
     ///
     /// A login may hold a token, a session, both, or neither — they authenticate different
     /// transports and neither substitutes for the other (see `gitea_core::web`). Reporting
-    /// only the token would leave someone whose `gea project` commands started failing with
+    /// only the token would leave someone whose `gea web` commands started failing with
     /// nothing to look at, which is the question `auth status` exists to answer.
     ///
     /// Read from the store and never checked over the network: a session is verified by being
@@ -469,14 +469,14 @@ fn write_human(rows: &[Row], term: &Term, out: &mut dyn Write) -> std::io::Resul
         match &row.web {
             Some((src, until)) => writeln!(
                 out,
-                "  - Web session: {} (for gea web and gea project; lapses {until})",
+                "  - Web session: {} (for gea web; lapses {until})",
                 common::source_label(src)
             )?,
             // Said explicitly rather than omitted: "no line about it" and "no session" render
             // identically, and only one of them is a fact the reader can act on.
             None => writeln!(
                 out,
-                "  - Web session: none (run `gea auth login --with-password` for gea project)"
+                "  - Web session: none (run `gea auth login --with-password` for gea web)"
             )?,
         }
         // Never the token. `gea auth token` is the way to get the value, and this line says so
