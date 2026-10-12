@@ -30,13 +30,15 @@ Nobody writes 537 commands. Nobody has to.
 
 ## Layer 0 — `gea web <path>`
 
-Gitea has features with no REST API at all. Projects — the per-repository and per-organisation kanban boards — are the one that forced this layer into existence: the OpenAPI spec Gitea served had zero `project` paths up to 1.27.3, and the web routes that actually back the board UI reject an API token outright, answering `303 → /user/login` instead of `401`. Layers 1 through 3 all descend from the vendored spec — a generated client, a generated command tree, and porcelain hand-written on top of both — so none of them can reach a route the spec never mentions. Gitea 28 added a REST API for projects, which layer 2 now reaches (`gea raw repo list-projects`, `gea raw org create-project-column`, …); `gea project` predates it and still drives the board through this layer.
+Gitea has features with no REST API at all, and the web routes behind them reject an API token outright, answering `303 → /user/login` instead of `401`. Layers 1 through 3 all descend from the vendored spec — a generated client, a generated command tree, and porcelain hand-written on top of both — so none of them can reach a route the spec never mentions.
+
+Projects — the per-repository and per-organisation kanban boards — are what forced this layer into existence: the spec Gitea served had zero `project` paths up to 1.27.3, so `gea project` was built here, on a session cookie and a parser for the board's HTML. Gitea 28 added a REST API for projects, and `gea project` moved onto it (layer 3 over the generated client, as `gea raw repo list-projects` and friends reach it in layer 2). The parser and its captured fixtures were deleted, as this page had planned. `gea project` now needs only a token.
 
 `gea web <path>` requests the instance's web root instead of `/api/v1`: the same flags as `gea api` (`-X`, `-f`, `-F`, `--input`, `-H`, `-i`), the same `{owner}`/`{repo}` substitution, the same `--json`/`--jq`/`--template` pipeline, but authenticated with a session cookie rather than a token, because the web routes only accept the former.
 
 This is a difference in kind, not degree, and it should be said plainly rather than softened: layers 1 through 3 are pinned to the vendored spec — the JSON file this repository vendors and diffs on every bump, named above. Layer 0 is pinned to Gitea's *source* at the same tag — undocumented, unversioned web routes that no spec describes and that Gitea is free to change in any release, including a patch release, without telling anyone. There is nothing to diff.
 
-That pin is nevertheless enforced, which is what makes it acceptable rather than reckless: the live integration suite boots `docker.io/gitea/gitea:28.1.0`, the same version this layer is written against, so a Gitea release that changes a route or the board template turns the suite red before it reaches a user. This is the same mechanism in spirit as `ops_is_a_bijection_with_the_specs_operation_ids` enforcing the spec for layer 2 — coverage and correctness are test failures here too, not judgement calls — and the `coverage-check` ratchet refuses a new porcelain leaf, `gea project` included, that was never actually driven against a real server.
+That pin is nevertheless enforced, which is what makes it acceptable rather than reckless: the live integration suite boots `docker.io/gitea/gitea:28.1.0`, the same version this layer is written against, so a Gitea release that changes a route or a template this layer reads turns the suite red before it reaches a user. This is the same mechanism in spirit as `ops_is_a_bijection_with_the_specs_operation_ids` enforcing the spec for layer 2 — coverage and correctness are test failures here too, not judgement calls — and the `coverage-check` ratchet refuses a new porcelain leaf that was never actually driven against a real server.
 
 ```bash
 gea web POST AtvikSecurity/VulnCorp/projects/3/12/move --input cards.json
@@ -47,7 +49,7 @@ gea web GET  AtvikSecurity/VulnCorp/projects/3 > board.html
 
 **Reach for it when** the vendored spec has nothing for the feature you need — check it first — because that is the only case this layer exists for.
 
-When an upstream project API lands and `cargo xtask update-spec` generates its operations, `gea project` re-targets to layer 2 and its HTML parser is deleted. `gea web` and the session stay: they exist for every web-only surface Gitea has, not for this one.
+That is the retirement path for anything built here: when upstream ships an API for it, the porcelain moves onto the generated client and whatever it parsed is deleted. Projects took it in Gitea 28. `gea web` and the session stay: they exist for every web-only surface Gitea has, not for any one of them.
 
 ## Layer 1 — `gea api`
 

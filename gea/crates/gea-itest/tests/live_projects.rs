@@ -234,8 +234,6 @@ fn a_board_round_trips_through_the_porcelain() {
         "project card move",
         "project delete"
     ]);
-    let Some(pass) = password_or_skip(inst) else { return };
-
     let repo = TestRepo::create_initialized(inst, "board");
     enable_projects(&repo);
     let (code, body) = repo.api(
@@ -245,16 +243,15 @@ fn a_board_round_trips_through_the_porcelain() {
     );
     assert!((200..300).contains(&code), "seeding an issue failed ({code}): {body}");
 
-    let s = Session::login(inst, "board", pass);
     let r = repo.flag();
     let repo_flag: [&str; 2] = [r[0].as_str(), r[1].as_str()];
 
     let run = |args: &[&str]| {
         let mut full = args.to_vec();
         full.extend_from_slice(&repo_flag);
-        let (code, out, err) = s.run(&full);
-        assert_eq!(code, Some(0), "`gea {}` failed\nstdout: {out}\nstderr: {err}", args.join(" "));
-        out
+        let run = inst.gea(&full);
+        run.assert_ok(&format!("gea {}", args.join(" ")));
+        run.stdout.clone()
     };
 
     run(&["project", "create", "Roadmap", "--from-template", "basic-kanban"]);
@@ -265,9 +262,8 @@ fn a_board_round_trips_through_the_porcelain() {
     run(&["project", "card", "add", "1", "--project", "Roadmap"]);
     run(&["project", "card", "move", "1", "--to", "Review"]);
 
-    // Read the board back through the parser, and assert on the structure rather than on a
-    // substring: a parser that found nothing would still "contain" very little and pass a
-    // laxer check.
+    // Assert on the structure rather than on a substring: a board that came back empty would
+    // still "contain" very little and pass a laxer check.
     let json = run(&["project", "view", "Roadmap", "--json"]);
     let board: serde_json::Value = serde_json::from_str(&json)
         .unwrap_or_else(|e| panic!("view --json is not JSON: {e}\n{json}"));
@@ -283,12 +279,9 @@ fn a_board_round_trips_through_the_porcelain() {
 
     let cards = review["cards"].as_array().expect("a cards array");
     assert_eq!(cards.len(), 1, "the card should have moved into Review:\n{json}");
-    // The title is entity-escaped in the markup; a parser that skipped decoding would return
-    // `Fix &lt;script&gt; &amp; &#34;quotes&#34;` and look almost right.
-    assert_eq!(
-        cards[0]["title"], "Fix <script> & \"quotes\"",
-        "card titles must be entity-decoded"
-    );
+    // Markup-hostile on purpose: the board used to be scraped from HTML, where this title is
+    // entity-escaped, and it must still arrive exactly as written.
+    assert_eq!(cards[0]["title"], "Fix <script> & \"quotes\"", "the card title was mangled");
 
     run(&["project", "delete", "Roadmap", "--yes"]);
 }
@@ -303,21 +296,18 @@ fn a_board_round_trips_through_the_porcelain() {
 fn adding_a_card_to_a_second_board_leaves_it_on_the_first() {
     let inst = instance_or_skip!();
     cover!(porcelain: ["project create", "project card add", "project view"]);
-    let Some(pass) = password_or_skip(inst) else { return };
-
     let repo = TestRepo::create_initialized(inst, "twoboards");
     enable_projects(&repo);
     let (code, body) = repo.api("POST", "/issues", Some(r#"{"title":"on two boards"}"#));
     assert!((200..300).contains(&code), "seeding an issue failed ({code}): {body}");
 
-    let s = Session::login(inst, "twoboards", pass);
     let r = repo.flag();
     let run = |args: &[&str]| {
         let mut full = args.to_vec();
         full.extend_from_slice(&[r[0].as_str(), r[1].as_str()]);
-        let (code, out, err) = s.run(&full);
-        assert_eq!(code, Some(0), "`gea {}` failed\nstdout: {out}\nstderr: {err}", args.join(" "));
-        out
+        let run = inst.gea(&full);
+        run.assert_ok(&format!("gea {}", args.join(" ")));
+        run.stdout.clone()
     };
 
     for board in ["First", "Second"] {
@@ -422,25 +412,17 @@ fn a_raw_json_move_is_accepted_without_any_csrf_token() {
     let s = Session::login(inst, "rawmove", pass);
     let r = repo.flag();
 
-    // Build a board through the porcelain, then drive the move through layer 0 directly.
-    let (code, _, err) = s.run(&[
-        "project",
-        "create",
-        "Raw",
-        "--from-template",
-        "basic-kanban",
-        r[0].as_str(),
-        r[1].as_str(),
-    ]);
-    assert_eq!(code, Some(0), "creating the board failed: {err}");
+    // Build a board through the porcelain (over the API, with the token), then drive the move
+    // through layer 0 with the session.
+    inst.gea(["project", "create", "Raw", "--from-template", "basic-kanban", &r[0], &r[1]])
+        .assert_ok("gea project create");
 
     // The issue has to be ON the board before it can be moved between columns: Gitea's
     // MoveIssues answers 500, not 4xx, when asked to move an issue the project does not hold.
-    let (code, _, err) =
-        s.run(&["project", "card", "add", "1", "--project", "Raw", r[0].as_str(), r[1].as_str()]);
-    assert_eq!(code, Some(0), "putting the issue on the board failed: {err}");
+    inst.gea(["project", "card", "add", "1", "--project", "Raw", &r[0], &r[1]])
+        .assert_ok("gea project card add");
 
-    let (_, ids, _) = s.run(&["project", "view", "Raw", "--json", r[0].as_str(), r[1].as_str()]);
+    let ids = inst.gea(["project", "view", "Raw", "--json", &r[0], &r[1]]).stdout.clone();
     let board: serde_json::Value = serde_json::from_str(&ids).unwrap_or_default();
     let project_id = board["id"].as_i64().unwrap_or(1);
     let column_id =
@@ -471,19 +453,16 @@ fn a_boards_state_and_its_columns_can_be_changed_and_removed() {
         "project column delete",
         "project list"
     ]);
-    let Some(pass) = password_or_skip(inst) else { return };
-
     let repo = TestRepo::create_initialized(inst, "lifecycle");
-    let s = Session::login(inst, "lifecycle", pass);
     let r = repo.flag();
     let repo_flag: [&str; 2] = [r[0].as_str(), r[1].as_str()];
 
     let run = |args: &[&str]| {
         let mut full = args.to_vec();
         full.extend_from_slice(&repo_flag);
-        let (code, out, err) = s.run(&full);
-        assert_eq!(code, Some(0), "`gea {}` failed\nstdout: {out}\nstderr: {err}", args.join(" "));
-        out
+        let run = inst.gea(&full);
+        run.assert_ok(&format!("gea {}", args.join(" ")));
+        run.stdout.clone()
     };
 
     run(&["project", "create", "Ops", "--from-template", "basic-kanban"]);
@@ -512,8 +491,8 @@ fn a_boards_state_and_its_columns_can_be_changed_and_removed() {
     assert_eq!(titles.last(), Some(&"Icebox"), "--last should put it at the end: {titles:?}");
 
     // Icebox is the renamed Backlog, which is the board's DEFAULT column. Gitea will not
-    // delete that one, and answers a bare 500 rather than saying so, so gea refuses first.
-    let (code, _, err) = s.run(&[
+    // delete that one, so gea refuses first and says why.
+    let refused = inst.gea([
         "project",
         "column",
         "delete",
@@ -523,6 +502,7 @@ fn a_boards_state_and_its_columns_can_be_changed_and_removed() {
         repo_flag[0],
         repo_flag[1],
     ]);
+    let (code, err) = (refused.code, refused.stderr.clone());
     assert_ne!(code, Some(0), "deleting the default column must be refused");
     assert!(
         err.contains("default column"),
@@ -589,6 +569,49 @@ fn a_session_can_be_exported_and_imported_on_another_machine() {
     let (code, out, err) = to.run(&["web", "GET", &format!("{}/projects", repo.slug()), "-i"]);
     assert_eq!(code, Some(0), "the imported session should work\nstdout: {out}\nstderr: {err}");
     assert!(out.contains("200"), "expected the board page:\n{out}");
+}
+
+/// `--owner` names an organization or a user, and the API addresses each differently.
+///
+/// Bug this prevents: `--owner` resolving to the wrong route family, which answers a 404 that
+/// reads exactly like "no such board". An organization's boards live under `/orgs`, the
+/// signed-in user's under `/user`, and another user's can only be listed — a change to one has
+/// to be refused up front with the reason, not sent to a route that cannot honour it.
+#[test]
+fn owner_boards_resolve_to_the_organization_the_user_or_a_read_only_listing() {
+    let inst = instance_or_skip!();
+    cover!(porcelain: ["project create", "project list", "project close", "project delete"]);
+
+    let org = ScratchOrg::create(inst, "owner-board-org");
+    let me = inst.user.clone();
+    for (owner, title) in [(org.name.as_str(), "Org board"), (me.as_str(), "My board")] {
+        inst.gea(["project", "create", title, "--owner", owner]).assert_ok("gea project create");
+        let listed = inst.gea(["project", "list", "--owner", owner, "--json", "title"]);
+        listed.assert_ok("gea project list --owner");
+        let titles: Vec<String> = listed
+            .json()
+            .as_array()
+            .expect("an array")
+            .iter()
+            .filter_map(|b| b["title"].as_str().map(str::to_owned))
+            .collect();
+        assert!(titles.contains(&title.to_owned()), "{owner} does not list {title}: {titles:?}");
+        inst.gea(["project", "close", title, "--owner", owner]).assert_ok("gea project close");
+        inst.gea(["project", "delete", title, "--owner", owner, "--yes"])
+            .assert_ok("gea project delete");
+    }
+
+    // Another user: the public listing works, a change is refused before any request is sent.
+    let other = inst.scoped_user("board-other", &["read:user"]).expect("a second user");
+    let other_login = other.name.clone();
+    inst.gea(["project", "list", "--owner", &other_login]).assert_ok("listing another's boards");
+    let refused = inst.gea(["project", "create", "Theirs", "--owner", &other_login]);
+    assert_ne!(refused.code, Some(0), "creating a board for another user must be refused");
+    assert!(
+        refused.stderr.contains("only a user manage their own boards"),
+        "the refusal should say why:\n{}",
+        refused.stderr
+    );
 }
 
 // ------------------------------------------------------------------------- the REST projects API

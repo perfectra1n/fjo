@@ -1,27 +1,25 @@
 //! `gea project` — Gitea's kanban boards.
 //!
-//! These are layer 0 commands: Projects has no REST API, so every one of them speaks to
-//! Gitea's web routes with a session cookie. See `docs/layers.md`.
+//! Built on Gitea 28's REST projects API (`gea raw repo list-projects` and friends). Before 28
+//! there was no such API and these were layer 0 commands driving the board UI's web routes with
+//! a session cookie; see `docs/layers.md`.
 //!
-//! What this adds over `gea web`, which can reach the same routes: **everything is named by
+//! What this adds over `gea raw`, which reaches the same routes: **everything is named by
 //! title.** Gitea's project routes are all `/projects/{id}/{columnID}`, and nobody knows that
 //! a board called `Roadmap` is id 3 or that its `Done` column is id 12. The same reasoning put
 //! `milestone_by_title` behind `gea milestone`, and the same corollary applies — an ambiguous
 //! title is refused with the matches listed, never guessed, because Gitea is perfectly happy
 //! to hold two boards called `Roadmap`.
 //!
-//! All markup knowledge lives in [`parse`]. Nothing here names a tag, a class or an attribute.
-
+pub mod model;
 pub mod ops;
-pub mod parse;
 
 use clap::{Args as ClapArgs, Subcommand, ValueEnum};
 
+use gitea_client::Api;
 use gitea_core::error::{Error, ErrorKind, Result};
 
-pub use parse::{
-    Board, Card, Column, ProjectRef, parse_board, parse_index, parse_issue_id, parse_issue_projects,
-};
+pub use model::{Board, Card, Column, ProjectRef};
 
 use crate::global::GlobalOpts;
 use crate::output::Table;
@@ -42,9 +40,8 @@ Boards are named by title, not by id, and an ambiguous title is refused
 rather than guessed. Closed boards are searched too, so closing one does
 not make it unreachable.
 
-These are web-only routes: Gitea has no REST API for projects, so they
-need a session rather than a token. Sign in with
-`gea auth login --with-password`.
+These use Gitea's projects API, which needs Gitea 28 or later, and an
+ordinary token: no web session is involved.
 
   gea project list
   gea project view Roadmap
@@ -101,11 +98,11 @@ pub enum Template {
 }
 
 impl Template {
-    fn code(self) -> u8 {
+    fn as_str(self) -> &'static str {
         match self {
-            Self::None => 0,
-            Self::BasicKanban => 1,
-            Self::BugTriage => 2,
+            Self::None => "none",
+            Self::BasicKanban => "basic_kanban",
+            Self::BugTriage => "bug_triage",
         }
     }
 }
@@ -308,31 +305,33 @@ pub struct CardMoveArgs {
 }
 
 pub fn run(globals: &GlobalOpts, args: &Args) -> Result<()> {
-    let mut rt = Runtime::new(globals)?;
-    crate::runtime::block_on(dispatch(&mut rt, globals, args))
+    let rt = Runtime::new(globals)?;
+    let api = Api::new(rt.client().clone());
+    crate::runtime::block_on(dispatch(&rt, globals, &api, args))
 }
 
-async fn dispatch(rt: &mut Runtime, globals: &GlobalOpts, args: &Args) -> Result<()> {
+async fn dispatch(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &Args) -> Result<()> {
     match &args.cmd {
-        Cmd::List(a) => cmd_list(rt, globals, a).await,
-        Cmd::View(a) => cmd_view(rt, globals, a).await,
+        Cmd::List(a) => cmd_list(rt, globals, api, a).await,
+        Cmd::View(a) => cmd_view(rt, globals, api, a).await,
         Cmd::Create(a) => {
-            let scope = Scope::resolve(rt, globals, a.scope.owner.as_deref())?;
-            ops::create(rt, &scope, &a.title, &a.description, a.template.code()).await?;
-            println!("✓ created board {:?}", a.title);
+            let scope = Scope::resolve(rt, globals, api, a.scope.owner.as_deref()).await?;
+            let made =
+                ops::create(api, &scope, &a.title, &a.description, a.template.as_str()).await?;
+            println!("✓ created board {:?} (id {})", made.title, made.id);
             Ok(())
         }
-        Cmd::Close(a) => set_state(rt, globals, a, "close", "closed").await,
-        Cmd::Reopen(a) => set_state(rt, globals, a, "open", "reopened").await,
-        Cmd::Delete(a) => cmd_delete(rt, globals, a).await,
-        Cmd::Column(c) => cmd_column(rt, globals, c).await,
-        Cmd::Card(c) => cmd_card(rt, globals, c).await,
+        Cmd::Close(a) => set_state(rt, globals, api, a, true, "closed").await,
+        Cmd::Reopen(a) => set_state(rt, globals, api, a, false, "reopened").await,
+        Cmd::Delete(a) => cmd_delete(rt, globals, api, a).await,
+        Cmd::Column(c) => cmd_column(rt, globals, api, c).await,
+        Cmd::Card(c) => cmd_card(rt, globals, api, c).await,
     }
 }
 
-async fn cmd_list(rt: &mut Runtime, globals: &GlobalOpts, a: &ListArgs) -> Result<()> {
-    let scope = Scope::resolve(rt, globals, a.scope.owner.as_deref())?;
-    let boards = ops::list(rt, &scope, a.state.as_str()).await?;
+async fn cmd_list(rt: &Runtime, globals: &GlobalOpts, api: &Api, a: &ListArgs) -> Result<()> {
+    let scope = Scope::resolve(rt, globals, api, a.scope.owner.as_deref()).await?;
+    let boards = ops::list(api, &scope, a.state.as_str()).await?;
 
     if globals.json.is_some() || globals.jq.is_some() || globals.template.is_some() {
         return emit(rt, globals, &boards);
@@ -351,18 +350,17 @@ async fn cmd_list(rt: &mut Runtime, globals: &GlobalOpts, a: &ListArgs) -> Resul
     table.render(&mut out).map_err(|e| usage(format!("could not write the table: {e}")))
 }
 
-async fn cmd_view(rt: &mut Runtime, globals: &GlobalOpts, a: &ViewArgs) -> Result<()> {
-    let scope = Scope::resolve(rt, globals, a.name.scope.owner.as_deref())?;
-    let found = ops::find(rt, &scope, &a.name.title, a.name.id).await?;
+async fn cmd_view(rt: &Runtime, globals: &GlobalOpts, api: &Api, a: &ViewArgs) -> Result<()> {
+    let scope = Scope::resolve(rt, globals, api, a.name.scope.owner.as_deref()).await?;
+    let found = ops::find(api, &scope, &a.name.title, a.name.id).await?;
 
     if a.web {
-        // The WebClient already knows the instance's web root and has validated it; asking it
-        // avoids a second way to build the same URL, which is a second way to get it wrong.
-        let url = rt.web_client()?.url_for(&scope.board(found.id))?;
-        return open::that(&url).map_err(|e| usage(format!("could not open a browser: {e}")));
+        // The server's own link to the board, so there is no second way to build the URL.
+        return open::that(&found.html_url)
+            .map_err(|e| usage(format!("could not open a browser: {e}")));
     }
 
-    let board = ops::view(rt, &scope, found.id).await?;
+    let board = ops::view(api, &scope, &found).await?;
     if globals.json.is_some() || globals.jq.is_some() || globals.template.is_some() {
         return emit(rt, globals, &board);
     }
@@ -385,36 +383,51 @@ async fn cmd_view(rt: &mut Runtime, globals: &GlobalOpts, a: &ViewArgs) -> Resul
 }
 
 async fn set_state(
-    rt: &mut Runtime,
+    rt: &Runtime,
     globals: &GlobalOpts,
+    api: &Api,
     a: &NameArgs,
-    action: &str,
+    closed: bool,
     said: &str,
 ) -> Result<()> {
-    let scope = Scope::resolve(rt, globals, a.scope.owner.as_deref())?;
-    let found = ops::find(rt, &scope, &a.title, a.id).await?;
-    ops::set_state(rt, &scope, found.id, action).await?;
+    let scope = Scope::resolve(rt, globals, api, a.scope.owner.as_deref()).await?;
+    let found = ops::find(api, &scope, &a.title, a.id).await?;
+    ops::set_state(api, &scope, found.id, closed).await?;
     println!("✓ {said} board {:?}", found.title);
     Ok(())
 }
 
-async fn cmd_delete(rt: &mut Runtime, globals: &GlobalOpts, a: &DeleteArgs) -> Result<()> {
-    let scope = Scope::resolve(rt, globals, a.name.scope.owner.as_deref())?;
-    let found = ops::find(rt, &scope, &a.name.title, a.name.id).await?;
+async fn cmd_delete(rt: &Runtime, globals: &GlobalOpts, api: &Api, a: &DeleteArgs) -> Result<()> {
+    let scope = Scope::resolve(rt, globals, api, a.name.scope.owner.as_deref()).await?;
+    let found = ops::find(api, &scope, &a.name.title, a.name.id).await?;
     // Deleting a board destroys its columns and its cards' placement. Confirming is the house
     // rule for a destructive verb, and `--yes` is how a script says it meant it.
     confirm(a.yes, &format!("delete board {:?} and its columns?", found.title))?;
-    ops::set_state(rt, &scope, found.id, "delete").await?;
+    ops::delete(api, &scope, found.id).await?;
     println!("✓ deleted board {:?}", found.title);
     Ok(())
 }
 
-async fn cmd_column(rt: &mut Runtime, globals: &GlobalOpts, c: &ColumnCmd) -> Result<()> {
+/// The board a column command names, read whole.
+async fn board_of(
+    rt: &Runtime,
+    globals: &GlobalOpts,
+    api: &Api,
+    owner: Option<&str>,
+    project: &str,
+) -> Result<(Scope, Board)> {
+    let scope = Scope::resolve(rt, globals, api, owner).await?;
+    let found = ops::find(api, &scope, project, None).await?;
+    let board = ops::view(api, &scope, &found).await?;
+    Ok((scope, board))
+}
+
+async fn cmd_column(rt: &Runtime, globals: &GlobalOpts, api: &Api, c: &ColumnCmd) -> Result<()> {
     match c {
         ColumnCmd::Add(a) => {
-            let scope = Scope::resolve(rt, globals, a.scope.owner.as_deref())?;
-            let found = ops::find(rt, &scope, &a.project, None).await?;
-            ops::add_column(rt, &scope, found.id, &a.title, &a.color).await?;
+            let scope = Scope::resolve(rt, globals, api, a.scope.owner.as_deref()).await?;
+            let found = ops::find(api, &scope, &a.project, None).await?;
+            ops::add_column(api, &scope, found.id, &a.title, &a.color).await?;
             println!("✓ added column {:?} to {:?}", a.title, found.title);
             Ok(())
         }
@@ -424,29 +437,17 @@ async fn cmd_column(rt: &mut Runtime, globals: &GlobalOpts, c: &ColumnCmd) -> Re
             if a.title.is_none() && a.color.is_none() {
                 return Err(usage("nothing to change: pass --title, --hex, or both"));
             }
-            let scope = Scope::resolve(rt, globals, a.scope.owner.as_deref())?;
-            let found = ops::find(rt, &scope, &a.project, None).await?;
-            let board = ops::view(rt, &scope, found.id).await?;
-            // Resolve the id first: `column_of` is the one place ambiguity is refused, and
-            // calling it inside the closure would both re-run it per column and swallow that.
-            let column_id = ops::column_of(&board, &a.column)?;
-            let column = board
-                .columns
-                .iter()
-                .find(|c| c.id == column_id)
-                .ok_or_else(|| usage("that column vanished from the board"))?;
-            // Unchanged fields are sent back as they are: the form takes all three, so omitting
-            // one clears it.
-            let title = a.title.clone().unwrap_or_else(|| column.title.clone());
-            let color = a.color.clone().or_else(|| column.color.clone()).unwrap_or_default();
-            ops::edit_column(rt, &scope, found.id, column, &title, &color).await?;
+            let (scope, board) =
+                board_of(rt, globals, api, a.scope.owner.as_deref(), &a.project).await?;
+            let column = ops::column_of(&board, &a.column)?;
+            let (title, color) = (a.title.as_deref(), a.color.as_deref());
+            ops::edit_column(api, &scope, board.id, column, title, color).await?;
             println!("✓ updated column {:?} on {:?}", a.column, board.title);
             Ok(())
         }
         ColumnCmd::Move(a) => {
-            let scope = Scope::resolve(rt, globals, a.scope.owner.as_deref())?;
-            let found = ops::find(rt, &scope, &a.project, None).await?;
-            let board = ops::view(rt, &scope, found.id).await?;
+            let (scope, board) =
+                board_of(rt, globals, api, a.scope.owner.as_deref(), &a.project).await?;
             let moving = ops::column_of(&board, &a.column)?;
             let to = match (&a.before, &a.after, a.first, a.last) {
                 (Some(x), _, _, _) => ops::Move::Before(x),
@@ -458,59 +459,49 @@ async fn cmd_column(rt: &mut Runtime, globals: &GlobalOpts, c: &ColumnCmd) -> Re
                 _ => return Err(usage("say where: --before, --after, --first or --last")),
             };
             let ordered = ops::reordered(&board.columns, moving, to)?;
-            ops::reorder_columns(rt, &scope, found.id, &ordered).await?;
+            ops::reorder_columns(api, &scope, board.id, &ordered).await?;
             println!("✓ moved column {:?} on {:?}", a.column, board.title);
             Ok(())
         }
         ColumnCmd::Delete(a) => {
-            let scope = Scope::resolve(rt, globals, a.scope.owner.as_deref())?;
-            let found = ops::find(rt, &scope, &a.project, None).await?;
-            let board = ops::view(rt, &scope, found.id).await?;
+            let (scope, board) =
+                board_of(rt, globals, api, a.scope.owner.as_deref(), &a.project).await?;
             let column_id = ops::column_of(&board, &a.column)?;
             let column = board
                 .columns
                 .iter()
                 .find(|c| c.id == column_id)
-                .ok_or_else(|| usage("that column vanished from the board"))?
-                .clone();
+                .ok_or_else(|| usage("that column vanished from the board"))?;
             confirm(a.yes, &format!("delete column {:?} from {:?}?", a.column, board.title))?;
-            ops::delete_column(rt, &scope, found.id, &column).await?;
+            ops::delete_column(api, &scope, board.id, column).await?;
             println!("✓ deleted column {:?}", a.column);
             Ok(())
         }
     }
 }
 
-async fn cmd_card(rt: &mut Runtime, globals: &GlobalOpts, c: &CardCmd) -> Result<()> {
+async fn cmd_card(rt: &Runtime, globals: &GlobalOpts, api: &Api, c: &CardCmd) -> Result<()> {
     match c {
         CardCmd::Add(a) => {
-            let scope = Scope::resolve(rt, globals, a.scope.owner.as_deref())?;
-            let found = ops::find(rt, &scope, &a.project, None).await?;
-            let issue = issue_page(rt, globals, a.issue).await?;
-            let internal = issue.id;
-            // Gitea's route replaces the issue's set of boards, so the ones it is already on go
-            // along with the new one; sending only the new one would take it off the others.
-            let mut boards = issue.boards;
-            if !boards.contains(&found.id) {
-                boards.push(found.id);
-            }
-            ops::add_cards(rt, &scope, &boards, &[internal]).await?;
-            if let Some(col) = &a.column {
-                let board = ops::view(rt, &scope, found.id).await?;
-                let column = ops::column_of(&board, col)?;
-                ops::move_cards(rt, &scope, found.id, column, &[internal]).await?;
-            }
-            println!("✓ put #{} on {:?}", a.issue, found.title);
+            let (scope, board) =
+                board_of(rt, globals, api, a.scope.owner.as_deref(), &a.project).await?;
+            let issue = issue_id(rt, globals, api, a.issue).await?;
+            let column = match &a.column {
+                Some(name) => ops::column_of(&board, name)?,
+                None => ops::default_column(&board)?,
+            };
+            ops::add_card(api, &scope, board.id, column, issue).await?;
+            println!("✓ put #{} on {:?}", a.issue, board.title);
             Ok(())
         }
         CardCmd::Move(a) => {
-            let scope = Scope::resolve(rt, globals, a.scope.owner.as_deref())?;
-            let internal = issue_page(rt, globals, a.issue).await?.id;
+            let scope = Scope::resolve(rt, globals, api, a.scope.owner.as_deref()).await?;
+            let issue = issue_id(rt, globals, api, a.issue).await?;
             // Naming the board is unnecessary when the issue is on exactly one, which is what
             // makes `gea project card move 42 --to Done` a one-liner in CI.
-            let (found, board) = locate(rt, &scope, a.project.as_deref(), internal).await?;
+            let board = locate(api, &scope, a.project.as_deref(), issue).await?;
             let column = ops::column_of(&board, &a.to)?;
-            ops::move_cards(rt, &scope, found.id, column, &[internal]).await?;
+            ops::move_card(api, &scope, board.id, column, issue).await?;
             println!("✓ moved #{} to {:?} on {:?}", a.issue, a.to, board.title);
             Ok(())
         }
@@ -518,24 +509,18 @@ async fn cmd_card(rt: &mut Runtime, globals: &GlobalOpts, c: &CardCmd) -> Result
 }
 
 /// The board an issue is already on, or the one the user named.
-async fn locate(
-    rt: &mut Runtime,
-    scope: &Scope,
-    named: Option<&str>,
-    internal: i64,
-) -> Result<(ProjectRef, Board)> {
+async fn locate(api: &Api, scope: &Scope, named: Option<&str>, issue: i64) -> Result<Board> {
     if let Some(title) = named {
-        let found = ops::find(rt, scope, title, None).await?;
-        let board = ops::view(rt, scope, found.id).await?;
-        return Ok((found, board));
+        let found = ops::find(api, scope, title, None).await?;
+        return ops::view(api, scope, &found).await;
     }
     // Gitea lets an issue sit on several boards, so every open board is read and more than
-    // one hit is refused rather than resolved to whichever the index listed first.
+    // one hit is refused rather than resolved to whichever the listing returned first.
     let mut hits = Vec::new();
-    for found in ops::list(rt, scope, "open").await? {
-        let board = ops::view(rt, scope, found.id).await?;
-        if board.columns.iter().any(|c| c.cards.iter().any(|card| card.id == internal)) {
-            hits.push((found, board));
+    for found in ops::list(api, scope, "open").await? {
+        let board = ops::view(api, scope, &found).await?;
+        if board.columns.iter().any(|c| c.cards.iter().any(|card| card.id == issue)) {
+            hits.push(board);
         }
     }
     match hits.len() {
@@ -547,36 +532,17 @@ async fn locate(
         _ => Err(usage(format!(
             "that issue is on {} open boards ({}); name the one you mean with --project",
             hits.len(),
-            hits.iter().map(|(f, _)| format!("{:?}", f.title)).collect::<Vec<_>>().join(", ")
+            hits.iter().map(|b| format!("{:?}", b.title)).collect::<Vec<_>>().join(", ")
         ))),
     }
 }
 
-/// What a card command needs from an issue's own page.
-struct IssuePage {
-    /// The internal database id, which the move endpoint wants and the user never sees.
-    id: i64,
-    /// Every board the issue is already on. See `parse::parse_issue_projects`.
-    boards: Vec<i64>,
-}
-
-/// Read over the web session rather than the API, so a card command needs one credential and not
-/// two. See `parse::parse_issue_id`.
-async fn issue_page(rt: &mut Runtime, globals: &GlobalOpts, number: i64) -> Result<IssuePage> {
-    let (owner, name) = {
-        let repo = rt.repo(globals)?;
-        (repo.slug.owner.clone(), repo.slug.name.clone())
-    };
-    let path = format!("{owner}/{name}/issues/{number}");
-    let resp = crate::web::request(
-        rt,
-        gitea_core::http::Method::GET,
-        &path,
-        gitea_core::web::WebBody::None,
-    )
-    .await?;
-    let html = resp.text();
-    Ok(IssuePage { id: parse::parse_issue_id(&html)?, boards: parse::parse_issue_projects(&html)? })
+/// The global id of issue `#number` in the current repository — the id every project route
+/// takes, which differs from the number the user typed as soon as an issue is transferred.
+async fn issue_id(rt: &Runtime, globals: &GlobalOpts, api: &Api, number: i64) -> Result<i64> {
+    let repo = rt.repo(globals)?;
+    let issue = api.issue().get_issue(&repo.slug.owner, &repo.slug.name, number).await?;
+    Ok(issue.id.get())
 }
 
 fn emit<T: serde::Serialize>(rt: &Runtime, globals: &GlobalOpts, value: &T) -> Result<()> {
