@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.2.0](https://github.com/perfectra1n/gea/compare/v0.1.2...v0.2.0) (2026-10-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **spec:** gitea-model drops the NodeInfo* types, which Gitea 28 removed; `ValueTy` gains a variant; gea now speaks the Gitea 28 API.
+
+### Features
+
+* **project:** drive boards through Gitea 28's REST projects API ([df7fe28](https://github.com/perfectra1n/gea/commit/df7fe2842318e721ae1e6798bd9e3f84f4f533ce))
+* **project:** drive boards through Gitea 28's REST projects API ([15f8f60](https://github.com/perfectra1n/gea/commit/15f8f606965d139d1e9bc8ff3ea304acdf0df1a1))
+* **spec:** target Gitea 28.1.0 ([fc1c4cb](https://github.com/perfectra1n/gea/commit/fc1c4cbf95c770c7dddbdf7233578f208d70bb6e))
+
+
+### Bug Fixes
+
+* **release:** make --version report the release version ([b05ce10](https://github.com/perfectra1n/gea/commit/b05ce101d6eb32c835b1023cfd643e70ba7f0cea))
+* **release:** make --version report the release version ([03131db](https://github.com/perfectra1n/gea/commit/03131db3e4a6e94475934c501e253b77d1d49e30))
+
+
+### Tests
+
+* **itest:** run the avatar test as an account of its own ([3607d04](https://github.com/perfectra1n/gea/commit/3607d04a3ed6fb92747f6b41d56e3f599df0b13a))
+* **itest:** run the avatar test as an account of its own ([392ea0d](https://github.com/perfectra1n/gea/commit/392ea0d6014d248b9451123efcde8dc85f1f9b25))
+
 ## [0.1.2](https://github.com/perfectra1n/gea/compare/v0.1.1...v0.1.2) (2026-10-10)
 
 
