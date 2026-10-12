@@ -60,7 +60,7 @@ pub fn spec_version() -> &'static str {
     forgejo_client::SPEC_VERSION
 }
 
-/// `fjo 0.1.0 (Forgejo API 16.0.4)` — the version string both parse phases hand to clap.
+/// `fjo 0.2.6 (Forgejo API 16.0.5)` — the version string both parse phases hand to clap.
 pub fn version_string() -> String {
     format!("{} (Forgejo API {})", env!("CARGO_PKG_VERSION"), spec_version())
 }
@@ -79,6 +79,26 @@ mod tests {
                 .is_ok_and(|lock| lock.contains(&format!("version = \"{v}\""))),
             "the generated SPEC_VERSION ({v}) disagrees with spec/lock.toml; re-run \
              `cargo xtask codegen`"
+        );
+    }
+
+    /// Bug this prevents: `fjo --version` printing 0.1.0 on the v0.2.6 release. release-please
+    /// owns the version in `.release-please-manifest.json`, and the crate version only follows
+    /// it because `release-please-config.json` lists this Cargo.toml (and its Cargo.lock
+    /// entry) under `extra-files`. Drop that and every release PR goes red here.
+    #[test]
+    fn the_crate_version_is_the_release_version() {
+        let manifest = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../.release-please-manifest.json"
+        ))
+        .expect("read .release-please-manifest.json");
+        let manifest: serde_json::Value =
+            serde_json::from_str(&manifest).expect("parse the manifest");
+        assert_eq!(
+            Some(env!("CARGO_PKG_VERSION")),
+            manifest["."].as_str(),
+            "crates/fjo/Cargo.toml disagrees with .release-please-manifest.json"
         );
     }
 }

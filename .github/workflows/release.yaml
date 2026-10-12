@@ -49,9 +49,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Reads .release-please-manifest.json, not crates/fjo/Cargo.toml. release-please
       # runs as release-type `simple` (the Rust strategy throws on this repo's virtual
-      # workspace manifest), so it owns the version in that JSON file and never edits a
-      # Cargo.toml. The crate versions therefore no longer track the tag, and checking
-      # one here would fail every release.
+      # workspace manifest), so the version lives in that JSON file. Only crates/fjo is
+      # bumped alongside it (via extra-files), and the manifest is the source of truth.
       - name: Tag matches .release-please-manifest.json
         run: |
           set -euo pipefail
