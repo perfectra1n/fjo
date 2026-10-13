@@ -4,7 +4,7 @@
 # spec bump would change one, so a rename is always a reviewed, documented decision
 # rather than something that happens to people. See crates/xtask/src/name_lock.rs.
 #
-# spec: forgejo v16.0.5, 506 operations
+# spec: forgejo v16.0.6, 506 operations
 
 ActionRun = { group = "run", command = "view", fn = "view" }
 CancelActionRun = { group = "run", command = "cancel", fn = "cancel" }
