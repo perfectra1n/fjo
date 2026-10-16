@@ -3,10 +3,10 @@
 # `upstream_sha256` proves what we fetched; `canonical_sha256` proves what the
 # generator read and is the value stamped into every generated file's header.
 
-tag = "v16.0.5"
-version = "16.0.5"
-source = "https://codeberg.org/forgejo/forgejo/raw/tag/v16.0.5/templates/swagger/v1_json.tmpl"
+tag = "v17.0.0"
+version = "17.0.0"
+source = "https://codeberg.org/forgejo/forgejo/raw/tag/v17.0.0/templates/swagger/v1_json.tmpl"
 upstream = "v1_json.tmpl"
-upstream_sha256 = "5047480080ab408814b3a1b13db5fb17aac084831556be17b6e28321afb2c332"
-canonical = "forgejo-v16.0.5.json"
-canonical_sha256 = "6d3563a56631a92bc74854cfa6c83adf80cf3b988afe598e22401a9991c56c3d"
+upstream_sha256 = "9e6e453e631793e47c01b2b1391274c3a78296aab8fd192d029484304ddd4bc9"
+canonical = "forgejo-v17.0.0.json"
+canonical_sha256 = "e5e32c60c46e7d37617d968e0234856b6c692fcac9e2812a8cd03c11f4450875"
