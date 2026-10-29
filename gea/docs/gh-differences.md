@@ -140,11 +140,13 @@ Output is space-padded columns with no borders, which is `gh`'s look. There is e
 
 An empty list is success, exactly as in `gh`: `gea pr list --json number` on a repository with no open pull requests prints `[]` and exits 0, so `if gea pr list ...` tests reachability rather than emptiness.
 
-## 8. Three things `gh` has no equivalent of
+## 8. Four things `gh` has no equivalent of
 
 - **`gea raw`** — a complete, generated command for every one of the 482 API operations. `gh` has `gh api` and nothing between it and the porcelain. See [layers.md](layers.md).
 - **`gea admin`** — instance administration. `gh` has no admin surface at all, because GitHub Enterprise administration is not in the API `gh` targets.
 
 - **`gea ci`** — CI for a pull request, branch or commit (or the branch you are on), keyed by the commit rather than by run id: `gea ci`, `gea ci logs`, `gea ci watch`, `gea ci rerun`. `gh` splits this between `gh pr checks` and `gh run`, which works on GitHub because a pull request's runs carry its branch. Gitea leaves `head_branch` empty on `pull_request` runs, so finding them by branch silently misses them; `gea ci` resolves every target to a SHA and lists runs by `head_sha`. It exits 1 when a run failed and 8 while one is running, like `gh pr checks`.
+
+- **`gea pr threads`, `reply`, `resolve`, `unresolve`**, and `pr review --line PATH:LINE=TEXT` — the inline half of a review. `gh` has none of these: replying to a review comment is a raw `gh api …/comments/{id}/replies`, and resolving a thread is a GraphQL `resolveReviewThread` mutation. Gitea has REST routes for both, but resolving a *reply* through them leaves the conversation open, because only the thread's first comment carries its state. `gea` maps any comment id or comment URL to its thread first. They keep `gh`'s shape: the positional is the pull request (`[<number> | <url> | <branch>]`, inferred when left out), and the comment is a flag, `--to` on `reply` and a repeatable `--comment` on `resolve` and `unresolve`. A comment URL pasted from the web UI names both, so `gea pr resolve https://…/pulls/42#issuecomment-7` works on its own.
 
 And several groups have no GitHub counterpart to copy from, so their shape is `gea`'s own following the same verbs: `times`, `stopwatch`, `wiki`, `mirror`, `package`, `transfer`, `nodeinfo`, `block`.

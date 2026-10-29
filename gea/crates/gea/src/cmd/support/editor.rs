@@ -37,6 +37,17 @@ pub struct TitleBody {
 }
 
 impl TitleBody {
+    /// The whole text, for a comment: something with a body and no title.
+    ///
+    /// An editor session always splits off a first line as the title, and dropping it would lose
+    /// the first line of what was written.
+    pub fn into_text(self) -> Option<String> {
+        match (self.title, self.body) {
+            (Some(t), Some(b)) => Some(format!("{t}\n\n{b}")),
+            (t, b) => t.or(b),
+        }
+    }
+
     /// The pair as plain strings, with an absent half becoming `""`.
     ///
     /// For the call sites that go straight into a request body where the API treats an empty
