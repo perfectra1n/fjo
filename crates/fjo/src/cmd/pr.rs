@@ -5,7 +5,9 @@
 //! **Every verb takes the same optional selector**, and every verb infers it from the branch you are
 //! on when you leave it out. `fjo pr merge`, `fjo pr diff`, `fjo pr checks` with no arguments, in a
 //! checkout, are the commands this whole layer exists for. The selector accepts a number, a URL, or a
-//! branch name; see [`common`], which owns the rule and its tests.
+//! branch name; see [`common`], which owns the rule and its tests. The exceptions are `reply`,
+//! `resolve` and `unresolve`, whose positional is a *comment*; the pull request moves to `--pr`
+//! there, and is still inferred when it is left out. See [`threads`].
 //!
 //! **AGit is here.** `fjo pr create --agit` opens a pull request with no branch and no fork, by
 //! pushing to `refs/for/<base>/<topic>`. That is a Forgejo capability with no GitHub equivalent — not
@@ -36,6 +38,7 @@ pub mod list;
 pub mod merge;
 pub mod review;
 pub mod state;
+pub mod threads;
 pub mod view;
 
 use clap::{Args as ClapArgs, Subcommand};
@@ -81,6 +84,14 @@ pub enum Sub {
     Checks(checks::Args),
     /// Files a pull request changes
     Files(files::Args),
+    /// Inline review threads, and whether each is resolved
+    Threads(threads::ThreadsArgs),
+    /// Reply to an inline review comment
+    Reply(threads::ReplyArgs),
+    /// Resolve inline review threads
+    Resolve(threads::ResolveArgs),
+    /// Reopen resolved inline review threads
+    Unresolve(threads::UnresolveArgs),
 }
 
 pub fn run(globals: &GlobalOpts, args: &Args) -> Result<()> {
@@ -100,5 +111,9 @@ pub fn run(globals: &GlobalOpts, args: &Args) -> Result<()> {
         Sub::Status(a) => checks::run_status(globals, a),
         Sub::Checks(a) => checks::run(globals, a),
         Sub::Files(a) => files::run(globals, a),
+        Sub::Threads(a) => threads::run_threads(globals, a),
+        Sub::Reply(a) => threads::run_reply(globals, a),
+        Sub::Resolve(a) => threads::run_resolve(globals, a),
+        Sub::Unresolve(a) => threads::run_unresolve(globals, a),
     }
 }

@@ -16,7 +16,9 @@
 
 use std::path::{Path, PathBuf};
 
-use fjo_itest::{Instance, ScopedUser, TestRepo, commit_and_push, cover, git, instance_or_skip};
+use fjo_itest::{
+    Instance, ScopedUser, TestRepo, commit_and_push, cover, fjo_bin, git, instance_or_skip,
+};
 
 // ---------------------------------------------------------------------------------- the fixtures
 
@@ -887,6 +889,174 @@ fn a_pending_review_holds_its_line_comments_until_it_is_submitted() {
         "the comment survived its own deletion: {}",
         after.stdout
     );
+}
+
+/// A configuration directory in which the harness's admin is signed in to the web, or `None`
+/// when attached to an instance whose password we do not have.
+///
+/// Signs in the way a user would — `auth login --with-token` and then `--with-password`, file
+/// store — so an invocation pointed at the directory has a token and a web session for the same
+/// login. Copied in spirit from `live_projects.rs`,
+/// which owns the tests of the session layer itself; this needs only the signed-in state.
+fn signed_in_config(inst: &Instance, tag: &str) -> Option<Scratch> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let pass = inst.web_password()?;
+    let dir = Scratch::new(&format!("web-{tag}"));
+    std::fs::create_dir_all(dir.path()).expect("a scratch configuration directory");
+    let host = inst.base_url.as_str();
+    // Both halves, the way a user who runs `fjo project` has them: a token for the API, and a
+    // web session (`--with-password` stores nothing else) for the routes the API lacks.
+    let sign_in = |how: &str, secret: &str| {
+        let mut child = Command::new(fjo_bin())
+            .args(["auth", "login", "--host", host, "--login", &inst.user, how])
+            .env("FJO_CONFIG_DIR", dir.path())
+            .env("FJO_CREDENTIAL_STORE", "file")
+            .env("FJO_PROMPT_DISABLED", "1")
+            .env_remove("FJO_TOKEN")
+            .env_remove("FORGEJO_TOKEN")
+            .env_remove("FJO_WEB_SESSION")
+            .env_remove("FJO_HOST")
+            .env_remove("FORGEJO_HOST")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the fjo binary should be executable");
+        child.stdin.as_mut().expect("a piped stdin").write_all(secret.as_bytes()).expect("stdin");
+        let out = child.wait_with_output().expect("the sign-in should finish");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "fjo auth login {how} failed:\n{err}");
+    };
+    sign_in("--with-token", &inst.token);
+    sign_in("--with-password", pass);
+    Some(dir)
+}
+
+/// The inline-review loop the porcelain exists for: a reviewer leaves a line comment, the author
+/// replies and resolves, and either side can reopen it — all by the ids `fjo pr threads` prints.
+///
+/// Forgejo 16 has no reply or resolve route in its API, so this is also the proof that the two
+/// substitutes work: a reply is a comment added to the reviewer's review on the same line, and
+/// resolving is the web UI's own `resolve_conversation` route through a signed-in web session. The mapping
+/// to the thread's first comment is checked the same way as on Gitea — reopened through the
+/// reply's id, resolved through the reply's URL, and read back from the *first* comment.
+#[test]
+fn a_line_comment_is_answered_resolved_and_reopened_through_any_comment_in_its_thread() {
+    let inst = instance_or_skip!();
+    cover!(
+        porcelain: ["pr review", "pr threads", "pr reply", "pr resolve", "pr unresolve"],
+        hits: [
+            "repoCreatePullReview",
+            "repoGetPullRequestFiles",
+            "repoListPullReviews",
+            "repoGetPullReviewComments",
+            "repoCreatePullReviewComment"
+        ]
+    );
+    let Some(config) = signed_in_config(inst, "threads") else {
+        eprintln!("SKIPPED: attached to a pre-existing instance, so there is no web password");
+        return;
+    };
+    let repo = TestRepo::create_initialized(inst, "pr-threads");
+    let scratch = Scratch::new("threads");
+    let index = open_pull_request(&repo, scratch.path(), "feature", "f.txt", "inline notes");
+    let reviewer = collaborator(inst, &repo, "prthreadrev");
+    let idx = index.to_string();
+    let slug = repo.slug();
+    let here = std::env::temp_dir();
+    let config_dir = config.path().to_string_lossy().into_owned();
+    let env = [("FJO_CONFIG_DIR", config_dir.as_str()), ("FJO_CREDENTIAL_STORE", "file")];
+    let signed_in = |args: &[&str]| inst.fjo_env(&here, &env, args);
+
+    let typo = inst.fjo_as(
+        &reviewer.token,
+        ["pr", "review", &idx, "--line", "g.txt:1=nobody would see this", "-R", &slug],
+    );
+    assert_eq!(typo.code, Some(2), "a path outside the diff must be refused:\n{}", typo.stderr);
+    assert!(reviews(&repo, index).is_empty(), "the refused review was sent anyway");
+
+    inst.fjo_as(
+        &reviewer.token,
+        ["pr", "review", &idx, "--line", "f.txt:1=this line worries me", "-R", &slug],
+    )
+    .assert_ok("fjo pr review --line with no verdict");
+    let filed = reviews(&repo, index);
+    assert_eq!(filed.len(), 1, "{filed:?}");
+    assert_eq!(filed[0].1, "COMMENT", "inline comments alone make a comment review: {filed:?}");
+
+    let threads = |extra: &[&str]| {
+        let mut words = vec!["pr", "threads", &idx, "-R", &slug, "--json", "id,body,resolver"];
+        words.extend_from_slice(extra);
+        let run = inst.fjo(words);
+        run.assert_ok("fjo pr threads --json");
+        run.json().as_array().expect("an array of comments").clone()
+    };
+    let rows = threads(&[]);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let root = rows[0]["id"].as_i64().expect("a comment id");
+    assert_eq!(rows[0]["body"], "this line worries me");
+
+    // Resolving is a web route, so a token alone must fail with the remedy, not a bare status.
+    let no_session = inst.fjo(["pr", "resolve", &root.to_string(), "--pr", &idx, "-R", &slug]);
+    assert!(!no_session.ok(), "resolving without a web session cannot succeed");
+    assert!(
+        no_session.stderr.contains("auth login"),
+        "the error must say how to get a session:\n{}",
+        no_session.stderr
+    );
+
+    // The author answers and resolves in one step, naming the thread by its first comment.
+    let reply = signed_in(&[
+        "pr",
+        "reply",
+        &root.to_string(),
+        "--pr",
+        &idx,
+        "-b",
+        "fixed, thanks",
+        "--resolve",
+        "-R",
+        &slug,
+    ]);
+    reply.assert_ok("fjo pr reply --resolve");
+    let reply_url = reply.stdout.trim().to_owned();
+    assert!(reply_url.contains("#issuecomment-"), "the reply's URL is printed: {reply_url}");
+
+    let rows = threads(&[]);
+    assert_eq!(rows.len(), 2, "the reply joins the thread: {rows:?}");
+    let reply_id = rows[1]["id"].as_i64().expect("the reply's id");
+    let resolved = |rows: &[serde_json::Value]| !rows[0]["resolver"].is_null();
+    assert!(resolved(&rows), "--resolve must resolve the first comment: {rows:?}");
+    assert!(threads(&["--unresolved"]).is_empty(), "a resolved thread is filtered out");
+
+    // The reply sits inside the reviewer's conversation on the page, not in one of its own.
+    let page = signed_in(&["web", &format!("{slug}/pulls/{idx}/files")]);
+    page.assert_ok("fjo web the files page");
+    assert_eq!(
+        page.stdout.matches(r#"class="conversation-holder""#).count(),
+        1,
+        "the reply must render inside the existing conversation"
+    );
+
+    // Reopened through the *reply's* id: the thread, not the reply, is what changes.
+    signed_in(&["pr", "unresolve", &reply_id.to_string(), "--pr", &idx, "-R", &slug])
+        .assert_ok("fjo pr unresolve through a reply");
+    assert!(!resolved(&threads(&[])), "unresolving through a reply must reopen the thread");
+
+    // And resolved again from the URL alone, which names the pull request too.
+    signed_in(&["pr", "resolve", &reply_url, "-R", &slug]).assert_ok("fjo pr resolve by URL");
+    assert!(resolved(&threads(&[])), "resolving through the reply's URL must resolve the thread");
+
+    let human = inst.fjo(["pr", "threads", &idx, "-R", &slug]);
+    human.assert_ok("fjo pr threads");
+    assert!(human.stdout.contains("f.txt:1"), "{}", human.stdout);
+    assert!(human.stdout.contains("resolved by"), "{}", human.stdout);
+    assert!(human.stdout.contains("fixed, thanks"), "{}", human.stdout);
+
+    let unknown = inst.fjo(["pr", "resolve", "999999", "--pr", &idx, "-R", &slug]);
+    assert_eq!(unknown.code, Some(5), "an id outside the pull request:\n{}", unknown.stderr);
 }
 
 /// Review requests are a set on the pull request, and Forgejo refuses to add anyone who cannot see
