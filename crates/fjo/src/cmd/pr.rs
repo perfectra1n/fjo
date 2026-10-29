@@ -5,9 +5,8 @@
 //! **Every verb takes the same optional selector**, and every verb infers it from the branch you are
 //! on when you leave it out. `fjo pr merge`, `fjo pr diff`, `fjo pr checks` with no arguments, in a
 //! checkout, are the commands this whole layer exists for. The selector accepts a number, a URL, or a
-//! branch name; see [`common`], which owns the rule and its tests. The exceptions are `reply`,
-//! `resolve` and `unresolve`, whose positional is a *comment*; the pull request moves to `--pr`
-//! there, and is still inferred when it is left out. See [`threads`].
+//! branch name; see [`common`], which owns the rule and its tests. `reply`, `resolve` and
+//! `unresolve` keep the rule too: the comment they act on is a flag. See [`threads`].
 //!
 //! **AGit is here.** `fjo pr create --agit` opens a pull request with no branch and no fork, by
 //! pushing to `refs/for/<base>/<topic>`. That is a Forgejo capability with no GitHub equivalent — not

@@ -999,7 +999,7 @@ fn a_line_comment_is_answered_resolved_and_reopened_through_any_comment_in_its_t
     assert_eq!(rows[0]["body"], "this line worries me");
 
     // Resolving is a web route, so a token alone must fail with the remedy, not a bare status.
-    let no_session = inst.fjo(["pr", "resolve", &root.to_string(), "--pr", &idx, "-R", &slug]);
+    let no_session = inst.fjo(["pr", "resolve", &idx, "--comment", &root.to_string(), "-R", &slug]);
     assert!(!no_session.ok(), "resolving without a web session cannot succeed");
     assert!(
         no_session.stderr.contains("auth login"),
@@ -1011,9 +1011,9 @@ fn a_line_comment_is_answered_resolved_and_reopened_through_any_comment_in_its_t
     let reply = signed_in(&[
         "pr",
         "reply",
-        &root.to_string(),
-        "--pr",
         &idx,
+        "--to",
+        &root.to_string(),
         "-b",
         "fixed, thanks",
         "--resolve",
@@ -1041,11 +1041,11 @@ fn a_line_comment_is_answered_resolved_and_reopened_through_any_comment_in_its_t
     );
 
     // Reopened through the *reply's* id: the thread, not the reply, is what changes.
-    signed_in(&["pr", "unresolve", &reply_id.to_string(), "--pr", &idx, "-R", &slug])
+    signed_in(&["pr", "unresolve", &idx, "--comment", &reply_id.to_string(), "-R", &slug])
         .assert_ok("fjo pr unresolve through a reply");
     assert!(!resolved(&threads(&[])), "unresolving through a reply must reopen the thread");
 
-    // And resolved again from the URL alone, which names the pull request too.
+    // And resolved again from a comment URL in the pull request's slot, which names both.
     signed_in(&["pr", "resolve", &reply_url, "-R", &slug]).assert_ok("fjo pr resolve by URL");
     assert!(resolved(&threads(&[])), "resolving through the reply's URL must resolve the thread");
 
@@ -1055,7 +1055,7 @@ fn a_line_comment_is_answered_resolved_and_reopened_through_any_comment_in_its_t
     assert!(human.stdout.contains("resolved by"), "{}", human.stdout);
     assert!(human.stdout.contains("fixed, thanks"), "{}", human.stdout);
 
-    let unknown = inst.fjo(["pr", "resolve", "999999", "--pr", &idx, "-R", &slug]);
+    let unknown = inst.fjo(["pr", "resolve", &idx, "--comment", "999999", "-R", &slug]);
     assert_eq!(unknown.code, Some(5), "an id outside the pull request:\n{}", unknown.stderr);
 }
 

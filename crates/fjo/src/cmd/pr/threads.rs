@@ -35,9 +35,15 @@
 //!
 //! # Why the pull request is needed at all
 //!
-//! Finding a thread's first comment, its review and its line needs the pull request's comments. So
-//! the pull request comes from `--pr`, from a pasted comment URL (`…/pulls/42#issuecomment-7`), or
-//! from the branch you are on — the same inference every other `fjo pr` command makes.
+//! Finding a thread's first comment, its review and its line needs the pull request's comments.
+//!
+//! # Shaped like every other `fjo pr` command
+//!
+//! The positional is the pull request — `[<number> | <url> | <branch>]`, inferred from the branch
+//! you are on when left out — because that is `gh`'s rule for every targeted `pr` command, and a
+//! command that breaks it is one whose muscle memory does not transfer. The comment is a flag:
+//! `--to` on `reply`, a repeatable `--comment` on `resolve` and `unresolve`. A comment URL pasted
+//! from the web UI (`…/pulls/42#issuecomment-7`) names both, so it works in either place.
 
 use std::io::Write;
 
@@ -45,7 +51,7 @@ use clap::Args as ClapArgs;
 use forgejo_client::Api;
 use forgejo_core::http::Method;
 use forgejo_core::types::RepoSlug;
-use forgejo_core::types::ids::CommentId;
+use forgejo_core::types::ids::{CommentId, IssueIndex};
 use forgejo_core::web::WebBody;
 use forgejo_core::{Error, ErrorKind, Result};
 use forgejo_model::{CreatePullReviewComment, PullReviewComment, ReviewStateType, User};
@@ -134,21 +140,22 @@ fn keep(thread: &Thread, args: &ThreadsArgs) -> bool {
 #[command(long_about = "\
 Reply to an inline review comment.
 
-COMMENT is a comment id from `fjo pr threads`, or a comment URL copied from the web UI.
-The reply joins that comment's thread. With --resolve, the thread is resolved afterwards,
+Name the comment with --to: an id from `fjo pr threads`, or a comment URL copied from
+the web UI. A comment URL may also be given in place of the pull request, since it names
+both. The reply joins that comment's thread. With --resolve, the thread is resolved afterwards,
 which needs a web session: see `fjo auth login --with-password`.
 
-  fjo pr reply 123 -b 'fixed in 4f2e1c9'
-  fjo pr reply 123 --resolve -b 'renamed, as suggested'
+  fjo pr reply --to 123 -b 'fixed in 4f2e1c9'
+  fjo pr reply 42 --to 123 --resolve -b 'renamed, as suggested'
   fjo pr reply https://git.example.org/o/r/pulls/42#issuecomment-123 -F reply.md")]
 pub struct ReplyArgs {
-    /// Comment id, or a comment URL
-    #[arg(value_name = "COMMENT")]
-    pub comment: String,
-
-    /// The pull request the comment is on. Defaults to the URL's, then the branch you are on
-    #[arg(long, value_name = "PR")]
+    /// Pull request number, URL, or branch, or a comment URL. Defaults to the branch you are on
+    #[arg(value_name = "PR")]
     pub pr: Option<String>,
+
+    /// The comment to reply to: an id from `fjo pr threads`, or a comment URL
+    #[arg(long, value_name = "COMMENT")]
+    pub to: Option<String>,
 
     #[command(flatten)]
     pub body: BodyOpts,
@@ -165,8 +172,10 @@ pub fn run_reply(globals: &GlobalOpts, args: &ReplyArgs) -> Result<()> {
         return Ok(());
     }
     crate::runtime::block_on(async move {
-        let target = CommentRef::parse(&args.comment)?;
-        let selector = selector(args.pr.as_deref(), std::slice::from_ref(&target))?;
+        let (selector, targets) = targets(args.pr.as_deref(), args.to.as_slice(), "--to")?;
+        let [target] = targets.as_slice() else {
+            return Err(support::usage("a reply answers one comment; pass --to once"));
+        };
         let mut rt = Runtime::new(globals)?;
         let api = support::api(&rt);
         let found = common::find(&rt, globals, &api, selector.as_deref()).await?;
@@ -218,28 +227,29 @@ pub fn run_reply(globals: &GlobalOpts, args: &ReplyArgs) -> Result<()> {
 #[command(long_about = "\
 Resolve inline review threads.
 
-Each COMMENT is a comment id from `fjo pr threads` or a comment URL. Any comment in a
-thread names the whole thread. Forgejo has no API route for this, so it needs a web
+Name each thread with --comment: the id of any comment in it, from `fjo pr threads`, or
+a comment URL. A comment URL may also be given in place of the pull request. Forgejo has no API route for this, so it needs a web
 session: see `fjo auth login --with-password`.
 
-  fjo pr resolve 123
-  fjo pr resolve 123 130 141 --pr 42")]
+  fjo pr resolve --comment 123
+  fjo pr resolve 42 --comment 123 --comment 130
+  fjo pr resolve https://git.example.org/o/r/pulls/42#issuecomment-123")]
 pub struct ResolveArgs {
-    /// Comment ids or comment URLs, one per thread
-    #[arg(value_name = "COMMENT", required = true)]
-    pub comments: Vec<String>,
-
-    /// The pull request the comments are on. Defaults to the URLs', then the branch you are on
-    #[arg(long, value_name = "PR")]
+    /// Pull request number, URL, or branch, or a comment URL. Defaults to the branch you are on
+    #[arg(value_name = "PR")]
     pub pr: Option<String>,
+
+    /// A comment in the thread: an id from `fjo pr threads`, or a comment URL. Repeatable
+    #[arg(long = "comment", value_name = "COMMENT")]
+    pub comments: Vec<String>,
 }
 
 #[derive(Debug, ClapArgs)]
 #[command(long_about = "\
 Reopen resolved inline review threads.
 
-  fjo pr unresolve 123
-  fjo pr unresolve 123 --pr 42")]
+  fjo pr unresolve --comment 123
+  fjo pr unresolve 42 --comment 123")]
 pub struct UnresolveArgs {
     #[command(flatten)]
     pub inner: ResolveArgs,
@@ -255,9 +265,7 @@ pub fn run_unresolve(globals: &GlobalOpts, args: &UnresolveArgs) -> Result<()> {
 
 fn resolve_all(globals: &GlobalOpts, args: &ResolveArgs, resolve: bool) -> Result<()> {
     crate::runtime::block_on(async move {
-        let targets =
-            args.comments.iter().map(|c| CommentRef::parse(c)).collect::<Result<Vec<_>>>()?;
-        let selector = selector(args.pr.as_deref(), &targets)?;
+        let (selector, targets) = targets(args.pr.as_deref(), &args.comments, "--comment")?;
         let mut rt = Runtime::new(globals)?;
         let api = support::api(&rt);
         let found = common::find(&rt, globals, &api, selector.as_deref()).await?;
@@ -450,23 +458,52 @@ impl CommentRef {
     }
 }
 
-/// The pull request selector `common::find` should be given.
+/// The pull request selector for `common::find`, and the comments, from the positional and the
+/// comment flags.
 ///
-/// `--pr` and a URL both name the pull request, so passing both is refused rather than letting one
-/// silently win; so are URLs that disagree with each other.
-pub(crate) fn selector(flag: Option<&str>, refs: &[CommentRef]) -> Result<Option<String>> {
-    let mut urls = refs.iter().filter_map(|r| r.pr_url.as_deref());
-    let Some(first) = urls.next() else { return Ok(flag.map(str::to_owned)) };
-    if flag.is_some() {
-        return Err(support::usage(
-            "--pr and a comment URL both name the pull request; pass one or the other",
-        ));
+/// A comment URL in the pull request's slot is taken apart into both, because it is what people
+/// paste. Everything that names the pull request must agree. Two comment URLs on different pull
+/// requests, or a URL against a different number, are refused rather than letting one silently
+/// win. A *branch* next to a comment URL is refused outright: telling whether they agree would
+/// take a lookup, and passing both is never needed.
+pub(crate) fn targets(
+    positional: Option<&str>,
+    flagged: &[String],
+    flag: &str,
+) -> Result<(Option<String>, Vec<CommentRef>)> {
+    let mut refs = flagged.iter().map(|c| CommentRef::parse(c)).collect::<Result<Vec<_>>>()?;
+    let mut selector = positional.map(str::to_owned);
+    if let Some(raw) = positional.filter(|p| p.contains("://") && p.contains("#issuecomment-")) {
+        let named = CommentRef::parse(raw)?;
+        selector.clone_from(&named.pr_url);
+        refs.insert(0, named);
     }
-    let wanted = common::parse_url(first);
-    if urls.any(|u| common::parse_url(u) != wanted) {
+    if refs.is_empty() {
+        return Err(support::usage(format!(
+            "name the comment with {flag}, or pass a comment URL; `gea pr threads` lists the ids"
+        )));
+    }
+
+    let mut urls = refs.iter().filter_map(|r| r.pr_url.as_deref()).map(common::parse_url);
+    let Some(first) = urls.next() else { return Ok((selector, refs)) };
+    if urls.any(|u| u != first) {
         return Err(support::usage("the comment URLs are on different pull requests"));
     }
-    Ok(Some(first.to_owned()))
+    let Some(chosen) = selector.as_deref() else {
+        let url = refs.iter().find_map(|r| r.pr_url.clone());
+        return Ok((url, refs));
+    };
+    let agrees = match (common::parse_url(chosen), chosen.parse::<IssueIndex>()) {
+        (Some(pr), _) => Some(pr) == first,
+        (None, Ok(index)) => first.as_ref().is_some_and(|(_, i)| *i == index),
+        (None, Err(_)) => false,
+    };
+    if !agrees {
+        return Err(support::usage(format!(
+            "{chosen} and the comment URL name different pull requests; pass one of them"
+        )));
+    }
+    Ok((selector, refs))
 }
 
 // ------------------------------------------------------------------------------------- rendering
@@ -613,20 +650,47 @@ mod tests {
         }
     }
 
-    /// `--pr` and a URL naming different pull requests must not quietly pick one.
+    fn ids(refs: &[CommentRef]) -> Vec<i64> {
+        refs.iter().map(|r| r.id.get()).collect()
+    }
+
+    fn strings(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| (*w).to_owned()).collect()
+    }
+
+    /// `gh`'s shape: the pull request is the positional, inferred when absent, and the comment is
+    /// a flag.
     #[test]
-    fn the_pull_request_is_named_once() {
-        let id = CommentRef::parse("5").unwrap();
-        let a = CommentRef::parse("https://h/o/r/pulls/1#issuecomment-2").unwrap();
-        let b = CommentRef::parse("https://h/o/r/pulls/3#issuecomment-4").unwrap();
-        assert_eq!(selector(Some("9"), std::slice::from_ref(&id)).unwrap().as_deref(), Some("9"));
-        assert_eq!(selector(None, std::slice::from_ref(&id)).unwrap(), None);
-        assert_eq!(
-            selector(None, &[id, a.clone()]).unwrap().as_deref(),
-            Some("https://h/o/r/pulls/1")
-        );
-        assert!(selector(Some("9"), std::slice::from_ref(&a)).is_err());
-        assert!(selector(None, &[a, b]).is_err());
+    fn the_pull_request_is_the_positional_and_the_comment_a_flag() {
+        let (pr, refs) = targets(Some("42"), &strings(&["123", "130"]), "--comment").unwrap();
+        assert_eq!((pr.as_deref(), ids(&refs)), (Some("42"), vec![123, 130]));
+        let (pr, refs) = targets(None, &strings(&["123"]), "--to").unwrap();
+        assert_eq!((pr, ids(&refs)), (None, vec![123]));
+        let e = targets(Some("42"), &[], "--to").unwrap_err();
+        assert!(e.to_string().contains("--to"), "{e}");
+    }
+
+    /// A pasted comment URL is both arguments at once, in either slot.
+    #[test]
+    fn a_comment_url_names_the_pull_request_and_the_comment() {
+        let url = "https://h/o/r/pulls/1#issuecomment-2";
+        let (pr, refs) = targets(Some(url), &[], "--to").unwrap();
+        assert_eq!((pr.as_deref(), ids(&refs)), (Some("https://h/o/r/pulls/1"), vec![2]));
+        let (pr, refs) = targets(None, &strings(&[url, "5"]), "--comment").unwrap();
+        assert_eq!((pr.as_deref(), ids(&refs)), (Some("https://h/o/r/pulls/1"), vec![2, 5]));
+        let (pr, _) = targets(Some("1"), &strings(&[url]), "--comment").unwrap();
+        assert_eq!(pr.as_deref(), Some("1"), "a number that agrees with the URL stands");
+    }
+
+    /// Two names for the pull request that disagree must not quietly pick one.
+    #[test]
+    fn disagreeing_names_for_the_pull_request_are_refused() {
+        let one = "https://h/o/r/pulls/1#issuecomment-2";
+        let three = "https://h/o/r/pulls/3#issuecomment-4";
+        assert!(targets(None, &strings(&[one, three]), "--comment").is_err());
+        assert!(targets(Some("9"), &strings(&[one]), "--comment").is_err());
+        assert!(targets(Some(one), &strings(&[three]), "--comment").is_err());
+        assert!(targets(Some("my-branch"), &strings(&[one]), "--comment").is_err());
     }
 
     /// Bug this prevents: `-e` losing the first line of a reply, which an editor session splits
