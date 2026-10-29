@@ -1,0 +1,17 @@
+---
+source: crates/fjo/src/cmd/pr/threads.rs
+assertion_line: 631
+expression: "render(&threads, &Term::tty(80))"
+---
+src/lib.rs:12 · comment 2 · unresolved
+  │  fn parse(s: &str) {
+  │      let x = 1;
+  │ +    s.parse().unwrap()
+  bob • comment 2
+    this unwrap panics on an empty input
+  alice • comment 4
+    fixed in 4f2e1c9
+
+README.md:3 (old) · comment 8 · resolved by alice
+  carol • comment 8
+    why remove this?
