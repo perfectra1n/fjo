@@ -931,9 +931,9 @@ fn a_line_comment_is_answered_resolved_and_reopened_through_any_comment_in_its_t
     let reply = inst.gea([
         "pr",
         "reply",
-        &root.to_string(),
-        "--pr",
         &idx,
+        "--to",
+        &root.to_string(),
         "-b",
         "fixed, thanks",
         "--resolve",
@@ -952,11 +952,11 @@ fn a_line_comment_is_answered_resolved_and_reopened_through_any_comment_in_its_t
     assert!(threads(&["--unresolved"]).is_empty(), "a resolved thread is filtered out");
 
     // Reopened through the *reply's* id: the thread, not the reply, is what changes.
-    inst.gea(["pr", "unresolve", &reply_id.to_string(), "--pr", &idx, "-R", &slug])
+    inst.gea(["pr", "unresolve", &idx, "--comment", &reply_id.to_string(), "-R", &slug])
         .assert_ok("gea pr unresolve through a reply");
     assert!(!resolved(&threads(&[])), "unresolving through a reply must reopen the thread");
 
-    // And resolved again from the URL alone, which names the pull request too.
+    // And resolved again from a comment URL in the pull request's slot, which names both.
     inst.gea_as(&reviewer.token, ["pr", "resolve", &reply_url, "-R", &slug])
         .assert_ok("gea pr resolve by comment URL");
     assert!(resolved(&threads(&[])), "resolving through the reply's URL must resolve the thread");
@@ -967,7 +967,7 @@ fn a_line_comment_is_answered_resolved_and_reopened_through_any_comment_in_its_t
     assert!(human.stdout.contains("resolved by"), "{}", human.stdout);
     assert!(human.stdout.contains("fixed, thanks"), "{}", human.stdout);
 
-    let unknown = inst.gea(["pr", "resolve", "999999", "--pr", &idx, "-R", &slug]);
+    let unknown = inst.gea(["pr", "resolve", &idx, "--comment", "999999", "-R", &slug]);
     assert_eq!(
         unknown.code,
         Some(5),
