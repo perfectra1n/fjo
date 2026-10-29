@@ -869,6 +869,113 @@ fn a_pending_review_holds_its_line_comments_until_it_is_submitted() {
     assert!(!resolved_state("unresolve"), "unresolving must clear the resolver");
 }
 
+/// The inline-review loop the porcelain exists for: a reviewer leaves a line comment, the author
+/// replies and resolves, and either side can reopen it — all by the ids `gea pr threads` prints.
+///
+/// The live part that matters is the mapping to the thread's first comment. Gitea accepts a
+/// resolve on a *reply* and records it on the reply alone, leaving the conversation open, so this
+/// test resolves and reopens through the reply's id and its URL and reads the *first* comment's
+/// resolver back. It also proves `--line` refuses a path outside the diff before anything is sent,
+/// which Gitea itself would have accepted with a 200.
+#[test]
+fn a_line_comment_is_answered_resolved_and_reopened_through_any_comment_in_its_thread() {
+    let inst = instance_or_skip!();
+    cover!(
+        porcelain: ["pr review", "pr threads", "pr reply", "pr resolve", "pr unresolve"],
+        hits: [
+            "repoCreatePullReview",
+            "repoGetPullRequestFiles",
+            "repoListPullReviews",
+            "repoGetPullReviewComments",
+            "repoCreatePullReviewCommentReply",
+            "repoResolvePullReviewComment",
+            "repoUnresolvePullReviewComment"
+        ]
+    );
+    let repo = TestRepo::create_initialized(inst, "pr-threads");
+    let scratch = Scratch::new("threads");
+    let index = open_pull_request(&repo, scratch.path(), "feature", "f.txt", "inline notes");
+    let reviewer = collaborator(inst, &repo, "prthreadrev");
+    let idx = index.to_string();
+    let slug = repo.slug();
+
+    let typo = inst.gea_as(
+        &reviewer.token,
+        ["pr", "review", &idx, "--line", "g.txt:1=nobody would see this", "-R", &slug],
+    );
+    assert_eq!(typo.code, Some(2), "a path outside the diff must be refused:\n{}", typo.stderr);
+    assert!(reviews(&repo, index).is_empty(), "the refused review was sent anyway");
+
+    inst.gea_as(
+        &reviewer.token,
+        ["pr", "review", &idx, "--line", "f.txt:1=this line worries me", "-R", &slug],
+    )
+    .assert_ok("gea pr review --line with no verdict");
+    let filed = reviews(&repo, index);
+    assert_eq!(filed.len(), 1, "{filed:?}");
+    assert_eq!(filed[0].1, "COMMENT", "inline comments alone make a comment review: {filed:?}");
+
+    let threads = |extra: &[&str]| {
+        let mut words = vec!["pr", "threads", &idx, "-R", &slug, "--json", "id,body,resolver"];
+        words.extend_from_slice(extra);
+        let run = inst.gea(words);
+        run.assert_ok("gea pr threads --json");
+        run.json().as_array().expect("an array of comments").clone()
+    };
+    let rows = threads(&[]);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let root = rows[0]["id"].as_i64().expect("a comment id");
+    assert_eq!(rows[0]["body"], "this line worries me");
+
+    // The author answers and resolves in one step, naming the thread by its first comment.
+    let reply = inst.gea([
+        "pr",
+        "reply",
+        &root.to_string(),
+        "--pr",
+        &idx,
+        "-b",
+        "fixed, thanks",
+        "--resolve",
+        "-R",
+        &slug,
+    ]);
+    reply.assert_ok("gea pr reply --resolve");
+    let reply_url = reply.stdout.trim().to_owned();
+    assert!(reply_url.contains("#issuecomment-"), "the reply's URL is printed: {reply_url}");
+
+    let rows = threads(&[]);
+    assert_eq!(rows.len(), 2, "the reply joins the thread: {rows:?}");
+    let reply_id = rows[1]["id"].as_i64().expect("the reply's id");
+    let resolved = |rows: &[serde_json::Value]| !rows[0]["resolver"].is_null();
+    assert!(resolved(&rows), "--resolve must resolve the first comment: {rows:?}");
+    assert!(threads(&["--unresolved"]).is_empty(), "a resolved thread is filtered out");
+
+    // Reopened through the *reply's* id: the thread, not the reply, is what changes.
+    inst.gea(["pr", "unresolve", &reply_id.to_string(), "--pr", &idx, "-R", &slug])
+        .assert_ok("gea pr unresolve through a reply");
+    assert!(!resolved(&threads(&[])), "unresolving through a reply must reopen the thread");
+
+    // And resolved again from the URL alone, which names the pull request too.
+    inst.gea_as(&reviewer.token, ["pr", "resolve", &reply_url, "-R", &slug])
+        .assert_ok("gea pr resolve by comment URL");
+    assert!(resolved(&threads(&[])), "resolving through the reply's URL must resolve the thread");
+
+    let human = inst.gea(["pr", "threads", &idx, "-R", &slug]);
+    human.assert_ok("gea pr threads");
+    assert!(human.stdout.contains("f.txt:1"), "{}", human.stdout);
+    assert!(human.stdout.contains("resolved by"), "{}", human.stdout);
+    assert!(human.stdout.contains("fixed, thanks"), "{}", human.stdout);
+
+    let unknown = inst.gea(["pr", "resolve", "999999", "--pr", &idx, "-R", &slug]);
+    assert_eq!(
+        unknown.code,
+        Some(5),
+        "an id outside the pull request is not found:\n{}",
+        unknown.stderr
+    );
+}
+
 /// Review requests are a set on the pull request, and Gitea refuses to add anyone who cannot see
 /// the repository — 422, with nothing written.
 ///
