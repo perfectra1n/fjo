@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.2.7](https://github.com/perfectra1n/fjo/compare/v0.2.6...v0.2.7) (2026-10-29)
+
+
+### Features
+
+* **pr:** inline review threads, replies, resolution and line comments ([76c155e](https://github.com/perfectra1n/fjo/commit/76c155e5eebfcce9112dc378c219b6b5da3819a3))
+* **pr:** inline review threads, replies, resolution and line comments ([017ca1d](https://github.com/perfectra1n/fjo/commit/017ca1d78bb0dcd4a273d009eaf01a6738dd43d3))
+
+
+### Bug Fixes
+
+* **deps:** clear this week's RustSec advisories ([cd716fe](https://github.com/perfectra1n/fjo/commit/cd716fe5f34d5663e92338d5e6dbbdecd78fec9d))
+* **raw:** send integer-list body fields as JSON numbers ([5810d85](https://github.com/perfectra1n/fjo/commit/5810d8525d3097654672145a359628015bf5d7cb))
+* **raw:** send integer-list body fields as JSON numbers ([01d04a5](https://github.com/perfectra1n/fjo/commit/01d04a50fd482ec02ed68d4290af5b50dbe17453))
+* **release:** make --version report the release version ([3ff3993](https://github.com/perfectra1n/fjo/commit/3ff399349d69056d9b5f1d8bf0d8fef36aa13b6c))
+* **release:** make --version report the release version ([d81e51b](https://github.com/perfectra1n/fjo/commit/d81e51b7dfee4c6de0790a4f43c450daeadcb302))
+
+
+### Code Refactoring
+
+* **pr:** take the pull request as the positional on reply, resolve and unresolve ([8fc0de2](https://github.com/perfectra1n/fjo/commit/8fc0de2fb2f532dd4f26817b1a1712fb79408a75))
+
+
+### Tests
+
+* **itest:** create a raw issue with label ids against a live Forgejo ([2ee8f23](https://github.com/perfectra1n/fjo/commit/2ee8f232120cdc460dddcbf4f9a425eb7701ed93))
+
 ## [0.2.6](https://github.com/perfectra1n/fjo/compare/v0.2.5...v0.2.6) (2026-10-10)
 
 
