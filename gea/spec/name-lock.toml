@@ -4,7 +4,7 @@
 # spec bump would change one, so a rename is always a reviewed, documented decision
 # rather than something that happens to people. See crates/xtask/src/name_lock.rs.
 #
-# spec: gitea v28.1.0, 537 operations
+# spec: gitea v28.2.0, 537 operations
 
 ActionsDisableWorkflow = { group = "workflow", command = "disable", fn = "disable" }
 ActionsDispatchWorkflow = { group = "workflow", command = "dispatch", fn = "dispatch" }

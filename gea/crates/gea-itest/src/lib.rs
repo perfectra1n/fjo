@@ -41,7 +41,7 @@ use testcontainers::runners::SyncRunner;
 use testcontainers::{Container, GenericImage, ImageExt};
 
 /// The Gitea release these tests — and the vendored specification — target.
-pub const GITEA_IMAGE: &str = "docker.io/gitea/gitea:28.1.0";
+pub const GITEA_IMAGE: &str = "docker.io/gitea/gitea:28.2.0";
 
 /// How long to wait for Gitea to answer before giving up and explaining why.
 ///
