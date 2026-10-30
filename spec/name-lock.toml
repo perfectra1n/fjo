@@ -4,7 +4,7 @@
 # spec bump would change one, so a rename is always a reviewed, documented decision
 # rather than something that happens to people. See crates/xtask/src/name_lock.rs.
 #
-# spec: forgejo v16.0.5, 506 operations
+# spec: forgejo v17.0.1, 512 operations
 
 ActionRun = { group = "run", command = "view", fn = "view" }
 CancelActionRun = { group = "run", command = "cancel", fn = "cancel" }
@@ -22,6 +22,7 @@ ListActionRunArtifacts = { group = "run", command = "artifacts", fn = "artifacts
 ListActionRunJobs = { group = "run", command = "jobs", fn = "jobs" }
 ListActionRuns = { group = "run", command = "list", fn = "list" }
 ListActionTasks = { group = "task", command = "list", fn = "list" }
+RerunActionRun = { group = "repo", command = "rerun-action-run", fn = "rerun_action_run" }
 acceptRepoTransfer = { group = "repo", command = "accept-repo-transfer", fn = "accept_repo_transfer" }
 activitypubInstanceActor = { group = "activitypub", command = "instance-actor", fn = "instance_actor" }
 activitypubInstanceActorInbox = { group = "activitypub", command = "instance-actor-inbox", fn = "instance_actor_inbox" }
@@ -200,6 +201,7 @@ listLabelTemplates = { group = "misc", command = "list-label-templates", fn = "l
 listLicenseTemplates = { group = "misc", command = "list-license-templates", fn = "list_license_templates" }
 listPackageFiles = { group = "package", command = "list-package-files", fn = "list_package_files" }
 listPackages = { group = "package", command = "list-packages", fn = "list_packages" }
+lockIssue = { group = "issue", command = "lock-issue", fn = "lock_issue" }
 moveIssuePin = { group = "issue", command = "move-issue-pin", fn = "move_issue_pin" }
 notifyGetList = { group = "notify", command = "get-list", fn = "get_list" }
 notifyGetRepoList = { group = "notify", command = "get-repo-list", fn = "get_repo_list" }
@@ -336,6 +338,7 @@ repoEditReleaseAttachment = { group = "repo", command = "edit-release-attachment
 repoEditTagProtection = { group = "repo", command = "edit-tag-protection", fn = "edit_tag_protection" }
 repoEditWikiPage = { group = "repo", command = "edit-wiki-page", fn = "edit_wiki_page" }
 repoGet = { group = "repo", command = "get", fn = "get" }
+repoGetActionJob = { group = "repo", command = "get-action-job", fn = "get_action_job" }
 repoGetActionJobLogs = { group = "repo", command = "get-action-job-logs", fn = "get_action_job_logs" }
 repoGetActionRunLogs = { group = "repo", command = "get-action-run-logs", fn = "get_action_run_logs" }
 repoGetAllCommits = { group = "repo", command = "get-all-commits", fn = "get_all_commits" }
@@ -413,6 +416,7 @@ repoPullRequestIsMerged = { group = "repo", command = "pull-request-is-merged", 
 repoPushMirrorSync = { group = "repo", command = "push-mirror-sync", fn = "push_mirror_sync" }
 repoRemoveNote = { group = "repo", command = "remove-note", fn = "remove_note" }
 repoReplaceAllFlags = { group = "repo", command = "replace-all-flags", fn = "replace_all_flags" }
+repoRerunActionJob = { group = "repo", command = "rerun-action-job", fn = "rerun_action_job" }
 repoSearch = { group = "repo", command = "search", fn = "search" }
 repoSearchRunJobs = { group = "repo", command = "search-run-jobs", fn = "search_run_jobs" }
 repoSetNote = { group = "repo", command = "set-note", fn = "set_note" }
@@ -435,6 +439,7 @@ repoValidateIssueConfig = { group = "repo", command = "validate-issue-config", f
 teamSearch = { group = "team", command = "search", fn = "search" }
 topicSearch = { group = "topic", command = "search", fn = "search" }
 unlinkPackage = { group = "package", command = "unlink-package", fn = "unlink_package" }
+unlockIssue = { group = "issue", command = "unlock-issue", fn = "unlock_issue" }
 unpinIssue = { group = "issue", command = "unpin-issue", fn = "unpin_issue" }
 updateOrgSecret = { group = "org", command = "update-org-secret", fn = "update_org_secret" }
 updateOrgVariable = { group = "org", command = "update-org-variable", fn = "update_org_variable" }
@@ -490,6 +495,7 @@ userGetQuota = { group = "user", command = "get-quota", fn = "get_quota" }
 userGetRunnerRegistrationToken = { group = "user", command = "get-runner-registration-token", fn = "get_runner_registration_token" }
 userGetStopWatches = { group = "user", command = "get-stop-watches", fn = "get_stop_watches" }
 userGetTokens = { group = "user", command = "get-tokens", fn = "get_tokens" }
+userListActionsSecrets = { group = "user", command = "list-actions-secrets", fn = "list_actions_secrets" }
 userListActivityFeeds = { group = "user", command = "list-activity-feeds", fn = "list_activity_feeds" }
 userListBlockedUsers = { group = "user", command = "list-blocked-users", fn = "list_blocked_users" }
 userListEmails = { group = "user", command = "list-emails", fn = "list_emails" }
