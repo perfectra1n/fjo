@@ -3926,7 +3926,7 @@
           "x-go-name": "Description"
         },
         "due_on": {
-          "description": "Deadline is the updated due date for the milestone",
+          "description": "Deadline is the due date for the milestone, use null or empty string to remove the deadline",
           "format": "date-time",
           "type": "string",
           "x-go-name": "Deadline"
@@ -5672,7 +5672,7 @@
       "description": "IssueLabelsOption a collection of labels",
       "properties": {
         "labels": {
-          "description": "Labels can be a list of integers representing label IDs\nor a list of strings representing label names",
+          "description": "Labels can be a list of integers representing label IDs\nor a list of strings representing label names.\nIf a repository label and an organization label share a name,\nthe repository label is used.",
           "items": {},
           "type": "array",
           "x-go-name": "Labels"
@@ -9272,7 +9272,7 @@
       "url": "http://opensource.org/licenses/MIT"
     },
     "title": "Gitea API",
-    "version": "28.2.0"
+    "version": "28.3.0"
   },
   "paths": {
     "/admin/actions/jobs": {

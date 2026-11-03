@@ -28779,7 +28779,7 @@
           "x-go-name": "Description"
         },
         "due_on": {
-          "description": "Deadline is the updated due date for the milestone",
+          "description": "Deadline is the due date for the milestone, use null or empty string to remove the deadline",
           "type": "string",
           "format": "date-time",
           "x-go-name": "Deadline"
@@ -30525,7 +30525,7 @@
       "type": "object",
       "properties": {
         "labels": {
-          "description": "Labels can be a list of integers representing label IDs\nor a list of strings representing label names",
+          "description": "Labels can be a list of integers representing label IDs\nor a list of strings representing label names.\nIf a repository label and an organization label share a name,\nthe repository label is used.",
           "type": "array",
           "items": {},
           "x-go-name": "Labels"
