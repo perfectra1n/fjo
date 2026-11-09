@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.3.0](https://github.com/perfectra1n/fjo/compare/v0.2.6...v0.3.0) (2026-11-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **spec:** fjo now speaks the Forgejo 17 API. `fjo project create` sends Forgejo 17's form and no longer creates boards correctly against Forgejo 16. The published forgejo-client changes too: compare_diff takes a RepoCompareDiffQuery, CreateUserOption.email is an Option, and the five header-only routes return their models instead of `()`.
+
+### Features
+
+* **pr:** inline review threads, replies, resolution and line comments ([76c155e](https://github.com/perfectra1n/fjo/commit/76c155e5eebfcce9112dc378c219b6b5da3819a3))
+* **pr:** inline review threads, replies, resolution and line comments ([017ca1d](https://github.com/perfectra1n/fjo/commit/017ca1d78bb0dcd4a273d009eaf01a6738dd43d3))
+* **spec:** finish the Forgejo 17.0.1 bump ([b4f2966](https://github.com/perfectra1n/fjo/commit/b4f2966cf10d7590beaab5af75000b0f263e3a44))
+* **spec:** update Forgejo API spec to v17.0.1 ([6d2f67d](https://github.com/perfectra1n/fjo/commit/6d2f67d4e33835725bd82258d8af2a2ba0eed689))
+
+
+### Bug Fixes
+
+* **deps:** clear this week's cargo-deny findings ([8c2c41c](https://github.com/perfectra1n/fjo/commit/8c2c41c9f681797171c46a632cb07f611b794743))
+* **deps:** clear this week's RustSec advisories ([cd716fe](https://github.com/perfectra1n/fjo/commit/cd716fe5f34d5663e92338d5e6dbbdecd78fec9d))
+* **raw:** send integer-list body fields as JSON numbers ([5810d85](https://github.com/perfectra1n/fjo/commit/5810d8525d3097654672145a359628015bf5d7cb))
+* **raw:** send integer-list body fields as JSON numbers ([01d04a5](https://github.com/perfectra1n/fjo/commit/01d04a50fd482ec02ed68d4290af5b50dbe17453))
+* **release:** make --version report the release version ([3ff3993](https://github.com/perfectra1n/fjo/commit/3ff399349d69056d9b5f1d8bf0d8fef36aa13b6c))
+* **release:** make --version report the release version ([d81e51b](https://github.com/perfectra1n/fjo/commit/d81e51b7dfee4c6de0790a4f43c450daeadcb302))
+
+
+### Code Refactoring
+
+* **pr:** take the pull request as the positional on reply, resolve and unresolve ([8fc0de2](https://github.com/perfectra1n/fjo/commit/8fc0de2fb2f532dd4f26817b1a1712fb79408a75))
+
+
+### Tests
+
+* **itest:** compare the server version with the pinned image ([25738b6](https://github.com/perfectra1n/fjo/commit/25738b679887e677c7c8b30e9d45652599f0536a))
+* **itest:** create a raw issue with label ids against a live Forgejo ([2ee8f23](https://github.com/perfectra1n/fjo/commit/2ee8f232120cdc460dddcbf4f9a425eb7701ed93))
+
 ## [0.2.6](https://github.com/perfectra1n/fjo/compare/v0.2.5...v0.2.6) (2026-10-10)
 
 
