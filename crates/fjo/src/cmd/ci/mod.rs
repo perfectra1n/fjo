@@ -9,10 +9,13 @@
 //!
 //! # No `fjo ci rerun`
 //!
-//! The `gea` original has one; Forgejo's API has no route to rerun a run or a job (measured on
-//! 16.0.5: `POST …/actions/runs/{id}/rerun` is a router 404), and `fjo run` has no `rerun` for
-//! the same reason. Rerunning is a web-UI action on Forgejo, so a failed `fjo ci` advises
-//! `fjo run view <id> --web`, which opens the page that has the button.
+//! The `gea` original has one. Forgejo 16 had no route to rerun a run or a job (measured on
+//! 16.0.5: `POST …/actions/runs/{id}/rerun` was a router 404), so this port was built without
+//! one. Forgejo 17 added `POST …/actions/runs/{id}/rerun` and `POST …/actions/jobs/{id}/rerun`;
+//! they are reachable as `fjo raw run rerun` and `fjo raw repo rerun-action-job`, and
+//! `crates/fjo-itest/tests/live_ci.rs` drives both, but no porcelain wraps them yet. Until one
+//! does, a failed `fjo ci` advises `fjo run view <id> --web`, which opens the page that has the
+//! button.
 //!
 //! # Built for a reader who is a script as often as a person
 //!

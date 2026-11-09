@@ -83,6 +83,21 @@ pub struct Overrides {
     /// meaningful.
     #[serde(default)]
     pub one_or_many: BTreeMap<String, String>,
+
+    /// `operationId` → the definition its success body really carries, for routes whose
+    /// spec describes that body's fields as response *headers* and declares no schema.
+    ///
+    /// Forgejo v17 publishes `AccessToken` and `OAuth2Application` that way: every field of
+    /// the model appears under `headers`, and `schema` is gone. Taken literally that lowers to
+    /// `()`, so `fjo raw user create-token` threw away the one value the route exists to hand
+    /// out, while the server still answers the JSON object it always has.
+    ///
+    /// Lowering refuses an entry whose operation already declares a body, whose response no
+    /// longer lists the model's fields as headers, or that names an operation that does not
+    /// exist. Each means the entry has outlived its reason. It also refuses the reverse: a
+    /// header-only success response with no entry here.
+    #[serde(default)]
+    pub response_model: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]

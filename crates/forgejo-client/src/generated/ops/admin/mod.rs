@@ -138,11 +138,11 @@ impl<'a> Admin<'a> {
         &self,
         username: &str,
         body: &forgejo_model::CreateAccessTokenOption,
-    ) -> Result<()> {
+    ) -> Result<forgejo_model::AccessToken> {
         let req = Request::post(format!("/admin/users/{}/tokens", encode::seg(username)))
             .scope("write:admin")
             .json_body(body)?;
-        self.client.empty(req).await
+        self.client.json(req).await
     }
     /// List cron tasks
     ///

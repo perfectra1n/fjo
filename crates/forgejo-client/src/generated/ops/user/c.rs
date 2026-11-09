@@ -43,9 +43,9 @@ impl super::User<'_> {
     pub async fn create_oauth2_application(
         &self,
         body: &forgejo_model::CreateOAuth2ApplicationOptions,
-    ) -> Result<()> {
+    ) -> Result<forgejo_model::OAuth2Application> {
         let req = Request::post("/user/applications/oauth2").scope("write:user").json_body(body)?;
-        self.client.empty(req).await
+        self.client.json(req).await
     }
     /// Generate an access token for the specified user
     ///
@@ -54,11 +54,11 @@ impl super::User<'_> {
         &self,
         username: &str,
         body: &forgejo_model::CreateAccessTokenOption,
-    ) -> Result<()> {
+    ) -> Result<forgejo_model::AccessToken> {
         let req = Request::post(format!("/users/{}/tokens", encode::seg(username)))
             .scope("write:user")
             .json_body(body)?;
-        self.client.empty(req).await
+        self.client.json(req).await
     }
     /// Create a user-level variable
     ///

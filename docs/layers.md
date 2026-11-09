@@ -4,7 +4,7 @@
 
 ```
 fjo <noun> <verb>        layer 3   hand-written porcelain   35 groups, 238 commands
-fjo raw <group> <op>     layer 2   generated                506 operations, all of them
+fjo raw <group> <op>     layer 2   generated                512 operations, all of them
 fjo api <path>           layer 1   generated from nothing   any path under /api/v1
 fjo web <path>           layer 0   web-root, cookie-authenticated     any route under /
 ```
@@ -15,28 +15,28 @@ Layers 1 and 2 are complete by construction, over the surface the vendored spec 
 
 This is the story for layers 1 through 3 — everything downstream of the generator. Layer 0 has no generator to be downstream of; its own coverage story is next.
 
-The generator (`cargo xtask codegen`) reads `spec/forgejo-v16.0.5.json` — a de-templated, key-sorted copy of Forgejo's Swagger 2.0 document, vendored at git tag `v16.0.5` — and emits four things:
+The generator (`cargo xtask codegen`) reads `spec/forgejo-v17.0.1.json` — a de-templated, key-sorted copy of Forgejo's Swagger 2.0 document, vendored at git tag `v17.0.1` — and emits four things:
 
 | Emitter | Output | Feeds |
 | --- | --- | --- |
-| `models` | 246 types | the typed client and every renderer |
-| `client` | 506 methods, one per operation | the SDK, and layer 3 |
+| `models` | 248 types | the typed client and every renderer |
+| `client` | 512 methods, one per operation | the SDK, and layer 3 |
 | `meta` | `static OPS: &[OpMeta]` | layer 2's command tree |
 | `fields` | per-model `FieldSpec` tables | `--json` projection and discovery |
 
 `ops_is_a_bijection_with_the_specs_operation_ids`, in `crates/forgejo-client/src/generated/meta/invariants.rs`, loads the same spec at test time and asserts a bijection between its `operationId`s and `OPS` — nothing in the spec missing from the table, nothing in the table absent from the spec. Coverage is therefore a test failure, not a judgement call, and it fails loudly the moment `cargo xtask update-spec` pulls in new endpoints.
 
-Nobody writes 506 commands. Nobody has to.
+Nobody writes 512 commands. Nobody has to.
 
 ## Layer 0 — `fjo web <path>`
 
-Forgejo has features with no REST API at all. Projects — the per-repository and per-organisation kanban boards — are the one that forced this layer into existence: the OpenAPI spec Forgejo serves has zero `project` paths on 16.0.5, and the web routes that actually back the board UI reject an API token outright, answering `303 → /user/login` instead of `401`. Layers 1 through 3 all descend from the vendored spec — a generated client, a generated command tree, and porcelain hand-written on top of both — so none of them can reach a route the spec never mentions.
+Forgejo has features with no REST API at all. Projects — the per-repository and per-organisation kanban boards — are the one that forced this layer into existence: the OpenAPI spec Forgejo serves has zero `project` paths on 16.0.5 and still none on 17.0.1, and the web routes that actually back the board UI reject an API token outright, answering `303 → /user/login` instead of `401`. Layers 1 through 3 all descend from the vendored spec — a generated client, a generated command tree, and porcelain hand-written on top of both — so none of them can reach a route the spec never mentions.
 
 `fjo web <path>` requests the instance's web root instead of `/api/v1`: the same flags as `fjo api` (`-X`, `-f`, `-F`, `--input`, `-H`, `-i`), the same `{owner}`/`{repo}` substitution, the same `--json`/`--jq`/`--template` pipeline, but authenticated with a session cookie rather than a token, because the web routes only accept the former.
 
 This is a difference in kind, not degree, and it should be said plainly rather than softened: layers 1 through 3 are pinned to the vendored spec — the JSON file this repository vendors and diffs on every bump, named above. Layer 0 is pinned to Forgejo's *source* at the same tag — undocumented, unversioned web routes that no spec describes and that Forgejo is free to change in any release, including a patch release, without telling anyone. There is nothing to diff.
 
-That pin is nevertheless enforced, which is what makes it acceptable rather than reckless: the live integration suite boots `codeberg.org/forgejo/forgejo:16.0.5`, the same version this layer is written against, so a Forgejo release that changes a route or the board template turns the suite red before it reaches a user. This is the same mechanism in spirit as `ops_is_a_bijection_with_the_specs_operation_ids` enforcing the spec for layer 2 — coverage and correctness are test failures here too, not judgement calls — and the `coverage-check` ratchet refuses a new porcelain leaf, `fjo project` included, that was never actually driven against a real server.
+That pin is nevertheless enforced, which is what makes it acceptable rather than reckless: the live integration suite boots `codeberg.org/forgejo/forgejo:17.0.1`, the same version this layer is written against, so a Forgejo release that changes a route or the board template turns the suite red before it reaches a user. This is the same mechanism in spirit as `ops_is_a_bijection_with_the_specs_operation_ids` enforcing the spec for layer 2 — coverage and correctness are test failures here too, not judgement calls — and the `coverage-check` ratchet refuses a new porcelain leaf, `fjo project` included, that was never actually driven against a real server.
 
 ```bash
 fjo web POST AtvikSecurity/VulnCorp/projects/3/12/move --input cards.json
@@ -164,10 +164,10 @@ This is the property the layering exists to buy, and it is worth being concrete 
 
 ### `fjo admin badge` — the API has no badge route
 
-`spec/forgejo-v16.0.5.json` contains the string `badge` zero times:
+`spec/forgejo-v17.0.1.json` contains the string `badge` zero times:
 
 ```console
-$ grep -c badge spec/forgejo-v16.0.5.json
+$ grep -c badge spec/forgejo-v17.0.1.json
 0
 ```
 

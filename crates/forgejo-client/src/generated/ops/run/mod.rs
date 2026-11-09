@@ -151,6 +151,21 @@ impl<'a> Run<'a> {
         );
         self.client.json(req).await
     }
+    /// Rerun a finished (succeeded, failed, cancelled or skipped) workflow run. Rerun a particular
+    /// workflow run. The workflow run must have completed (succeeded, failed, cancelled or skipped) for
+    /// the operation to succeed. Otherwise, an error is returned.
+    ///
+    /// `POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun` — needs the `write:repository` token scope.
+    pub async fn rerun(&self, owner: &str, repo: &str, run_id: i64) -> Result<()> {
+        let req = Request::post(format!(
+            "/repos/{}/{}/actions/runs/{}/rerun",
+            encode::seg(owner),
+            encode::seg(repo),
+            run_id
+        ))
+        .scope("write:repository");
+        self.client.empty(req).await
+    }
     /// Get an action run
     ///
     /// `GET /repos/{owner}/{repo}/actions/runs/{run_id}` — needs the `read:repository` token scope.

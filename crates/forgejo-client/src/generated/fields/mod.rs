@@ -59,7 +59,7 @@ pub use f_s::*;
 pub use f_t::*;
 pub use f_u::*;
 pub use f_w::*;
-/// The 333 operations that return a typed object, sorted by `op_id` for binary search.
+/// The 338 operations that return a typed object, sorted by `op_id` for binary search.
 ///
 /// 140 field tables cover every model an operation can return.
 pub static OP_FIELDS: &[(&str, &[FieldSpec])] = &[
@@ -88,6 +88,7 @@ pub static OP_FIELDS: &[(&str, &[FieldSpec])] = &[
     ("adminCreateQuotaRule", f_q::FIELDS_QUOTA_RULE_INFO),
     ("adminCreateRepo", f_r::FIELDS_REPOSITORY),
     ("adminCreateUser", f_u::FIELDS_USER),
+    ("adminCreateUserAccessToken", f_a::FIELDS_ACCESS_TOKEN),
     ("adminCronList", f_c::FIELDS_CRON),
     ("adminEditHook", f_h::FIELDS_HOOK),
     ("adminEditQuotaRule", f_q::FIELDS_QUOTA_RULE_INFO),
@@ -352,6 +353,8 @@ pub static OP_FIELDS: &[(&str, &[FieldSpec])] = &[
     ("updateUserSettings", f_u::FIELDS_USER_SETTINGS),
     ("userAddEmail", f_e::FIELDS_EMAIL),
     ("userCreateHook", f_h::FIELDS_HOOK),
+    ("userCreateOAuth2Application", f_o::FIELDS_O_AUTH2_APPLICATION),
+    ("userCreateToken", f_a::FIELDS_ACCESS_TOKEN),
     ("userCurrentCheckSubscription", f_w::FIELDS_WATCH_INFO),
     ("userCurrentGetGPGKey", f_g::FIELDS_GPG_KEY),
     ("userCurrentGetKey", f_p::FIELDS_PUBLIC_KEY),
@@ -371,6 +374,7 @@ pub static OP_FIELDS: &[(&str, &[FieldSpec])] = &[
     ("userGetCurrent", f_u::FIELDS_USER),
     ("userGetHeatmapData", f_u::FIELDS_USER_HEATMAP_DATA),
     ("userGetHook", f_h::FIELDS_HOOK),
+    ("userGetOAuth2Application", f_o::FIELDS_O_AUTH2_APPLICATION),
     ("userGetOAuth2Applications", f_o::FIELDS_O_AUTH2_APPLICATION),
     ("userGetQuota", f_q::FIELDS_QUOTA_INFO),
     ("userGetRunnerRegistrationToken", f_r::FIELDS_REGISTRATION_TOKEN),
@@ -395,5 +399,6 @@ pub static OP_FIELDS: &[(&str, &[FieldSpec])] = &[
     ("userSearch", f_u::FIELDS_USER_SEARCH_RESPONSE),
     ("userSearchRunJobs", f_a::FIELDS_ACTION_RUN_JOB),
     ("userTrackedTimes", f_t::FIELDS_TRACKED_TIME),
+    ("userUpdateOAuth2Application", f_o::FIELDS_O_AUTH2_APPLICATION),
     ("userVerifyGPGKey", f_g::FIELDS_GPG_KEY),
 ];

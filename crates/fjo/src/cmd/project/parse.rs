@@ -412,6 +412,7 @@ mod tests {
     fn a_page_that_is_not_a_board_is_an_error_not_an_empty_board() {
         let err = parse_board("<html><body>signed out</body></html>").expect_err("refuses");
         let msg = err.to_string();
-        assert!(msg.contains("16.0.5"), "the error should name the verified version: {msg}");
+        let verified = forgejo_core::web::VERIFIED_AGAINST;
+        assert!(msg.contains(verified), "the error should name the verified version: {msg}");
     }
 }

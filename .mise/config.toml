@@ -125,8 +125,8 @@ set -eu
 # the latest release tag against the `forgejo` branch (tracking issue) — the
 # second is the one that reports only what upstream has NOT released yet.
 # Run here to answer "what changed upstream" before a bump, e.g.
-#   mise run spec-diff -- --tag v16.0.5
-#   mise run spec-diff -- --baseline-tag v16.0.5 --branch forgejo
+#   mise run spec-diff -- --tag v17.0.1
+#   mise run spec-diff -- --baseline-tag v17.0.1 --branch forgejo
 cargo xtask spec-diff "$@"
 '''
 
@@ -502,7 +502,7 @@ set -eu
 # could measure. This measures it.
 #
 # Two planes, deliberately gated differently:
-#   * contract -- every one of the 506 operations had its composed request
+#   * contract -- every one of the 512 operations had its composed request
 #     checked against its own metadata (crates/fjo/tests/raw_contract.rs). That
 #     test is a LOOP over OPS, so coverage is complete by construction and any
 #     gap means an operation was added to a skip list. Hard failure at one.

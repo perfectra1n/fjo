@@ -1357,7 +1357,7 @@ mod tests {
         let async_fns: usize =
             ops_files().map(|f| f.contents.matches("pub async fn ").count()).sum();
         assert_eq!(async_fns, ir().operations.len(), "one async method per operation");
-        assert_eq!(async_fns, 506, "the spec has 506 operations");
+        assert_eq!(async_fns, 512, "the spec has 512 operations");
     }
 
     /// The streaming halves, the group constructors, and the `Api` accessors are the only other
@@ -1376,7 +1376,7 @@ mod tests {
             })
             .count();
         let groups = ir().groups.len();
-        assert_eq!(paged_arrays, 95, "paginated array-returning operations");
+        assert_eq!(paged_arrays, 96, "paginated array-returning operations");
         // one `new` and one `Api` accessor per group, plus one stream per paginated array.
         assert_eq!(plain, paged_arrays + 2 * groups);
     }

@@ -30,11 +30,11 @@ impl super::User<'_> {
         &self,
         id: i64,
         body: &forgejo_model::CreateOAuth2ApplicationOptions,
-    ) -> Result<()> {
+    ) -> Result<forgejo_model::OAuth2Application> {
         let req = Request::patch(format!("/user/applications/oauth2/{}", id))
             .scope("write:user")
             .json_body(body)?;
-        self.client.empty(req).await
+        self.client.json(req).await
     }
     /// Create or Update a secret value in a user scope
     ///

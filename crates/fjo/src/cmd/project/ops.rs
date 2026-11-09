@@ -132,16 +132,18 @@ pub async fn create(
     scope: &Scope,
     title: &str,
     description: &str,
-    template: u8,
+    template: &str,
 ) -> Result<()> {
-    // Lowercase field names, and `card_type` 1 ("images and text") to match what the web UI
-    // creates -- both established by driving a real instance, not by reading the Go structs,
-    // whose field names are NOT what the form binding reads.
+    // Lowercase field names, and `card_type` "images_and_text" to match what the web UI creates
+    // -- the names established by driving a real instance, not by reading the Go structs, whose
+    // field names are NOT what the form binding reads. Since Forgejo 17 both types are strings
+    // the project service validates (`text_only`/`images_and_text`, and the template names in
+    // `Template::wire`); an absent or numeric card type fails that validation as a 500.
     let form = vec![
         ("title".to_owned(), title.to_owned()),
         ("content".to_owned(), description.to_owned()),
-        ("template_type".to_owned(), template.to_string()),
-        ("card_type".to_owned(), "1".to_owned()),
+        ("template_type".to_owned(), template.to_owned()),
+        ("card_type".to_owned(), "images_and_text".to_owned()),
     ];
     let path = format!("{}/new", scope.index());
     expect_ok(rt, Method::POST, &path, WebBody::Form(form)).await

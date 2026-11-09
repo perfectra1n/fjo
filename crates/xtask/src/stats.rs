@@ -2,7 +2,8 @@
 //!
 //! This is not a report. Every number below was established by independent inspection of
 //! `spec/forgejo-v16.0.4.json` before any loader existed, and [`Stats::verify`] asserts the
-//! loader reproduces them. **If the numbers disagree, the loader is wrong**, not the
+//! loader reproduces them. For v17.0.1 they were re-derived by a separate counter that first
+//! reproduced every v16.0.5 figure exactly. **If the numbers disagree, the loader is wrong**, not the
 //! expectations.
 //!
 //! The reason to spend a milestone on this: 42k lines of generated code inherit whatever the
@@ -23,9 +24,9 @@
 //! - **enum / date-time / int64 / uint64** — schema nodes anywhere inside `definitions`,
 //!   found by [`crate::swagger::Schema::walk`]. This includes array `items`, map values, and
 //!   definitions that are themselves a scalar alias (`Duration`, `TimeStamp`). Counting only
-//!   top-level properties gives 165 int64 instead of 171.
+//!   top-level properties undercounts int64 against the 172 this reports.
 //! - **defs with required** — definitions declaring a non-empty `required` list, top level
-//!   only. Only 39 of 246 do, which is why nearly every generated field is `#[serde(default)]`.
+//!   only. Only 38 of 248 do, which is why nearly every generated field is `#[serde(default)]`.
 
 use std::collections::BTreeMap;
 
@@ -33,7 +34,7 @@ use crate::Result;
 use crate::swagger::{ParamIn, Spec};
 
 /// The version these expectations were verified against.
-pub const EXPECTED_VERSION: &str = "16.0.5";
+pub const EXPECTED_VERSION: &str = "17.0.1";
 
 pub struct Stats {
     pub paths: usize,
@@ -55,7 +56,7 @@ pub struct Stats {
     pub tag_counts: BTreeMap<String, usize>,
 }
 
-/// The independently verified counts for Forgejo v16.0.4.
+/// The independently verified counts for Forgejo v17.0.1.
 struct Expected {
     paths: usize,
     operations: usize,
@@ -75,31 +76,31 @@ struct Expected {
 }
 
 const EXPECTED: Expected = Expected {
-    paths: 326,
-    operations: 506,
-    definitions: 246,
+    paths: 331,
+    operations: 512,
+    definitions: 248,
     tags: 10,
-    path_params: 945,
-    query_params: 378,
-    body_params: 125,
+    path_params: 960,
+    query_params: 386,
+    body_params: 126,
     form_data_params: 4,
     enum_properties: 17,
-    date_time_props: 94,
-    int64_props: 171,
+    date_time_props: 96,
+    int64_props: 172,
     uint64_props: 2,
-    defs_with_required: 39,
+    defs_with_required: 38,
     polymorphism: 0,
     tag_counts: &[
         ("activitypub", 11),
         ("admin", 51),
-        ("issue", 67),
+        ("issue", 69),
         ("miscellaneous", 14),
         ("notification", 7),
         ("organization", 69),
         ("package", 6),
-        ("repository", 198),
+        ("repository", 201),
         ("settings", 4),
-        ("user", 80),
+        ("user", 81),
     ],
 };
 
@@ -292,11 +293,11 @@ mod tests {
     /// The layout the milestone specifies, verbatim. A test rather than a comment because the
     /// column widths are the sort of thing a well-meaning cleanup silently reflows.
     const GOLDEN: &str = "\
-paths                326      operations         506      definitions        246
-tags                  10      path params        945      query params       378
-body params          125      formData params      4      enum properties     17
-date-time props       94      int64 props        171      uint64 props         2
-defs with required    39      allOf/oneOf/anyOf/not/discriminator   0
+paths                331      operations         512      definitions        248
+tags                  10      path params        960      query params       386
+body params          126      formData params      4      enum properties     17
+date-time props       96      int64 props        172      uint64 props         2
+defs with required    38      allOf/oneOf/anyOf/not/discriminator   0
 ";
 
     fn known_good() -> Stats {
@@ -336,10 +337,10 @@ defs with required    39      allOf/oneOf/anyOf/not/discriminator   0
         // The bug this prevents: a loader that undercounts int64 by six (the array-items
         // traversal bug) shipping because nothing compared it to a known-good value.
         let mut s = known_good();
-        s.int64_props = 165;
+        s.int64_props = 166;
         let err = s.verify(EXPECTED_VERSION).unwrap_err().to_string();
         assert!(err.contains("int64 props"), "{err}");
-        assert!(err.contains("171"), "{err}");
+        assert!(err.contains("172"), "{err}");
     }
 
     #[test]
@@ -362,5 +363,6 @@ defs with required    39      allOf/oneOf/anyOf/not/discriminator   0
     fn verify_refuses_to_bless_a_different_spec_version() {
         // A spec bump must not silently re-baseline the self-test.
         assert!(known_good().verify("17.0.0").is_err());
+        assert!(known_good().verify("16.0.5").is_err());
     }
 }

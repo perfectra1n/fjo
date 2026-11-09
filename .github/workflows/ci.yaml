@@ -140,7 +140,7 @@ jobs:
         with:
           shared-key: release
 
-      # Startup and size budgets. The generated layer holds 506 commands; if it
+      # Startup and size budgets. The generated layer holds 512 commands; if it
       # ever starts being constructed eagerly, `fjo --version` is where that
       # shows up first. The task builds the release binary itself (`depends`).
       - name: Startup and size budgets
@@ -163,7 +163,7 @@ jobs:
       # This job is what covers the tests the nextest default profile filters out.
       #
       # `coverage-check` rather than `itest`: it runs the hermetic contract tests (which
-      # write the porcelain inventory and the 506-operation contract journal), then
+      # write the porcelain inventory and the 512-operation contract journal), then
       # `cargo xtask itest` exactly as before, then the ratchet over what both actually
       # drove. The integration suite is therefore run once, not twice, and the run ends
       # with a number instead of only a tick.

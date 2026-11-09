@@ -2,7 +2,7 @@
 //!
 //! # Why this module exists at all
 //!
-//! Everything else in this crate descends from `spec/forgejo-v16.0.5.json`. Some Forgejo
+//! Everything else in this crate descends from `spec/forgejo-v17.0.1.json`. Some Forgejo
 //! features are absent from it entirely — Projects (kanban boards) is the motivating one, and
 //! the served spec has no `project` path of any kind. Those features exist only as web routes,
 //! and a web route will not accept an API token: it answers one with exactly the `303` to
@@ -42,7 +42,7 @@
 ///
 /// Referenced by error messages when a response does not have the shape this module expects,
 /// which is the one moment a version mismatch is worth mentioning to a user.
-pub const VERIFIED_AGAINST: &str = "16.0.5";
+pub const VERIFIED_AGAINST: &str = "17.0.1";
 
 /// The cookie Forgejo sets for a signed-in session.
 ///

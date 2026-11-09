@@ -268,6 +268,11 @@ pub(crate) async fn names(api: &Api, org: &str) -> Result<Vec<String>> {
 
 // ------------------------------------------------------------------------------------- list
 
+// Forgejo 17 marks `units` deprecated on Team, CreateTeamOption and EditTeamOption in favour of
+// `units_map`, and says it "will be dropped in later versions". 17.0.1 still returns it and
+// accepts it on create (live_org_team.rs creates every team with `--units`), so these keep using
+// it until the team porcelain moves to `units_map`, the way gea's did for Gitea 28.
+#[allow(deprecated)]
 async fn list(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &ListArgs) -> Result<()> {
     let limit = support::limit(None, globals);
     // `teamSearch` is the only way to filter server-side, and it wraps its results in an envelope;
@@ -315,6 +320,8 @@ async fn view(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &TeamArgs) ->
     detail(rt, globals, &team)
 }
 
+// Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
+#[allow(deprecated)]
 fn detail(rt: &Runtime, globals: &GlobalOpts, team: &Team) -> Result<()> {
     let mut rows = vec![
         ("name".to_owned(), team.name.clone()),
@@ -347,6 +354,8 @@ fn detail(rt: &Runtime, globals: &GlobalOpts, team: &Team) -> Result<()> {
 
 // ----------------------------------------------------------------------------- create / edit
 
+// Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
+#[allow(deprecated)]
 async fn create(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &CreateArgs) -> Result<()> {
     let body = CreateTeamOption {
         name: args.name.clone(),
@@ -376,6 +385,8 @@ async fn edit(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &EditArgs) ->
 /// Note `units`: an empty `--unit` list means "leave them alone", not "remove them all". Removing
 /// every unit from a team makes its repositories invisible to its members, which is not something
 /// to do by omission.
+// Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
+#[allow(deprecated)]
 fn merge_edit(args: &EditArgs, current: &Team) -> EditTeamOption {
     EditTeamOption {
         name: args.name.clone().unwrap_or_else(|| current.name.clone()),
@@ -582,6 +593,8 @@ mod tests {
     /// empty string, clearing its units and dropping its permission, because `EditTeamOption` has
     /// no way to say "unchanged".
     #[test]
+    // Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
+    #[allow(deprecated)]
     fn edit_preserves_the_name_units_and_permission_it_was_not_given() {
         let current = Team {
             id: TeamId::new(7),
@@ -654,6 +667,8 @@ mod tests {
     }
 
     #[test]
+    // Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
+    #[allow(deprecated)]
     fn team_list_output_goldens() {
         let teams = vec![
             Team {

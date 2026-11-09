@@ -663,8 +663,9 @@ fn a_failed_run_is_reported_by_its_id_not_the_number_in_its_url() {
     assert_ne!(runs[0].index_in_repo, 6442);
 }
 
-/// Forgejo has no rerun route, so there is no `ci rerun`. Bug this prevents: shipping the
-/// Gitea port's subcommand, whose only request is a router 404 on Forgejo.
+/// There is no `ci rerun` (see the module docs in `ci/mod.rs`). Bug this prevents: shipping the
+/// Gitea port's subcommand, built for Gitea's rerun routes, by accident. Forgejo 17's routes
+/// differ, so a `ci rerun` here must be written for them, deliberately, with its own tests.
 #[test]
 fn there_is_no_rerun_subcommand() {
     let cmd = Harness::command();

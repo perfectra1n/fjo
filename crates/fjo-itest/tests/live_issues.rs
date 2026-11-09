@@ -1940,6 +1940,46 @@ fn setting_an_issue_deadline_stores_the_date_it_was_given() {
     );
 }
 
+/// Locking is new in Forgejo v17: a `PUT` to the issue's `lock` sub-resource with an optional
+/// reason, undone by a `DELETE` of it. Both answer an empty `204`, so the only proof either did
+/// anything is the issue's own `is_locked`, read back out of band after each.
+#[test]
+fn locking_an_issue_sets_is_locked_and_unlocking_clears_it() {
+    let inst = instance_or_skip!();
+    cover!(raw: ["lockIssue", "unlockIssue"]);
+    let repo = TestRepo::create(inst, "lock");
+    let index = seed_issue(&repo, "getting heated");
+    let idx = index.to_string();
+
+    let before = read_issue(&repo, index);
+    assert_eq!(before["is_locked"], false, "a fresh issue is already locked: {before}");
+
+    inst.fjo([
+        "raw",
+        "issue",
+        "lock-issue",
+        &repo.owner,
+        &repo.name,
+        &idx,
+        "--reason",
+        "Too heated",
+    ])
+    .assert_ok("fjo raw issue lock-issue");
+    let locked = read_issue(&repo, index);
+    assert_eq!(
+        locked["is_locked"], true,
+        "lock-issue reported success and locked nothing: {locked}"
+    );
+
+    inst.fjo(["raw", "issue", "unlock-issue", &repo.owner, &repo.name, &idx])
+        .assert_ok("fjo raw issue unlock-issue");
+    let unlocked = read_issue(&repo, index);
+    assert_eq!(
+        unlocked["is_locked"], false,
+        "unlock-issue reported success and the issue is still locked: {unlocked}"
+    );
+}
+
 // --------------------------------------------------------------- the issue porcelain
 
 /// The `issue` porcelain's own lifecycle, which is several calls per command.

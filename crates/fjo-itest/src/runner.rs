@@ -89,8 +89,9 @@
 //!   `stopped` at one-second granularity. `stopped` is stamped when the run's status is
 //!   *decided*, so a run whose first job fails at once reports no duration (`null`) even if its
 //!   other jobs run on for seconds.
-//! * There is no rerun route (`POST actions/runs/<id>/rerun` is a router 404); `cancel` exists
-//!   and answers 204 even for a run that already finished.
+//! * v16 had no rerun route (`POST actions/runs/<id>/rerun` was a router 404). v17 added it, and
+//!   `POST actions/jobs/<id>/rerun` for one job; both keep the run and bump the job's `attempt`.
+//!   `cancel` answers 204 even for a run that already finished.
 //! * A job's log carries each step's *command text* (`⭐ Run Main echo …`) as well as its
 //!   output, so a marker written literally in a `run:` line is in the log even if the step never
 //!   printed it — see [`echo_unseen`].

@@ -39,11 +39,11 @@ demote_required = []
 # [op] — operationId → (group, command)
 # ---------------------------------------------------------------------------------------------
 #
-# Forgejo's 506 operationIds are camelCase except for 16 that are PascalCase, all of them
-# Actions or Git plumbing. Those 16 have no `<group>` prefix word, so the mangler would fall
+# Forgejo's 512 operationIds are camelCase except for 17 that are PascalCase, all of them
+# Actions or Git plumbing. Those 17 have no `<group>` prefix word, so the mangler would fall
 # back to `tags[0]` — which for all of them is `repository`. That is technically correct and
 # practically awful: `fjo raw repo list-action-runs` instead of `fjo raw run list`, with the
-# Actions surface scattered through a 198-command group.
+# Actions surface scattered through a 201-command group.
 #
 # `gh` calls these `gh run` and `gh workflow`, and layer 3's porcelain will too, so putting
 # layer 2 in the same vocabulary means one mental model instead of two.
@@ -96,6 +96,11 @@ command = "list"
 [op.DispatchWorkflow]
 group = "workflow"
 command = "dispatch"
+
+[op.RerunActionRun]
+group = "run"
+command = "rerun"
+why = "new in v17; sits beside `run cancel` and matches gh's `run rerun` (and gea's)"
 
 [op.GetBlob]
 group = "git"
@@ -277,3 +282,20 @@ topic = "Repository topics"
 # people actually use. The enum decodes both, keeps the element type, and `into_vec()` /
 # `as_slice()` let a caller that does not care which arrived ignore the distinction.
 repoGetContents = "ContentsResponseOrList"
+
+# ------------------------------------------------------------------------------ response_model
+#
+# `operationId` -> the definition its success body really is. See `Overrides::response_model`.
+
+[response_model]
+# Forgejo v17.0.0 rewrote the swagger annotations for these two responses so that every field
+# of the model is published under the response's `headers`, and the `schema` is gone. The
+# definitions themselves are unchanged and the handlers still answer the JSON object, as the
+# live token and OAuth2 tests show. Taken literally the spec lowered all five to `()`: `fjo raw
+# user create-token` printed nothing, discarding the token's only showing, and `fjo user token
+# create` no longer compiled.
+userCreateToken = "AccessToken"
+adminCreateUserAccessToken = "AccessToken"
+userCreateOAuth2Application = "OAuth2Application"
+userGetOAuth2Application = "OAuth2Application"
+userUpdateOAuth2Application = "OAuth2Application"

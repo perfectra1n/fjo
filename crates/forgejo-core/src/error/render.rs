@@ -1381,9 +1381,10 @@ fn advise(kind: &ErrorKind, ctx: &RequestCtx) -> Advice {
                     Line::step(1, format!("fjo ci logs{args}"))
                         .and_text("  (only the failed jobs)"),
                 );
-            // Forgejo's API has no rerun route — only the web UI can rerun a job — so the second
-            // step opens the first failed run there rather than naming a command that cannot
-            // exist. With no run known (the list is empty), there is no page to open.
+            // `fjo ci` has no rerun of its own (Forgejo 16 had no rerun route; 17's is reachable
+            // only through `fjo raw`), so the second step opens the first failed run's page
+            // rather than naming a command that does not exist. With no run known (the list is
+            // empty), there is no page to open.
             let a = match failed.first() {
                 Some(run) => a.todo(
                     Line::step(2, format!("fjo run view {}{} --web", run.id, repo_flag(slug.as_deref())))
@@ -2711,7 +2712,7 @@ mod tests {
         );
         assert!(out.contains("1. fjo ci logs  ("), "{out}");
         assert!(out.contains("2. fjo run view 6442 --web  ("), "{out}");
-        // Forgejo has no rerun route, so no advice may name a rerun command.
+        // `fjo ci` has no rerun, so no advice may name a rerun command.
         assert!(!out.contains("ci rerun"), "{out}");
         insta::assert_snapshot!(out);
     }

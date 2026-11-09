@@ -1097,6 +1097,7 @@ fn a_user_variable_and_secret_survive_a_full_create_update_delete_cycle() {
         "getUserVariablesList",
         "deleteUserVariable",
         "updateUserSecret",
+        "userListActionsSecrets",
         "deleteUserSecret"
     ]);
 
@@ -1130,13 +1131,30 @@ fn a_user_variable_and_secret_survive_a_full_create_update_delete_cycle() {
     let (code, body) = inst.api("GET", &format!("user/actions/variables/{var}"), None);
     assert_eq!(code, 404, "the variable survived a delete that reported success: {body}");
 
-    // A secret has no read-back route by design, so the delete is the only proof it existed.
+    // A secret has no read-back route by design. Since v17 the account's secrets can at least be
+    // *listed* — names only, never values — so the listing proves it exists and the delete
+    // proves it is gone.
     inst.fjo(["raw", "user", "update-user-secret", &secret, "--data", "s3cret-value"])
         .assert_ok("fjo raw user update-user-secret");
+    let listed = inst.fjo(["raw", "user", "list-actions-secrets", "--limit", "50"]);
+    listed.assert_ok("fjo raw user list-actions-secrets");
+    listed.assert_says(&secret);
+    assert!(
+        !listed.stdout.contains("s3cret-value"),
+        "listing the account's secrets returned a secret's value:\n{}",
+        listed.stdout
+    );
     inst.fjo(["raw", "user", "delete-user-secret", &secret])
         .assert_ok("fjo raw user delete-user-secret, which can only succeed if the secret existed");
     let (code, body) = inst.api("DELETE", &format!("user/actions/secrets/{secret}"), None);
     assert_eq!(code, 404, "the secret survived a delete that reported success: {body}");
+    let listed = inst.fjo(["raw", "user", "list-actions-secrets", "--limit", "50"]);
+    listed.assert_ok("fjo raw user list-actions-secrets, after the delete");
+    assert!(
+        !listed.stdout.contains(&secret),
+        "a deleted secret is still listed:\n{}",
+        listed.stdout
+    );
 }
 
 /// Registering a runner against the account, then taking it away again.

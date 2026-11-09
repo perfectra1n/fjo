@@ -47,9 +47,12 @@ impl super::User<'_> {
     /// Get an OAuth2 application
     ///
     /// `GET /user/applications/oauth2/{id}` — needs the `read:user` token scope.
-    pub async fn get_oauth2_application(&self, id: i64) -> Result<()> {
+    pub async fn get_oauth2_application(
+        &self,
+        id: i64,
+    ) -> Result<forgejo_model::OAuth2Application> {
         let req = Request::get(format!("/user/applications/oauth2/{}", id)).scope("read:user");
-        self.client.empty(req).await
+        self.client.json(req).await
     }
     /// Get quota information for the authenticated user
     ///

@@ -13,7 +13,7 @@
 //!    overwrite.
 //! 4. **Lower models**, assigning [`crate::ir::types::Presence`] using the sets from passes 2 and 3.
 //! 5. **Lower operations**, which is where names, paths, parameters and bodies are decided.
-//! 6. **Assert the uniqueness invariants.** 506 unique `(module, fn)` and `(group, command)`.
+//! 6. **Assert the uniqueness invariants.** 512 unique `(module, fn)` and `(group, command)`.
 //!
 //! Passes 2 and 3 have to come before pass 4 and pass 6 has to come last; the rest is just
 //! reading order.
@@ -562,6 +562,16 @@ impl<'a> Lowerer<'a> {
         let lookup: BTreeMap<&str, &names::OpName> =
             named.iter().map(|(id, n)| (id.as_str(), n)).collect();
 
+        // An override for an operation the spec no longer has would quietly do nothing.
+        if let Some(stale) =
+            self.ov.response_model.keys().find(|id| !lookup.contains_key(id.as_str()))
+        {
+            bail!(
+                "overrides.toml [response_model] names {stale:?}, which is not an operation in \
+                 the vendored spec. Delete the entry."
+            );
+        }
+
         let mut out = Vec::with_capacity(named.len());
         for (path, item) in &self.spec.paths {
             for (method, op) in item.operations() {
@@ -797,16 +807,26 @@ impl<'a> Lowerer<'a> {
 
         let resp = &op.responses[&status.to_string()];
         let response_name = resp.ref_name().map(str::to_owned);
-        let schema = match &response_name {
+        let declared = match &response_name {
             Some(name) => self
                 .spec
                 .responses
                 .get(name)
-                .ok_or_else(|| format!("refers to unknown shared response {name:?}"))?
-                .schema
-                .as_ref(),
-            None => resp.schema.as_ref(),
+                .ok_or_else(|| format!("refers to unknown shared response {name:?}"))?,
+            None => resp,
         };
+        let schema = declared.schema.as_ref();
+        // Headers that describe the body rather than the transport. `X-Total-Count` and `Link`
+        // are pagination; anything else on a response with no schema is a model's fields
+        // published in the wrong place (see `[response_model]`).
+        let body_headers: Vec<&str> = declared
+            .headers
+            .keys()
+            .map(String::as_str)
+            .filter(|h| {
+                !h.to_ascii_lowercase().starts_with("x-") && !h.eq_ignore_ascii_case("link")
+            })
+            .collect();
 
         // `produces` wins over the declared schema for non-JSON endpoints: a zip archive is
         // declared as `type: string` (Go's `[]byte`), and decoding 200 MB of zip into a
@@ -833,12 +853,68 @@ impl<'a> Lowerer<'a> {
             self.schema_type(name, "response", schema.expect("checked above"))?
         };
 
+        let ty = match self.ov.response_model.get(&op.operation_id) {
+            Some(def) => self.response_model(def, ty, &body_headers, &op.operation_id)?,
+            // Refused rather than lowered to `()`: that is how Forgejo 17's token routes would
+            // have shipped a client that silently discards the token. The next response
+            // published this way fails the spec bump instead of the user.
+            None if ty == RustType::Unit && !body_headers.is_empty() => bail!(
+                "declares no success body, but describes {} response header(s) ({}). That is \
+                 how Forgejo 17 published AccessToken's fields while the handler still answered \
+                 the JSON object. If this handler does too, name the body's definition in \
+                 overrides.toml [response_model]",
+                body_headers.len(),
+                body_headers.join(", ")
+            ),
+            None => ty,
+        };
+
         let ty = match self.ov.one_or_many.get(&op.operation_id) {
             Some(name) => self.one_or_many(name, ty, &op.operation_id)?,
             None => ty,
         };
 
         Ok(Success { status, ty, response_name })
+    }
+
+    /// Types a success body the spec describes only as response headers, per
+    /// `overrides.toml [response_model]`.
+    ///
+    /// Only an undeclared body (`()`) whose headers are the definition's own fields may be
+    /// overridden. Anything else means upstream changed the declaration: a declared body means
+    /// it was fixed, and no matching headers means the route may now really answer empty, where
+    /// decoding a model would fail on every success. An entry that silently agrees, or silently
+    /// disagrees, with the spec is the kind nobody ever deletes.
+    fn response_model(
+        &self,
+        def: &str,
+        declared: RustType,
+        body_headers: &[&str],
+        op_id: &str,
+    ) -> Result<RustType> {
+        if declared != RustType::Unit {
+            bail!(
+                "overrides.toml [response_model] names {op_id:?}, but the spec now declares its \
+                 success body as {declared:?}. Upstream has fixed the declaration; delete the \
+                 entry."
+            );
+        }
+        let Some(model) = self.spec.definitions.get(def) else {
+            bail!(
+                "overrides.toml [response_model] gives {op_id:?} the body {def:?}, which is not a \
+                 definition in the vendored spec."
+            );
+        };
+        if body_headers.is_empty()
+            || body_headers.iter().any(|h| !model.properties.contains_key(*h))
+        {
+            bail!(
+                "overrides.toml [response_model] gives {op_id:?} the body {def:?}, but its \
+                 response no longer lists {def}'s fields as headers (it lists: {body_headers:?}). \
+                 Check what the handler answers now before keeping the entry."
+            );
+        }
+        self.def_type(def)
     }
 
     /// Replaces a declared response type with a synthesized untagged `One(T) / Many(Vec<T>)`
@@ -1122,9 +1198,9 @@ mod vendored {
         l.classify();
         let request_models = l.find_request_models();
 
-        // The seed set is 124 `$ref` bodies naming 83 definitions; the closure adds the nested
+        // The seed set is 125 `$ref` bodies naming 84 definitions; the closure adds the nested
         // ones (`CreateFileOptions.author: Identity`, `ChangeFilesOptions.files[]`).
-        assert_eq!(request_models.len(), 94, "{request_models:?}");
+        assert_eq!(request_models.len(), 95, "{request_models:?}");
 
         let mut structs = 0;
         for name in &request_models {
@@ -1141,7 +1217,7 @@ mod vendored {
                 );
             }
         }
-        assert_eq!(structs, 89, "the 89 request-body structs");
+        assert_eq!(structs, 90, "the 90 request-body structs");
     }
 
     /// The other half: the response policy is unchanged, because weakening it would put an
@@ -1202,6 +1278,78 @@ mod vendored {
         );
     }
 
+    /// Forgejo v17 publishes `AccessToken` and `OAuth2Application` with their fields as
+    /// response headers and no schema. Without `[response_model]` all five routes lowered to
+    /// `()` and the token a user had just created was thrown away unseen.
+    #[test]
+    fn header_only_responses_get_the_model_the_server_actually_sends() {
+        let ir = ir();
+        for (op_id, model) in [
+            ("userCreateToken", "AccessToken"),
+            ("adminCreateUserAccessToken", "AccessToken"),
+            ("userCreateOAuth2Application", "OAuth2Application"),
+            ("userGetOAuth2Application", "OAuth2Application"),
+            ("userUpdateOAuth2Application", "OAuth2Application"),
+        ] {
+            let op = ir.operation(op_id).unwrap();
+            assert_eq!(op.success.ty, RustType::Model(model.into()), "{op_id}");
+        }
+        // The list route was never affected: its response still declares a schema.
+        let list = ir.operation("userGetOAuth2Applications").unwrap();
+        assert_eq!(
+            list.success.ty,
+            RustType::Vec(Box::new(RustType::Model("OAuth2Application".into())))
+        );
+    }
+
+    #[test]
+    fn a_response_model_override_for_a_declared_body_is_refused() {
+        let root = crate::workspace_root();
+        let loaded = crate::spec::load(&root).unwrap();
+        let mut ov = crate::overrides::Overrides::load().unwrap();
+        // `repoGet` declares `Repository`; overriding it would silently disagree with the spec.
+        ov.response_model.insert("repoGet".into(), "Repository".into());
+        let err = lower(&loaded, &ov).unwrap_err().to_string();
+        assert!(err.contains("now declares its success body"), "{err}");
+    }
+
+    /// The general guard: a success response that describes its body only as headers is refused
+    /// unless `[response_model]` says what the body is, so it cannot quietly lower to `()`.
+    #[test]
+    fn a_header_only_response_without_an_override_is_refused() {
+        let root = crate::workspace_root();
+        let loaded = crate::spec::load(&root).unwrap();
+        let mut ov = crate::overrides::Overrides::load().unwrap();
+        ov.response_model.remove("userCreateToken");
+        let err = lower(&loaded, &ov).unwrap_err().to_string();
+        assert!(err.contains("userCreateToken"), "{err}");
+        assert!(err.contains("[response_model]"), "{err}");
+        assert!(err.contains("sha1"), "the headers are named: {err}");
+    }
+
+    /// `repoDelete` answers a genuine empty `204`. Typing it as a model would make every
+    /// successful delete fail to decode, so an entry for a route without the model's fields as
+    /// headers is refused.
+    #[test]
+    fn a_response_model_override_for_a_really_empty_response_is_refused() {
+        let root = crate::workspace_root();
+        let loaded = crate::spec::load(&root).unwrap();
+        let mut ov = crate::overrides::Overrides::load().unwrap();
+        ov.response_model.insert("repoDelete".into(), "AccessToken".into());
+        let err = lower(&loaded, &ov).unwrap_err().to_string();
+        assert!(err.contains("no longer lists AccessToken's fields as headers"), "{err}");
+    }
+
+    #[test]
+    fn a_response_model_override_for_a_missing_operation_is_refused() {
+        let root = crate::workspace_root();
+        let loaded = crate::spec::load(&root).unwrap();
+        let mut ov = crate::overrides::Overrides::load().unwrap();
+        ov.response_model.insert("userCreateTokenV0".into(), "AccessToken".into());
+        let err = lower(&loaded, &ov).unwrap_err().to_string();
+        assert!(err.contains("not an operation in the vendored spec"), "{err}");
+    }
+
     #[test]
     fn the_loader_reproduces_the_independently_verified_counts() {
         let root = crate::workspace_root();
@@ -1210,12 +1358,12 @@ mod vendored {
     }
 
     #[test]
-    fn five_hundred_and_six_operations_with_no_name_collisions() {
+    fn five_hundred_and_twelve_operations_with_no_name_collisions() {
         // The M2 exit criterion. A collision found here costs an `overrides.toml` entry; the
         // same collision found after the emitters land costs a renamed public command.
         let ir = ir();
-        assert_eq!(ir.operations.len(), 506);
-        assert_eq!(ir.name_counts(), (506, 506));
+        assert_eq!(ir.operations.len(), 512);
+        assert_eq!(ir.name_counts(), (512, 512));
     }
 
     #[test]
@@ -1225,7 +1373,7 @@ mod vendored {
         let text =
             std::fs::read_to_string(crate::spec::name_lock_path(&crate::workspace_root())).unwrap();
         let locked: BTreeMap<String, crate::name_lock::Entry> = toml::from_str(&text).unwrap();
-        assert_eq!(locked.len(), 506);
+        assert_eq!(locked.len(), 512);
         for op in &ir().operations {
             let e = locked
                 .get(&op.op_id)
@@ -1306,10 +1454,11 @@ mod vendored {
     }
 
     #[test]
-    fn the_sixteen_pascal_case_operations_are_reachable_under_humane_groups() {
+    fn the_seventeen_pascal_case_operations_are_reachable_under_humane_groups() {
         let ir = ir();
         for (op_id, group, command) in [
             ("ListActionRuns", "run", "list"),
+            ("RerunActionRun", "run", "rerun"),
             ("DispatchWorkflow", "workflow", "dispatch"),
             ("GetTree", "git", "tree"),
             ("ListActionArtifacts", "artifact", "list"),
@@ -1318,11 +1467,14 @@ mod vendored {
             let op = ir.operation(op_id).unwrap();
             assert_eq!((op.group.as_str(), op.command.as_str()), (group, command));
         }
-        // ...and none of them ended up buried in the 177-command `repo` group.
-        for op in &ir.operations {
-            if op.op_id.starts_with("ListAction") || op.op_id == "DispatchWorkflow" {
-                assert_ne!(op.group, "repo", "{} landed in the junk group", op.op_id);
-            }
+        // ...and none of them ended up buried in the `repo` group. Every PascalCase id, so a
+        // spec bump that adds one without an `[op]` entry fails here rather than shipping as
+        // `fjo raw repo <something>-action-run`.
+        let pascal: Vec<_> =
+            ir.operations.iter().filter(|op| op.op_id.starts_with(char::is_uppercase)).collect();
+        assert_eq!(pascal.len(), 17);
+        for op in pascal {
+            assert_ne!(op.group, "repo", "{} landed in the junk group", op.op_id);
         }
     }
 
@@ -1361,12 +1513,12 @@ mod vendored {
         // revisiting rather than silently degrading every affected command to `--body-file`.
         //
         // The exact breakdown, so a spec bump that shifts it fails loudly:
-        //   123  $ref to a definition with typed properties  -> flags
+        //   124  $ref to a definition with typed properties  -> flags
         //     1  $ref to ForgeLike, a free-form object        -> serde_json::Value, no flags
         //     1  inline `type: string` (renderMarkdownRaw)    -> a bare String body
         let bodies: Vec<&Body> = ir().operations.iter().filter_map(|o| o.body.as_ref()).collect();
-        assert_eq!(bodies.len(), 125);
-        assert_eq!(bodies.iter().filter(|b| matches!(b.ty, RustType::Model(_))).count(), 123);
+        assert_eq!(bodies.len(), 126);
+        assert_eq!(bodies.iter().filter(|b| matches!(b.ty, RustType::Model(_))).count(), 124);
         assert_eq!(bodies.iter().filter(|b| b.ty == RustType::Json).count(), 1);
         assert_eq!(bodies.iter().filter(|b| b.ty == RustType::String).count(), 1);
 

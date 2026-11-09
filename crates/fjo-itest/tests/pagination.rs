@@ -229,6 +229,13 @@ fn a_limit_typed_into_the_endpoint_governs_the_page_size() {
 ///
 /// The control is the double-escaped spelling, which must find nothing: without it the
 /// assertion would pass on a server that simply ignores `q`.
+///
+/// The escape is of a *letter* (`%73` is `s`), not of the space between words. Measured against
+/// 17.0.1: the issue search needs every word to match, `hay` no longer finds `haystack` (on 16 it
+/// did), and a long word tolerates a couple of typos, so the *literal* text `needle%20haystack`
+/// still matches "needle haystack" — `20haystack` is two edits from `haystack`. An escaped space
+/// therefore matches whether it arrives once- or twice-encoded, and cannot tell the two apart. An escaped letter can. `hay%73tack` reaches the server as `haystack` only if it was
+/// decoded exactly once; twice-encoded it is `hay%73tack`, which is no word in the title.
 #[test]
 fn a_percent_escape_in_an_endpoint_query_is_not_encoded_twice() {
     let inst = instance_or_skip!();
@@ -242,7 +249,7 @@ fn a_percent_escape_in_an_endpoint_query_is_not_encoded_twice() {
     // the assertions below would be testing the indexer's latency rather than our encoding, and
     // would fail roughly whenever the container was busy.
     let direct = || -> usize {
-        let (_, body) = repo.api("GET", "issues?q=needle%20hay", None);
+        let (_, body) = repo.api("GET", "issues?q=needle%20hay%73tack", None);
         serde_json::from_str::<serde_json::Value>(&body)
             .ok()
             .and_then(|v| v.as_array().map(Vec::len))
@@ -256,8 +263,8 @@ fn a_percent_escape_in_an_endpoint_query_is_not_encoded_twice() {
     assert_eq!(
         direct(),
         1,
-        "the server itself never matched `q=needle%20hay`, so this test cannot say anything \
-         about how fjo spells it"
+        "the server itself never matched `q=needle%20hay%73tack`, so this test cannot say \
+         anything about how fjo spells it"
     );
 
     let hits = |query: &str| -> usize {
@@ -271,15 +278,16 @@ fn a_percent_escape_in_an_endpoint_query_is_not_encoded_twice() {
     };
 
     assert_eq!(
-        hits("q=needle%20hay"),
+        hits("q=needle%20hay%73tack"),
         1,
-        "`%20` must reach the server as a space, so the search matches the issue whose title \
-         contains one — the same match the server just made for the same spelling"
+        "`%73` must reach the server as `s`, so the search matches `haystack` — the same match \
+         the server just made for the same spelling. No match means fjo encoded the escape a \
+         second time"
     );
     assert_eq!(
-        hits("q=needle%2520hay"),
+        hits("q=needle%20hay%2573tack"),
         0,
-        "`%2520` is the escaped form of `%20` and must stay escaped — a match here would mean \
+        "`%2573` is the escaped form of `%73` and must stay escaped — a match here would mean \
          the decode step is collapsing an escape the user wrote deliberately"
     );
 }

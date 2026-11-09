@@ -130,7 +130,7 @@ enum Cmd {
         /// which is the whole reason 42k lines of generated code can be trusted.
         #[arg(long, action = ArgAction::SetTrue)]
         check: bool,
-        /// Assert the naming invariants: 506 unique `(module, fn)` and `(group, command)`.
+        /// Assert the naming invariants: 512 unique `(module, fn)` and `(group, command)`.
         #[arg(long, action = ArgAction::SetTrue)]
         check_names: bool,
         /// Pretty-print the whole IR to stdout.

@@ -16,8 +16,10 @@
 //! Where Forgejo differs from the Gitea these tests were translated from, the test says so and
 //! asserts the Forgejo behaviour — the premise, not just the command — so a server release that
 //! changes it fails here rather than quietly invalidating what `fjo ci` assumes. Those are: a
-//! `pull_request` run's ref is the pull request (`prettyref` `#<n>`); a run URL carries the run
-//! number and a job URL the job's position; and there is no rerun route, so no `ci rerun`.
+//! `pull_request` run's ref is the pull request (`prettyref` `#<n>`); and a run URL carries the
+//! run number and a job URL the job's position. Forgejo v16 had no rerun route at all; v17 added
+//! one for a run and one for a job (driven at the end of this file), but `fjo ci` has no `rerun`
+//! of its own yet, so its advice still opens the run's page.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -131,8 +133,8 @@ fn open_pr(repo: &TestRepo<'_>, branch: &str) -> i64 {
 /// it: `watch` must exit 1 once finished; `status` must exit 1, name `bad` and the run id, and end
 /// with `next: fjo ci logs <branch>`; `--json` must decode and keep the exit code; `logs` must
 /// print the failing job's output and *only* that. Where `gea ci rerun` would come next, the
-/// advice on stderr must instead open the run's page — Forgejo can rerun only from there — by
-/// the run's **id**, which is what `fjo run view` takes.
+/// advice on stderr must instead open the run's page — `fjo ci` has no rerun of its own — by the
+/// run's **id**, which is what `fjo run view` takes.
 #[test]
 fn a_failed_push_run_is_reported_and_logged_through_fjo_ci() {
     let inst = instance_or_skip!();
@@ -172,12 +174,12 @@ fn a_failed_push_run_is_reported_and_logged_through_fjo_ci() {
             out.contains(&format!("next: fjo ci logs {branch}")),
             "the next command is the failed job's logs:\n{out}"
         );
-        // The rerun advice: the run's page, by id, since there is no rerun route to name.
+        // The rerun advice: the run's page, by id. `fjo ci` has no `rerun` to name (yet).
         let err = &status.stderr;
         assert!(err.contains(&format!("fjo run view {id} -R {slug} --web")), "{err}");
         assert!(
             !err.contains("ci rerun"),
-            "no advice may name a command Forgejo cannot serve:\n{err}"
+            "no advice may name a command fjo does not have:\n{err}"
         );
     }
 
@@ -199,7 +201,7 @@ fn a_failed_push_run_is_reported_and_logged_through_fjo_ci() {
     assert!(logs.stdout.contains(&format!("ci.yml / bad (run {id}, job ")), "{}", logs.stdout);
 
     // There is no `ci rerun` to call. A user with `gea` muscle memory gets a branch lookup for
-    // a branch named `rerun`, which does not exist: exit 5, not a request that cannot succeed.
+    // a branch named `rerun`, which does not exist: exit 5, not a half-implemented rerun.
     inst.fjo(["ci", "rerun", "-R", &slug]).assert_code(5, "fjo ci rerun is not a subcommand");
 }
 
@@ -585,4 +587,90 @@ fn ci_watch_waits_for_a_running_job_and_reports_its_transition() {
     );
     assert!(watched.stdout.contains("success"), "{}", watched.stdout);
     assert!(!watched.stdout.contains("next:"), "{}", watched.stdout);
+}
+
+/// Wait for every job of run `id` to finish an attempt later than `after`, answering the jobs.
+///
+/// A rerun keeps the run, so "finished" alone would be satisfied by the attempt that already
+/// finished before the rerun was asked for; only the attempt number moving says the rerun ran.
+fn wait_for_attempt(
+    p: &Pushed,
+    id: i64,
+    after: i64,
+    runner: &fjo_itest::runner::RunnerGuard<'_>,
+) -> Vec<Value> {
+    let started = Instant::now();
+    loop {
+        let jobs = p.jobs(id);
+        let done = !jobs.is_empty()
+            && jobs.iter().all(|j| {
+                j["attempt"].as_i64().is_some_and(|a| a > after)
+                    && j["status"].as_str().is_some_and(fjo_itest::runner::is_finished)
+            });
+        if done {
+            return jobs;
+        }
+        assert!(
+            started.elapsed() < RUN_DEADLINE,
+            "after {RUN_DEADLINE:?}, run {id} had not finished an attempt after {after}: {jobs:?}\n\
+             runner logs:\n{}",
+            runner.logs()
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Forgejo v17 added a single-job read that carries the job's steps, and reruns of a whole run
+/// and of one job. v16 had none of the three (`POST …/runs/{id}/rerun` was a router 404).
+///
+/// Bug this prevents: three commands that answer an empty `204` or a plausible job object while
+/// doing nothing. So the job read is checked against the step list the route documents —
+/// `0` is "Set up job", the last is "Complete job", the workflow's own step in between — and each
+/// rerun is proved by the job's `attempt` moving and the job finishing again, read out of band.
+#[test]
+fn a_finished_job_can_be_read_with_its_steps_and_rerun_with_or_without_its_run() {
+    let inst = instance_or_skip!();
+    let runner = runner_or_skip!(inst);
+    cover!(raw: ["repoGetActionJob", "RerunActionRun", "repoRerunActionJob"]);
+    let marker = unique_marker("rerun");
+    let p =
+        Pushed::new(inst, "ci-rerun", "feature-rerun", "[push]", &[("ok", &echo_unseen(&marker))]);
+    let (owner, name) = (p.repo.owner.clone(), p.repo.name.clone());
+    let runs = p.wait(1, runner);
+    let run_id = id_of(&runs[0]);
+    let jobs = p.jobs(run_id);
+    assert_eq!(jobs.len(), 1, "one job was pushed: {jobs:?}");
+    let job_id = jobs[0]["id"].as_i64().unwrap_or_else(|| panic!("a job id: {jobs:?}"));
+    let job_arg = job_id.to_string();
+
+    let got = inst.fjo(["raw", "repo", "get-action-job", &owner, &name, &job_arg]);
+    got.assert_ok("fjo raw repo get-action-job");
+    let job = got.json();
+    assert_eq!(job["id"], job_id, "{job}");
+    assert_eq!(job["run_id"], run_id, "{job}");
+    assert_eq!(job["status"], "success", "{job}");
+    assert!(
+        job["html_url"].as_str().is_some_and(|u| u.contains(&format!("/{owner}/{name}/actions/"))),
+        "the job links to its page: {job}"
+    );
+    let steps =
+        job["steps"].as_array().unwrap_or_else(|| panic!("a finished job has steps: {job}"));
+    assert!(steps.len() >= 3, "set-up, the workflow's step, complete: {steps:?}");
+    assert_eq!((&steps[0]["number"], &steps[0]["name"]), (&0.into(), &"Set up job".into()));
+    let last = steps.last().expect("checked non-empty above");
+    assert_eq!(last["name"], "Complete job", "{steps:?}");
+    assert_eq!(last["number"], steps.len() - 1, "steps are numbered by position: {steps:?}");
+    let first_attempt = job["attempt"].as_i64().unwrap_or_else(|| panic!("an attempt: {job}"));
+
+    inst.fjo(["raw", "run", "rerun", &owner, &name, &run_id.to_string()])
+        .assert_ok("fjo raw run rerun on a finished run");
+    let rerun = wait_for_attempt(&p, run_id, first_attempt, runner);
+    assert_eq!(rerun[0]["status"], "success", "the rerun ran the job again: {rerun:?}");
+    let second_attempt = rerun[0]["attempt"].as_i64().expect("checked by the wait");
+
+    let job_id = rerun[0]["id"].as_i64().unwrap_or_else(|| panic!("a job id: {rerun:?}"));
+    inst.fjo(["raw", "repo", "rerun-action-job", &owner, &name, &job_id.to_string()])
+        .assert_ok("fjo raw repo rerun-action-job on a finished job");
+    let again = wait_for_attempt(&p, run_id, second_attempt, runner);
+    assert_eq!(again[0]["status"], "success", "the job rerun ran the job again: {again:?}");
 }

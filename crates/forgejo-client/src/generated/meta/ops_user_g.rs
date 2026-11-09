@@ -121,7 +121,7 @@ pub(super) const OP_GET_OAUTH2_APPLICATION: OpMeta = OpMeta {
     }],
     body: None,
     pagination: Pagination::None,
-    produces: Produces::Empty,
+    produces: Produces::Json,
     scope: Some("read:user"),
     deprecated: None,
 };

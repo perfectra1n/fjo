@@ -389,7 +389,7 @@ fn the_facade_exposes_every_group() {
 // The `needs:` line of an `InsufficientScope` message has two possible sources: `OpMeta::scope`,
 // which codegen derives from the specification's `tags[0]` and `overrides.toml` corrects, and
 // `error::classify::infer_scope`, which reconstructs the same rule from the method and path at
-// runtime. They agree on 469 of the 506 routes, so a test on an ordinary route proves nothing
+// runtime. They agree on 475 of the 512 routes, so a test on an ordinary route proves nothing
 // about which one answered. Every test below therefore uses a route where they *disagree*.
 
 /// `POST /repos/{o}/{r}/pulls` is tagged `repository` in the specification, so it needs

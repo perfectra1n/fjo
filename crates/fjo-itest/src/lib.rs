@@ -308,7 +308,13 @@ impl Instance {
             // it, `repoConvert` and `repoMirrorSync`, which both need a pull mirror that only a
             // migration can create. Migrating a repository on this instance to itself needs no
             // network at all, which is the cheapest of the available answers.
-            .with_env_var("FORGEJO__migrations__ALLOW_LOCALNETWORKS", "true");
+            .with_env_var("FORGEJO__migrations__ALLOW_LOCALNETWORKS", "true")
+            // ...over plain HTTP, which is the only scheme this instance serves. Forgejo 17 added
+            // `[migrations] ALLOW_UNENCRYPTED`, default false, and refuses an `http://` source
+            // for a migration ("unencrypted transfer protocols are disabled", a 500) and for a
+            // push mirror (a bare 422 "Unknown error") alike. Real deployments should leave it
+            // off; a throwaway container talking to itself has no remote to authenticate.
+            .with_env_var("FORGEJO__migrations__ALLOW_UNENCRYPTED", "true");
 
         // Settings only one caller wants, folded in last so they can also override the above.
         for (key, value) in extra_env {

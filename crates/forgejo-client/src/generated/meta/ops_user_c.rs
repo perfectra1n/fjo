@@ -196,7 +196,7 @@ pub(super) const OP_CREATE_OAUTH2_APPLICATION: OpMeta = OpMeta {
         deep: &[],
     }),
     pagination: Pagination::None,
-    produces: Produces::Empty,
+    produces: Produces::Json,
     scope: Some("write:user"),
     deprecated: None,
 };
@@ -245,7 +245,7 @@ pub(super) const OP_CREATE_TOKEN: OpMeta = OpMeta {
         deep: &["repositories"],
     }),
     pagination: Pagination::None,
-    produces: Produces::Empty,
+    produces: Produces::Json,
     scope: Some("write:user"),
     deprecated: None,
 };

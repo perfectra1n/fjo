@@ -99,11 +99,14 @@ pub enum Template {
 }
 
 impl Template {
-    fn code(self) -> u8 {
+    /// The `template_type` form value. Forgejo 17 reads it as a string, validated against these
+    /// three names (`modules/project` `APITemplateType`); 16 read the bare enum number, and a
+    /// number sent to 17 fails validation and comes back as a 500.
+    fn wire(self) -> &'static str {
         match self {
-            Self::None => 0,
-            Self::BasicKanban => 1,
-            Self::BugTriage => 2,
+            Self::None => "none",
+            Self::BasicKanban => "basic_kanban",
+            Self::BugTriage => "bug_triage",
         }
     }
 }
@@ -316,7 +319,7 @@ async fn dispatch(rt: &mut Runtime, globals: &GlobalOpts, args: &Args) -> Result
         Cmd::View(a) => cmd_view(rt, globals, a).await,
         Cmd::Create(a) => {
             let scope = Scope::resolve(rt, globals, a.scope.owner.as_deref())?;
-            ops::create(rt, &scope, &a.title, &a.description, a.template.code()).await?;
+            ops::create(rt, &scope, &a.title, &a.description, a.template.wire()).await?;
             println!("✓ created board {:?}", a.title);
             Ok(())
         }

@@ -25,6 +25,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use clap::{Args as ClapArgs, Subcommand};
+use forgejo_client::query::RepoCompareDiffQuery;
 use forgejo_core::error::{Error, ErrorKind, Result};
 use forgejo_core::http::{Accept, Part, Progress, Request};
 use forgejo_core::types::ids::ReleaseId;
@@ -466,8 +467,16 @@ async fn generate_notes(cx: &Cx, tag: &str) -> Result<String> {
         return Ok(format!("First release, {tag}.\n"));
     };
 
-    let compare =
-        cx.api.repo().compare_diff(cx.owner()?, cx.name()?, &format!("{prev}...{tag}")).await?;
+    // Only each commit's subject and sha are read, so the server can skip the per-commit file
+    // lists and signature checks it otherwise computes for every commit in the range. 16.0.5's
+    // handler already honoured both parameters; v17's specification is the first to document
+    // them.
+    let query = RepoCompareDiffQuery { files: Some(false), verification: Some(false) };
+    let compare = cx
+        .api
+        .repo()
+        .compare_diff(cx.owner()?, cx.name()?, &format!("{prev}...{tag}"), &query)
+        .await?;
     let mut notes = format!("## Changes since {prev}\n\n");
     for commit in &compare.commits {
         let subject = commit

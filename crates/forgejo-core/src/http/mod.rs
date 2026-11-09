@@ -218,7 +218,7 @@ pub struct Request {
     /// rule is wrong. It is the one piece of operation identity the runtime needs, so it is
     /// carried here rather than reconstructed from the path — `error::classify::infer_scope`
     /// re-derives the same rule from the method and path, and disagrees with codegen on 37 of
-    /// the 506 routes (every pull-request route, which the spec tags `repository` and the path
+    /// the 512 routes (every pull-request route, which the spec tags `repository` and the path
     /// makes look like `issue`).
     ///
     /// `&'static str` and not a `String` or a `Cow`: every producer of this value has one

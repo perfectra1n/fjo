@@ -22,7 +22,7 @@ ListActionRunArtifacts = { group = "run", command = "artifacts", fn = "artifacts
 ListActionRunJobs = { group = "run", command = "jobs", fn = "jobs" }
 ListActionRuns = { group = "run", command = "list", fn = "list" }
 ListActionTasks = { group = "task", command = "list", fn = "list" }
-RerunActionRun = { group = "repo", command = "rerun-action-run", fn = "rerun_action_run" }
+RerunActionRun = { group = "run", command = "rerun", fn = "rerun" }
 acceptRepoTransfer = { group = "repo", command = "accept-repo-transfer", fn = "accept_repo_transfer" }
 activitypubInstanceActor = { group = "activitypub", command = "instance-actor", fn = "instance_actor" }
 activitypubInstanceActorInbox = { group = "activitypub", command = "instance-actor-inbox", fn = "instance_actor_inbox" }

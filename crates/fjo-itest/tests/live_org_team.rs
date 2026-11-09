@@ -13,6 +13,7 @@
 //! against the one shared container.
 
 use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
 
 use fjo_itest::{Instance, cover, instance_or_skip};
 
@@ -806,23 +807,31 @@ fn a_team_reaches_only_the_repositories_it_has_been_given() {
     let (code, body) = inst.api("GET", &format!("teams/{id}/repos/{}/{granted}", org.name()), None);
     assert_eq!(code, 404, "the team still reaches the repository it lost: {body}");
 
-    // Creating those two repositories is an organization activity, so the feed now has
-    // something in it — which is the only way to tell a feed route that works from one that
-    // always answers `[]`.
-    let run = inst.fjo(["raw", "org", "list-activity-feeds", org.name()]);
-    run.assert_ok("fjo raw org list-activity-feeds");
-    let feed = run.json();
-    assert!(
-        feed.as_array().is_some_and(|f| !f.is_empty()),
-        "creating two repositories left the organization's feed empty: {}",
-        run.stdout
-    );
-    assert!(
-        field_set(&feed, "op_type").contains("create_repo"),
-        "the feed does not record the repository creations: {}",
-        run.stdout
-    );
+    // Creating those two repositories is an organization activity, so the feed gets something in
+    // it — which is the only way to tell a feed route that works from one that always answers
+    // `[]`. Since Forgejo 17 the feed is written by a background queue (`services/feed`
+    // `notifyAll` pushes a `QueueableAction`), so the entry lands *after* the creation answers;
+    // read until it appears rather than once.
+    let deadline = Instant::now() + FEED_DEADLINE;
+    loop {
+        let run = inst.fjo(["raw", "org", "list-activity-feeds", org.name()]);
+        run.assert_ok("fjo raw org list-activity-feeds");
+        if field_set(&run.json(), "op_type").contains("create_repo") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "after {FEED_DEADLINE:?}, the organization's feed still does not record the two \
+             repository creations: {}",
+            run.stdout
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
+
+/// How long the activity feed's background queue gets to record an action. It is milliseconds on
+/// an idle instance; the rest is headroom for a loaded CI runner.
+const FEED_DEADLINE: Duration = Duration::from_secs(30);
 
 // ----------------------------------------------------------------------- labels and hooks
 

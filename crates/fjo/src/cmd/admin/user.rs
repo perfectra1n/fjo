@@ -323,7 +323,7 @@ async fn create(api: &Api, emit: &mut Emit<'_>, args: &Create) -> Result<()> {
 
     let body = CreateUserOption {
         created_at: None,
-        email: args.email.clone(),
+        email: Some(args.email.clone()),
         full_name: args.full_name.clone(),
         login_name: args.login_name.clone(),
         // Defaulted the other way round from the API: the operator typed this password, so the

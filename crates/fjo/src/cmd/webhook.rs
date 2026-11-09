@@ -448,6 +448,11 @@ async fn create(
 /// `authorization_header` is the one field the server does not echo back — it returns an empty
 /// string — but Forgejo also ignores an empty `authorization_header` on a PATCH, so round-tripping
 /// the blank is a no-op rather than a secret being cleared.
+// Forgejo 17 marks `Hook.config` deprecated ("use Metadata instead"). 17.0.1 still returns it,
+// and it is the only place a hook's full config comes back in the shape EditHookOption.config
+// takes, so `edit` merges into it and the listing reads the URL from it until the webhook
+// porcelain moves to `url`/`content_type`/`metadata`.
+#[allow(deprecated)]
 async fn edit(
     api: &Api,
     target: &Target,
@@ -527,10 +532,14 @@ fn config_from(pairs: &[String]) -> Result<BTreeMap<String, String>> {
 }
 
 /// The delivery URL, which lives in the untyped config map rather than in a typed field.
+// Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
+#[allow(deprecated)]
 fn hook_url(h: &Hook) -> String {
     h.config.get("url").cloned().unwrap_or_default()
 }
 
+// Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
+#[allow(deprecated)]
 fn detail(table: &mut crate::output::Table, h: &Hook) {
     table.row(["id".to_owned(), h.id.to_string()]);
     table.row(["type".to_owned(), h.r#type.clone()]);

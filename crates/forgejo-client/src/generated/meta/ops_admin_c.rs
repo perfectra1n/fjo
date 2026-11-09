@@ -600,7 +600,7 @@ pub(super) const OP_CREATE_USER_ACCESS_TOKEN: OpMeta = OpMeta {
         deep: &["repositories"],
     }),
     pagination: Pagination::None,
-    produces: Produces::Empty,
+    produces: Produces::Json,
     scope: Some("write:admin"),
     deprecated: None,
 };
