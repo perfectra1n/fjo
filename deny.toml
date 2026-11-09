@@ -12,6 +12,11 @@ ignore = [
     { id = "RUSTSEC-2026-0371", reason = "zbus_names: merged into zbus 6; pulled in by keyring's secret-service backend, which is still on zbus 5" },
     { id = "RUSTSEC-2026-0370", reason = "zvariant: merged into zbus 6; pulled in by keyring's secret-service backend, which is still on zbus 5" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: merged into zbus 6; pulled in by keyring's secret-service backend, which is still on zbus 5" },
+    # Unmaintained, not vulnerable, and test-only: astral-tokio-tar reaches the graph solely
+    # through testcontainers 0.28.0 -> fjo-itest, which never ships. 0.28.0 is the newest
+    # testcontainers and the advisory lists no safe upgrade. Delete this once testcontainers
+    # moves to a maintained tar implementation (the advisory points at `tar-codec`).
+    { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar: unmaintained; test-only, via testcontainers 0.28.0 (latest), no safe upgrade yet" },
 ]
 
 [licenses]
