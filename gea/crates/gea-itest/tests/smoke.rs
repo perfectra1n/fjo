@@ -51,9 +51,10 @@ fn version_reports_the_release_we_generated_from() {
 
     // Not an equality assertion: the point is to make a mismatch *visible* in test output
     // rather than to fail when someone deliberately tests against a newer server.
-    if !body.contains("16.0") {
+    let pinned = gea_itest::GITEA_IMAGE.rsplit(':').next().unwrap_or_default();
+    if !body.contains(pinned) {
         eprintln!(
-            "note: instance reports {body}, but the vendored spec is Gitea 1.27.3. \
+            "note: instance reports {body}, but the vendored spec is Gitea {pinned}. \
              Endpoint differences are expected."
         );
     }
