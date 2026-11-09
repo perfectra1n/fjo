@@ -50,10 +50,12 @@ fn version_reports_the_release_we_generated_from() {
     assert_eq!(code, 200);
 
     // Not an equality assertion: the point is to make a mismatch *visible* in test output
-    // rather than to fail when someone deliberately tests against a newer server.
-    if !body.contains("16.0") {
+    // rather than to fail when someone deliberately tests against a newer server. Compared
+    // against the pinned image rather than a literal, which went stale on the 16 -> 17 bump.
+    let pinned = fjo_itest::FORGEJO_IMAGE.rsplit(':').next().unwrap_or_default();
+    if !body.contains(pinned) {
         eprintln!(
-            "note: instance reports {body}, but the vendored spec is Forgejo 16.0.4. \
+            "note: instance reports {body}, but the vendored spec is Forgejo {pinned}. \
              Endpoint differences are expected."
         );
     }
