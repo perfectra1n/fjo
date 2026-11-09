@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.2.1](https://github.com/perfectra1n/gea/compare/v0.2.0...v0.2.1) (2026-11-09)
+
+
+### Features
+
+* **pr:** inline review threads, replies, resolution and line comments ([43571d7](https://github.com/perfectra1n/gea/commit/43571d78e5b8bb54df49bffe8541b1a0a690ba47))
+* **pr:** inline review threads, replies, resolution and line comments ([869cb7d](https://github.com/perfectra1n/gea/commit/869cb7d347518a6884d0b0ba3ee0b10c1a0886fc))
+* **spec:** update Gitea API spec to v28.2.0 ([aeabbbf](https://github.com/perfectra1n/gea/commit/aeabbbf1567c4a1a5b899e44a51b72e43396babd))
+* **spec:** update Gitea API spec to v28.3.0 ([b7e532a](https://github.com/perfectra1n/gea/commit/b7e532a7a5e1435f83eff5df60cae7edb238b131))
+
+
+### Bug Fixes
+
+* **deps:** clear this week's cargo-deny findings ([7330224](https://github.com/perfectra1n/gea/commit/7330224d0495ee2e64d2a2da68ae0bb6bb68ef79))
+* **deps:** clear this week's RustSec advisories ([7667a96](https://github.com/perfectra1n/gea/commit/7667a964c733c5b36d5e63c31f3945e80673d0cd))
+
+
+### Code Refactoring
+
+* **pr:** take the pull request as the positional on reply, resolve and unresolve ([b2e7c4e](https://github.com/perfectra1n/gea/commit/b2e7c4e2814b6125c068f6798b2816b9a17a8630))
+
+
+### Miscellaneous Chores
+
+* **spec:** verify the loader counts against Gitea v28.3.0 ([85c0284](https://github.com/perfectra1n/gea/commit/85c0284e8bd0e6e2b195aafc1ee24ac88ffdaa0b))
+
 ## [0.2.0](https://github.com/perfectra1n/gea/compare/v0.1.2...v0.2.0) (2026-10-12)
 
 
