@@ -33,7 +33,7 @@ use crate::Result;
 use crate::swagger::{ParamIn, Spec};
 
 /// The version these expectations were verified against.
-pub const EXPECTED_VERSION: &str = "28.1.0";
+pub const EXPECTED_VERSION: &str = "28.3.0";
 
 pub struct Stats {
     pub paths: usize,
@@ -55,7 +55,7 @@ pub struct Stats {
     pub tag_counts: BTreeMap<String, usize>,
 }
 
-/// The independently verified counts for Gitea v28.1.0.
+/// The independently verified counts for Gitea v28.3.0 (unchanged since v28.1.0).
 struct Expected {
     paths: usize,
     operations: usize,
