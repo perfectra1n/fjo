@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.1](https://github.com/perfectra1n/fjo/compare/v0.3.0...v0.3.1) (2026-11-10)
+
+
+### Features
+
+* **ci:** add `fjo ci rerun` and `fjo run rerun` on Forgejo 17's routes ([e9d09ba](https://github.com/perfectra1n/fjo/commit/e9d09bad8243f3ed4b006e31b5b7c332aa61d424))
+
+
+### Bug Fixes
+
+* **ci,team:** address review of the rerun and units_map changes ([7831660](https://github.com/perfectra1n/fjo/commit/78316600bca6e022d266021b5f318d73fcc288e1))
+* **codegen:** generate untyped properties as free-form JSON ([4542d36](https://github.com/perfectra1n/fjo/commit/4542d3677bdcafc43abe8b8e5559fe01ab107cd1))
+* **team:** make `team edit --unit` and `--permission` take effect ([8ec9c37](https://github.com/perfectra1n/fjo/commit/8ec9c3763683c4880e56649251dcf8f78dd68e42))
+* **user:** let `user token create` create a token ([0d4821f](https://github.com/perfectra1n/fjo/commit/0d4821fbb849d18a659af268e5e5acc7d64b9b8c))
+* **webhook:** stop reading the deprecated Hook.config, and keep Slack settings through an edit ([85aeba6](https://github.com/perfectra1n/fjo/commit/85aeba654c69f88441af99265e0359168351483a))
+
+
+### Documentation
+
+* coverage is complete on both planes ([b2fa320](https://github.com/perfectra1n/fjo/commit/b2fa320820377b5724e090d6058d7b98ab77e88b))
+
 ## [0.3.0](https://github.com/perfectra1n/fjo/compare/v0.2.6...v0.3.0) (2026-11-09)
 
 
