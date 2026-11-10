@@ -448,11 +448,11 @@ async fn create(
 /// `authorization_header` is the one field the server does not echo back — it returns an empty
 /// string — but Forgejo also ignores an empty `authorization_header` on a PATCH, so round-tripping
 /// the blank is a no-op rather than a secret being cleared.
-// Forgejo 17 marks `Hook.config` deprecated ("use Metadata instead"). 17.0.1 still returns it,
-// and it is the only place a hook's full config comes back in the shape EditHookOption.config
-// takes, so `edit` merges into it and the listing reads the URL from it until the webhook
-// porcelain moves to `url`/`content_type`/`metadata`.
-#[allow(deprecated)]
+///
+/// `config` is the exception: only the keys being changed are sent. Forgejo's edit reads just
+/// `url` and `content_type` from it (and, for a Slack hook, the four keys in [`SLACK_META`]), each
+/// only when present, so an absent key already means "leave it alone" — and the hook's own
+/// `config`, which this used to merge into, is deprecated since Forgejo 17.
 async fn edit(
     api: &Api,
     target: &Target,
@@ -462,14 +462,14 @@ async fn edit(
 ) -> Result<()> {
     let current = get(api, target, args.id).await?;
 
-    let mut merged = current.config.clone();
-    merged.extend(config);
+    let mut config = config;
     if let Some(url) = &args.url {
-        merged.insert("url".to_owned(), url.clone());
+        config.insert("url".to_owned(), url.clone());
     }
     if let Some(ct) = &args.content_type {
-        merged.insert("content_type".to_owned(), ct.clone());
+        config.insert("content_type".to_owned(), ct.clone());
     }
+    carry_slack_meta(&current, &mut config);
 
     let mut events = current.events.clone();
     for e in &args.add_event {
@@ -495,7 +495,7 @@ async fn edit(
         branch_filter: Some(
             args.branch_filter.clone().unwrap_or_else(|| current.branch_filter.clone()),
         ),
-        config: Some(merged),
+        config: (!config.is_empty()).then_some(config),
         events: Some(events),
     };
 
@@ -531,29 +531,50 @@ fn config_from(pairs: &[String]) -> Result<BTreeMap<String, String>> {
     Ok(out)
 }
 
-/// The delivery URL, which lives in the untyped config map rather than in a typed field.
-// Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
-#[allow(deprecated)]
-fn hook_url(h: &Hook) -> String {
-    h.config.get("url").cloned().unwrap_or_default()
+/// The keys Forgejo rebuilds a Slack hook's metadata from.
+const SLACK_META: [&str; 4] = ["channel", "username", "icon_url", "color"];
+
+/// Make a Slack edit carry all four of [`SLACK_META`] when it changes any of them.
+///
+/// Forgejo rebuilds a Slack hook's metadata whenever `channel` is in an edit's config, from the
+/// four keys in that config, blanking any that are missing. So `-f username=x` alone would either
+/// change nothing (no `channel`) or, with it, wipe the icon and colour. The keys not being changed
+/// are read from the hook's `metadata`, which is where Forgejo serves them.
+fn carry_slack_meta(current: &Hook, config: &mut BTreeMap<String, String>) {
+    if current.r#type != "slack" || !SLACK_META.iter().any(|k| config.contains_key(*k)) {
+        return;
+    }
+    for key in SLACK_META {
+        if let Some(value) = current.metadata.get(key).and_then(serde_json::Value::as_str) {
+            config.entry(key.to_owned()).or_insert_with(|| value.to_owned());
+        }
+    }
 }
 
-// Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
-#[allow(deprecated)]
+/// The delivery URL.
+fn hook_url(h: &Hook) -> String {
+    h.url.clone()
+}
+
 fn detail(table: &mut crate::output::Table, h: &Hook) {
     table.row(["id".to_owned(), h.id.to_string()]);
     table.row(["type".to_owned(), h.r#type.clone()]);
     table.row(["url".to_owned(), hook_url(h)]);
+    if !h.content_type.is_empty() {
+        table.row(["content_type".to_owned(), h.content_type.clone()]);
+    }
     table.row(["active".to_owned(), h.active.to_string()]);
     table.row(["events".to_owned(), h.events.join(",")]);
     if !h.branch_filter.is_empty() {
         table.row(["branch_filter".to_owned(), h.branch_filter.clone()]);
     }
-    for (key, value) in &h.config {
-        if key == "url" {
-            continue;
+    // Type-specific settings: a Slack hook's channel, a Matrix hook's room. `null` for the plain
+    // `forgejo` and `gitea` types.
+    if let Some(meta) = h.metadata.as_object() {
+        for (key, value) in meta {
+            let shown = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+            table.row([format!("metadata.{key}"), shown]);
         }
-        table.row([format!("config.{key}"), value.clone()]);
     }
 }
 
@@ -575,6 +596,7 @@ mod tests {
 
     const ONE_HOOK: &str = r#"[{"id":4,"type":"forgejo","active":true,
         "events":["push","pull_request"],
+        "url":"https://ci.example/hook","content_type":"json",
         "config":{"url":"https://ci.example/hook","content_type":"json"}}]"#;
 
     /// Bug this prevents: the scope flags all reaching the same collection, so `--global` quietly
@@ -692,8 +714,8 @@ mod tests {
             Canned::json(
                 200,
                 r#"{"id":4,"type":"forgejo","active":true,"branch_filter":"main",
-                    "events":["push","issues"],
-                    "config":{"url":"https://old.example","content_type":"json","secret":"keep"}}"#,
+                    "events":["push","issues"],"url":"https://old.example","content_type":"json",
+                    "config":{"url":"https://old.example","content_type":"json"},"metadata":null}"#,
             ),
         );
         let fake = Arc::new(testing::on(
@@ -725,9 +747,43 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&patch).unwrap();
         assert_eq!(body["active"], serde_json::json!(true), "the hook must stay switched on");
         assert_eq!(body["branch_filter"], serde_json::json!("main"));
-        assert_eq!(body["config"]["secret"], serde_json::json!("keep"));
-        assert_eq!(body["config"]["url"], serde_json::json!("https://new.example"));
+        // Only what changed goes in `config`: Forgejo reads each key only when present, so the
+        // unchanged content type is left out rather than echoed back.
+        assert_eq!(body["config"], serde_json::json!({"url": "https://new.example"}));
         assert_eq!(body["events"], serde_json::json!(["push", "release"]));
+    }
+
+    /// Forgejo rebuilds a Slack hook's metadata from all four keys whenever `channel` is in the
+    /// edit, so changing one must carry the other three, read from the hook's `metadata`. A
+    /// non-Slack hook, or an edit touching none of the four, is left exactly as given.
+    #[test]
+    fn a_slack_edit_carries_the_metadata_it_was_not_asked_to_change() {
+        let slack: Hook = serde_json::from_value(serde_json::json!({
+            "id": 4, "type": "slack",
+            "metadata": {"channel": "#ci", "username": "bot", "icon_url": "https://i", "color": "good"},
+        }))
+        .unwrap();
+        let mut config = BTreeMap::from([("username".to_owned(), "renamed".to_owned())]);
+        carry_slack_meta(&slack, &mut config);
+        assert_eq!(
+            config,
+            BTreeMap::from([
+                ("channel".to_owned(), "#ci".to_owned()),
+                ("color".to_owned(), "good".to_owned()),
+                ("icon_url".to_owned(), "https://i".to_owned()),
+                ("username".to_owned(), "renamed".to_owned()),
+            ])
+        );
+
+        let mut url_only = BTreeMap::from([("url".to_owned(), "https://x".to_owned())]);
+        carry_slack_meta(&slack, &mut url_only);
+        assert_eq!(url_only.len(), 1, "a URL edit dragged the metadata along: {url_only:?}");
+
+        let plain: Hook =
+            serde_json::from_value(serde_json::json!({"id": 5, "type": "forgejo"})).unwrap();
+        let mut config = BTreeMap::from([("channel".to_owned(), "#x".to_owned())]);
+        carry_slack_meta(&plain, &mut config);
+        assert_eq!(config.len(), 1, "{config:?}");
     }
 
     trait PatchBody {

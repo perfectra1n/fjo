@@ -1392,6 +1392,69 @@ fn editing_a_wiki_page_without_a_title_renames_it_to_unnamed() {
 
 // ------------------------------------------------------------------------------- webhooks
 
+/// A Slack hook carries its channel, username, icon and colour in `metadata`, which Forgejo sends
+/// as a JSON **object** (a plain `forgejo` hook sends `null` there). Two bugs this prevents:
+///
+/// * `metadata` was generated as a `String`, so any repository with a Slack hook made `webhook
+///   list` and `webhook view` fail to decode the hook at all.
+/// * Forgejo rebuilds a Slack hook's metadata from the four config keys whenever `channel` is in
+///   an edit, blanking any of the four that are missing. `webhook edit -f username=x` must
+///   therefore carry the other three, read from `metadata` now that `config` is deprecated.
+#[test]
+fn a_slack_webhook_lists_views_and_keeps_its_metadata_through_an_edit() {
+    let inst = instance_or_skip!();
+    cover!(
+        porcelain: ["webhook list", "webhook view", "webhook edit"],
+        hits: ["repoListHooks", "repoGetHook", "repoEditHook"]
+    );
+    let repo = TestRepo::create_initialized(inst, "webhook-slack");
+    let slug = repo.slug();
+    let (code, body) = repo.api(
+        "POST",
+        "hooks",
+        Some(
+            r##"{"type":"slack","active":true,"events":["push"],"config":{
+                "url":"http://example.invalid/slack","content_type":"json","channel":"#ci",
+                "username":"fjo-bot","icon_url":"http://example.invalid/i.png","color":"good"}}"##,
+        ),
+    );
+    assert_eq!(code, 201, "seeding a Slack hook failed: {body}");
+    let id = serde_json::from_str::<serde_json::Value>(&body).expect("a hook")["id"]
+        .as_u64()
+        .expect("a hook id")
+        .to_string();
+
+    let listed = inst.fjo(["webhook", "list", "-R", &slug, "--json", "id,metadata"]);
+    listed.assert_ok("fjo webhook list with a Slack hook in the repository");
+    assert_eq!(listed.json()[0]["metadata"]["channel"], "#ci", "{}", listed.stdout);
+
+    inst.fjo(["webhook", "view", &id, "-R", &slug])
+        .assert_ok("fjo webhook view of a Slack hook")
+        .assert_says("http://example.invalid/slack")
+        .assert_says("#ci");
+
+    let read = || -> serde_json::Value {
+        let (code, body) = repo.api("GET", &format!("hooks/{id}"), None);
+        assert_eq!(code, 200, "{body}");
+        serde_json::from_str(&body).expect("a hook")
+    };
+
+    inst.fjo(["webhook", "edit", &id, "-R", &slug, "-f", "username=renamed"])
+        .assert_ok("fjo webhook edit -f username=…");
+    let hook = read();
+    let meta = &hook["metadata"];
+    assert_eq!(meta["username"], "renamed", "the edit did not reach the hook: {hook}");
+    assert_eq!(meta["channel"], "#ci", "editing the username blanked the channel: {hook}");
+    assert_eq!(meta["icon_url"], "http://example.invalid/i.png", "{hook}");
+    assert_eq!(meta["color"], "good", "{hook}");
+
+    inst.fjo(["webhook", "edit", &id, "-R", &slug, "--url", "http://example.invalid/slack2"])
+        .assert_ok("fjo webhook edit --url");
+    let hook = read();
+    assert_eq!(hook["url"], "http://example.invalid/slack2", "{hook}");
+    assert_eq!(hook["metadata"]["username"], "renamed", "a URL edit touched the metadata: {hook}");
+}
+
 /// `fjo webhook` end to end against a URL that deliberately does not resolve.
 ///
 /// `example.invalid` is reserved and unroutable, which is the point: a webhook's target is never
