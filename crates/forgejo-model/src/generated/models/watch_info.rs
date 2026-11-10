@@ -19,8 +19,8 @@ pub struct WatchInfo {
     pub created_at: Option<Timestamp>,
     #[serde(default, deserialize_with = "crate::de::null_as_default")]
     pub ignored: bool,
-    #[serde(default, deserialize_with = "crate::de::null_as_default")]
-    pub reason: String,
+    #[serde(default)]
+    pub reason: ::serde_json::Value,
     #[serde(default, deserialize_with = "crate::de::null_as_default")]
     pub repository_url: String,
     #[serde(default, deserialize_with = "crate::de::null_as_default")]

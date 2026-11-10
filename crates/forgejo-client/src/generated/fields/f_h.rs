@@ -20,7 +20,7 @@ pub static FIELDS_HOOK: &[FieldSpec] = &[
     FieldSpec { name: "created_at", kind: FieldKind::DateTime, doc: "" },
     FieldSpec { name: "events", kind: FieldKind::Array(&FieldKind::Str), doc: "" },
     FieldSpec { name: "id", kind: FieldKind::Int, doc: "" },
-    FieldSpec { name: "metadata", kind: FieldKind::Str, doc: "" },
+    FieldSpec { name: "metadata", kind: FieldKind::Json, doc: "" },
     FieldSpec { name: "type", kind: FieldKind::Str, doc: "" },
     FieldSpec { name: "updated_at", kind: FieldKind::DateTime, doc: "" },
     FieldSpec { name: "url", kind: FieldKind::Str, doc: "" },

@@ -49,6 +49,18 @@ enum DefClass {
     Alias,
 }
 
+/// A schema that says nothing about its value: no type, format, reference, items, properties,
+/// map values or enum.
+fn is_untyped(s: &Schema) -> bool {
+    s.ty.is_none()
+        && s.format.is_none()
+        && s.ref_.is_none()
+        && s.items.is_none()
+        && s.properties.is_empty()
+        && s.additional_properties.is_none()
+        && s.enum_values.is_none()
+}
+
 pub fn lower(loaded: &Loaded, overrides: &Overrides) -> Result<Ir> {
     let mut l = Lowerer::new(&loaded.spec, overrides);
     l.classify();
@@ -411,7 +423,13 @@ impl<'a> Lowerer<'a> {
         spec_required: bool,
     ) -> Result<Field> {
         let key = format!("{owner}.{wire}");
-        let mut ty = self.schema_type(owner, wire, prop)?;
+        // A property with no schema at all is "any JSON value", Go's `interface{}`. The scalar
+        // default (`String`) that `schema_type` falls back to is right for an untyped parameter
+        // or list item, which the user types as a string, and wrong for a property the server
+        // fills: `Hook.metadata` is an object for a Slack hook, and as a `String` it made every
+        // listing of a repository with one fail to decode.
+        let mut ty =
+            if is_untyped(prop) { RustType::Json } else { self.schema_type(owner, wire, prop)? };
 
         if let Some(newtype) = self.ov.newtype.get(&key) {
             if !matches!(ty, RustType::I32 | RustType::I64) {
@@ -1348,6 +1366,22 @@ mod vendored {
         ov.response_model.insert("userCreateTokenV0".into(), "AccessToken".into());
         let err = lower(&loaded, &ov).unwrap_err().to_string();
         assert!(err.contains("not an operation in the vendored spec"), "{err}");
+    }
+
+    /// The three properties the spec leaves untyped are free-form JSON, not strings. Bug this
+    /// prevents: a Slack hook's `metadata` object failing to decode into a `String`, which took
+    /// `fjo webhook list` down for the whole repository.
+    #[test]
+    fn untyped_properties_are_free_form_json() {
+        let ir = ir();
+        for (model, field) in
+            [("Hook", "metadata"), ("WatchInfo", "reason"), ("FileDeleteResponse", "content")]
+        {
+            let m = ir.models.iter().find(|m| m.wire == model).unwrap();
+            let ModelKind::Struct(fields) = &m.kind else { panic!("{model} is a struct") };
+            let f = fields.iter().find(|f| f.wire == field).unwrap();
+            assert_eq!(f.ty, RustType::Json, "{model}.{field}");
+        }
     }
 
     #[test]

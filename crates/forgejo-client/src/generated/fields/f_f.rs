@@ -33,7 +33,7 @@ pub static FIELDS_FILE_DELETE_RESPONSE: &[FieldSpec] = &[
         kind: FieldKind::Object(super::f_f::FIELDS_FILE_COMMIT_RESPONSE),
         doc: "",
     },
-    FieldSpec { name: "content", kind: FieldKind::Str, doc: "" },
+    FieldSpec { name: "content", kind: FieldKind::Json, doc: "" },
     FieldSpec {
         name: "verification",
         kind: FieldKind::Object(super::f_p::FIELDS_PAYLOAD_COMMIT_VERIFICATION),

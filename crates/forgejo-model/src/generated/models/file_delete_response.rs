@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 pub struct FileDeleteResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<FileCommitResponse>,
-    #[serde(default, deserialize_with = "crate::de::null_as_default")]
-    pub content: String,
+    #[serde(default)]
+    pub content: ::serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<PayloadCommitVerification>,
 }

@@ -36,8 +36,8 @@ pub struct Hook {
     pub events: Vec<String>,
     #[serde(default, deserialize_with = "crate::de::null_as_default")]
     pub id: HookId,
-    #[serde(default, deserialize_with = "crate::de::null_as_default")]
-    pub metadata: String,
+    #[serde(default)]
+    pub metadata: ::serde_json::Value,
     #[serde(default, deserialize_with = "crate::de::null_as_default")]
     pub r#type: String,
     #[serde(

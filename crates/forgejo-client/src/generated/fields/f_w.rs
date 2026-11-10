@@ -10,7 +10,7 @@ use crate::meta_types::{FieldKind, FieldSpec};
 pub static FIELDS_WATCH_INFO: &[FieldSpec] = &[
     FieldSpec { name: "created_at", kind: FieldKind::DateTime, doc: "" },
     FieldSpec { name: "ignored", kind: FieldKind::Bool, doc: "" },
-    FieldSpec { name: "reason", kind: FieldKind::Str, doc: "" },
+    FieldSpec { name: "reason", kind: FieldKind::Json, doc: "" },
     FieldSpec { name: "repository_url", kind: FieldKind::Str, doc: "" },
     FieldSpec { name: "subscribed", kind: FieldKind::Bool, doc: "" },
     FieldSpec { name: "url", kind: FieldKind::Str, doc: "" },
