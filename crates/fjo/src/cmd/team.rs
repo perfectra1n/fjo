@@ -130,7 +130,7 @@ pub struct CreateArgs {
     #[arg(long, value_name = "LEVEL", value_parser = PermissionLevel::KNOWN.to_vec())]
     pub permission: Option<String>,
     /// A unit the team can reach, e.g. `repo.code`; repeatable
-    #[arg(long = "unit", value_name = "UNIT")]
+    #[arg(long = "unit", value_name = "UNIT", value_parser = UNITS)]
     pub units: Vec<String>,
     /// Give the team every repository in the organization, including future ones
     #[arg(long = "all-repositories")]
@@ -158,7 +158,7 @@ pub struct EditArgs {
     #[arg(long, value_name = "LEVEL", value_parser = PermissionLevel::KNOWN.to_vec())]
     pub permission: Option<String>,
     /// Replace the team's units, e.g. `--unit repo.code --unit repo.issues`
-    #[arg(long = "unit", value_name = "UNIT")]
+    #[arg(long = "unit", value_name = "UNIT", value_parser = UNITS)]
     pub units: Vec<String>,
     /// Give the team every repository in the organization
     #[arg(long = "all-repositories", conflicts_with = "no_all_repositories")]
@@ -435,8 +435,11 @@ fn merge_edit(args: &EditArgs, current: &Team) -> Result<EditTeamOption> {
     Ok(EditTeamOption {
         name: args.name.clone().unwrap_or_else(|| current.name.clone()),
         description: Some(args.description.clone().unwrap_or_else(|| current.description.clone())),
-        // `none` is not a level Forgejo accepts on a request, so it is never echoed back.
-        permission: level.map(PermissionLevel::from),
+        // Always sent, `none` included: Forgejo applies `includes_all_repositories` only when a
+        // permission is in the body, so leaving it out made `--all-repositories` a silent no-op
+        // on a team whose units are all `none`. With a map present, Forgejo recomputes a
+        // below-admin level from the map anyway.
+        permission: Some(PermissionLevel::from(level.unwrap_or("none"))),
         includes_all_repositories: if args.all_repositories {
             Some(true)
         } else if args.no_all_repositories {
@@ -449,6 +452,22 @@ fn merge_edit(args: &EditArgs, current: &Team) -> Result<EditTeamOption> {
         ..Default::default()
     })
 }
+
+/// The unit keys Forgejo knows (`models/unit` at v17.0.1). Checked by clap: Forgejo stores an
+/// unknown key in `units_map` as an invalid unit rather than refusing it, so a typo would exit 0
+/// and leave the team with a nameless unit.
+const UNITS: [&str; 10] = [
+    "repo.code",
+    "repo.issues",
+    "repo.ext_issues",
+    "repo.pulls",
+    "repo.releases",
+    "repo.wiki",
+    "repo.ext_wiki",
+    "repo.projects",
+    "repo.packages",
+    "repo.actions",
+];
 
 /// Every named unit at one access level — what Forgejo itself makes of the deprecated `units`
 /// list.
@@ -727,7 +746,9 @@ mod tests {
     }
 
     /// `--unit` takes the team's own level when no `--permission` is given, and is refused when
-    /// there is no level to take — Forgejo reports `none` for a team set entirely per unit.
+    /// there is no level to take: Forgejo reports `none` when every unit of a team is `none`.
+    /// Such a team still gets a `permission` in the body, because Forgejo applies
+    /// `includes_all_repositories` only when one is present.
     #[test]
     fn unit_without_a_level_anywhere_is_a_usage_error() {
         let current = Team { name: "Dev".into(), permission: "none".into(), ..Default::default() };
@@ -743,10 +764,34 @@ mod tests {
         };
         assert_eq!(merge_edit(&args, &current).unwrap_err().exit_code(), 2);
         let wire = serde_json::to_value(
-            merge_edit(&EditArgs { units: vec![], ..args }, &current).unwrap(),
+            merge_edit(&EditArgs { units: vec![], all_repositories: true, ..args }, &current)
+                .unwrap(),
         )
         .unwrap();
-        assert!(wire.get("permission").is_none(), "`none` is not a requestable level: {wire}");
+        assert_eq!(wire["permission"], "none", "{wire}");
+        assert_eq!(wire["includes_all_repositories"], true, "{wire}");
+    }
+
+    /// Bug this prevents: `--unit issues` (for `repo.issues`) exiting 0 and leaving the team
+    /// with a nameless unit, because Forgejo stores an unknown key instead of refusing it.
+    #[test]
+    fn an_unknown_unit_is_refused_before_any_request() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct H {
+            #[command(subcommand)]
+            cmd: Cmd,
+        }
+        let parse = |argv: &[&str]| H::try_parse_from(argv.iter().copied());
+        assert!(
+            parse(&["t", "create", "acme", "Dev", "--permission", "read", "--unit", "issues"])
+                .is_err()
+        );
+        assert!(parse(&["t", "edit", "acme", "Dev", "--unit", "repo.issue"]).is_err());
+        assert!(
+            parse(&["t", "create", "acme", "Dev", "--permission", "read", "--unit", "repo.issues"])
+                .is_ok()
+        );
     }
 
     /// `team repo add` completes a bare name with the organization, and refuses a name from a

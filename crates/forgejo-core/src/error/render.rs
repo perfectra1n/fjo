@@ -530,11 +530,15 @@ fn short_sha(sha: &str) -> String {
 /// The arguments after `fjo ci <verb>` that re-address what the user asked about: the target
 /// when there was one (none means "the branch you are on", which must stay implicit), then the
 /// repository so the command works from outside the checkout too.
-fn ci_args(target: Option<&str>, slug: Option<&str>) -> String {
+fn ci_args(target: Option<&str>, workflow: Option<&str>, slug: Option<&str>) -> String {
     let mut out = String::new();
     if let Some(t) = target.map(str::trim).filter(|t| !t.is_empty()) {
         out.push(' ');
         out.push_str(t);
+    }
+    if let Some(w) = workflow {
+        out.push_str(" -W ");
+        out.push_str(w);
     }
     if let Some(s) = slug {
         out.push_str(" -R ");
@@ -1360,8 +1364,8 @@ fn advise(kind: &ErrorKind, ctx: &RequestCtx) -> Advice {
         // `fjo run view` per run: the user asked about a commit, and `ci logs` acts on every
         // failed run of it at once. The target is repeated exactly as the user gave it
         // (or omitted for "here"), so the advice resolves to the same commit when pasted back.
-        CiFailed { slug, target, sha, failed } => {
-            let args = ci_args(target.as_deref(), slug.as_deref());
+        CiFailed { slug, target, sha, failed, workflow } => {
+            let args = ci_args(target.as_deref(), workflow.as_deref(), slug.as_deref());
             let mut a = a
                 .fact("commit", sha)
                 .fact("target", target.clone().unwrap_or_default())
@@ -1386,8 +1390,8 @@ fn advise(kind: &ErrorKind, ctx: &RequestCtx) -> Advice {
             ))
         }
 
-        CiPending { slug, target, sha, pending } => {
-            let args = ci_args(target.as_deref(), slug.as_deref());
+        CiPending { slug, target, sha, pending, workflow } => {
+            let args = ci_args(target.as_deref(), workflow.as_deref(), slug.as_deref());
             a.fact("commit", sha)
                 .fact("target", target.clone().unwrap_or_default())
                 .fact("repository", slug.clone().unwrap_or_default())
@@ -2033,6 +2037,7 @@ mod tests {
                 slug: Some("perf3ct/fjo".into()),
                 target: Some("2626".into()),
                 sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                workflow: None,
                 failed: vec![FailedRun::new(
                     6442,
                     "ci.yml",
@@ -2046,18 +2051,21 @@ mod tests {
                 slug: None,
                 target: None,
                 sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                workflow: None,
                 failed: vec![],
             },
             CiPending {
                 slug: Some("perf3ct/fjo".into()),
                 target: Some("main".into()),
                 sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                workflow: None,
                 pending: vec!["ci.yml".into(), "release.yml".into()],
             },
             CiPending {
                 slug: None,
                 target: None,
                 sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                workflow: None,
                 pending: vec![],
             },
             PaginationDidNotTerminate { pages: 10_000, items: 500_000 },
@@ -2663,7 +2671,7 @@ mod tests {
 
     /// A red commit with two failed workflows: the headline counts them, each is a fact with its
     /// run id and failed jobs, and the advice is `fjo ci logs` with the target the user gave,
-    /// pasted back verbatim, then the first failed run's page (Forgejo can rerun only there).
+    /// pasted back verbatim, then `fjo ci rerun` with the same target.
     #[test]
     fn snapshot_ci_failed() {
         insta::assert_snapshot!(snap(
@@ -2671,6 +2679,7 @@ mod tests {
                 slug: Some("perf3ct/fjo".into()),
                 target: Some("2626".into()),
                 sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                workflow: None,
                 failed: vec![
                     FailedRun::new(
                         6442,
@@ -2695,6 +2704,7 @@ mod tests {
                 slug: None,
                 target: None,
                 sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                workflow: None,
                 failed: vec![FailedRun::new(6442, "ci.yml", "failure", vec![], None)],
             },
             RequestCtx::default(),
@@ -2702,6 +2712,35 @@ mod tests {
         assert!(out.contains("1. fjo ci logs  ("), "{out}");
         assert!(out.contains("2. fjo ci rerun  ("), "{out}");
         insta::assert_snapshot!(out);
+    }
+
+    /// Bug this prevents: `fjo ci -W ci.yml` failing and advising a `fjo ci rerun` without the
+    /// filter, which would rerun every failed workflow of the commit rather than the one shown.
+    #[test]
+    fn ci_advice_keeps_the_workflow_filter() {
+        let failed = snap(
+            ErrorKind::CiFailed {
+                slug: Some("perf3ct/fjo".into()),
+                target: Some("2626".into()),
+                sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                workflow: Some("ci.yml".into()),
+                failed: vec![FailedRun::new(6442, "ci.yml", "failure", vec![], None)],
+            },
+            RequestCtx::default(),
+        );
+        assert!(failed.contains("1. fjo ci logs 2626 -W ci.yml -R perf3ct/fjo  ("), "{failed}");
+        assert!(failed.contains("2. fjo ci rerun 2626 -W ci.yml -R perf3ct/fjo  ("), "{failed}");
+        let pending = snap(
+            ErrorKind::CiPending {
+                slug: None,
+                target: None,
+                sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                workflow: Some("ci.yml".into()),
+                pending: vec!["ci.yml".into()],
+            },
+            RequestCtx::default(),
+        );
+        assert!(pending.contains("fjo ci watch -W ci.yml"), "{pending}");
     }
 
     /// Pending says "wait" and names the watch command, never logs or a rerun.
@@ -2712,6 +2751,7 @@ mod tests {
                 slug: Some("perf3ct/fjo".into()),
                 target: Some("main".into()),
                 sha: "f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed".into(),
+                workflow: None,
                 pending: vec!["ci.yml".into(), "claude-code-review.yml".into()],
             },
             RequestCtx::default(),

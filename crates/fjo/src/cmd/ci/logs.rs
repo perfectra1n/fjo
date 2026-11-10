@@ -41,7 +41,7 @@ pub(super) async fn run(
     let picked = pick(api, &resolved.slug, &selected, args.all, args.job.as_ref()).await?;
     if picked.is_empty() {
         support::warn(&nothing_to_print(&resolved, &selected, args.all));
-        return view::verdict(&resolved, &bare(&selected));
+        return view::verdict(&resolved, &bare(&selected), args.workflow.as_deref());
     }
     let wanted: Vec<&ActionRunJob> = picked.iter().map(|(_, j)| j).collect();
     let logs = fetch_logs(api, &resolved.slug, &wanted).await?;

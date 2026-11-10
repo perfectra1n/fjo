@@ -139,7 +139,11 @@ Ctrl-C stops it at once.
     #[command(long_about = "\
 For each of a target's runs that failed, rerun its failed and cancelled jobs (and the jobs
 that depend on them) — what `fjo run rerun --failed` does for one run. Runs that passed
-are not touched. Ends with the `fjo ci watch` that follows the reruns.
+are not touched. A run the server refuses is reported and the rest are still rerun; the
+exit code is then non-zero. Prints the `fjo ci watch` command that follows the reruns.
+
+A rerun deletes the run's artifacts, those of jobs it does not rerun included: Forgejo
+keeps artifacts per run, not per job.
 
 Needs Forgejo 17 or later: earlier releases have no rerun route.
 
@@ -343,7 +347,7 @@ pub(crate) async fn report(
     if selected.is_empty() {
         no_runs(rt, api, resolved, runs, workflow).await;
     }
-    view::verdict(resolved, &views)
+    view::verdict(resolved, &views, workflow)
 }
 
 /// The selected runs as `--json` prints them: the API's own objects, validated against
@@ -368,41 +372,65 @@ async fn rerun(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &RerunArgs) 
         no_runs(rt, api, &resolved, &runs, args.workflow.as_deref()).await;
         return Ok(());
     }
-    let reran = rerun_failed(api, &resolved.slug, &selected, support::warn).await?;
+    let RerunSummary { runs: reran, refused } =
+        rerun_failed(api, &resolved.slug, &selected, support::warn).await;
+    if reran > 0 {
+        // Printed even when another run was refused: the reruns that did start are worth
+        // following, and the error below still decides the exit code.
+        let mut out = support::writer(globals)?;
+        writeln!(out, "next: {}", hint("watch", &resolved, globals))?;
+        out.flush()?;
+    }
+    if let Some(e) = refused {
+        return Err(e);
+    }
     if reran == 0 {
         support::warn(&format!(
             "no run failed for {} ({}); there is nothing to rerun",
             sha7(&resolved.sha),
             resolved.label
         ));
-        return Ok(());
     }
-    let mut out = support::writer(globals)?;
-    writeln!(out, "next: {}", hint("watch", &resolved, globals))?;
-    out.flush()?;
     Ok(())
 }
 
-/// Rerun the failed jobs of every failed run in `selected`, saying so for each as it goes, and
-/// answer how many runs were rerun. A run that passed or is still going is not touched: rerunning
-/// a green workflow is not what "rerun CI" means, and Forgejo refuses a job that has not
-/// finished.
+/// What [`rerun_failed`] did across the selected runs.
+pub(crate) struct RerunSummary {
+    /// How many runs had at least one job rerun.
+    pub(crate) runs: usize,
+    /// The first refusal, when any run could not be rerun (fully). The rest were still tried.
+    pub(crate) refused: Option<forgejo_core::error::Error>,
+}
+
+/// Rerun the failed jobs of every failed run in `selected`, saying so for each as it goes. A run
+/// that passed or is still going is not touched: rerunning a green workflow is not what "rerun
+/// CI" means, and Forgejo refuses a job that has not finished.
+///
+/// A run Forgejo refuses (a disabled or invalid workflow) is reported and the walk carries on,
+/// because one dead workflow must not stand between the user and rerunning the others — which is
+/// what `fjo ci`'s own failure advice tells them to do.
 pub(crate) async fn rerun_failed(
     api: &Api,
     slug: &forgejo_core::types::RepoSlug,
     selected: &[&ActionRun],
     mut say: impl FnMut(&str),
-) -> Result<usize> {
-    let mut count = 0;
+) -> RerunSummary {
+    let mut summary = RerunSummary { runs: 0, refused: None };
     for run in selected.iter().filter(|r| target::ci_state(r) == target::CiState::Failed) {
-        let jobs = crate::cmd::run::rerun_failed_jobs(api, slug, run).await?;
-        if jobs.is_empty() {
-            continue;
+        let (reran, error) = match crate::cmd::run::rerun_failed_jobs(api, slug, run).await {
+            Ok(done) => (done.reran, done.error),
+            Err(e) => (Vec::new(), Some(e)),
+        };
+        if !reran.is_empty() {
+            say(&format!("reran {} of {} (run {})", reran.join(", "), run.workflow_id, run.id));
+            summary.runs += 1;
         }
-        say(&format!("reran {} of {} (run {})", jobs.join(", "), run.workflow_id, run.id));
-        count += 1;
+        if let Some(e) = error {
+            say(&format!("could not rerun {} (run {}): {e}", run.workflow_id, run.id));
+            summary.refused.get_or_insert(e);
+        }
     }
-    Ok(count)
+    summary
 }
 
 #[cfg(test)]

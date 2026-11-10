@@ -380,7 +380,7 @@ fn status_human_output_pending_suggests_watch() {
 fn status_human_output_for_a_commit_with_no_runs() {
     let out = view::render(&resolved(Some("2626")), &[], &testing::term(), None);
     insta::assert_snapshot!(out);
-    assert!(view::verdict(&resolved(Some("2626")), &[]).is_ok());
+    assert!(view::verdict(&resolved(Some("2626")), &[], None).is_ok());
 }
 
 fn json_of(selected: &[&ActionRun], fields: &str) -> String {
@@ -410,7 +410,7 @@ fn status_json_output_golden() {
 fn a_failed_run_is_ci_failed_exit_1_naming_its_failed_jobs() {
     let runs = mixed_runs();
     let views = mixed_views(&runs);
-    let err = view::verdict(&resolved(Some("2626")), &views).unwrap_err();
+    let err = view::verdict(&resolved(Some("2626")), &views, None).unwrap_err();
     assert_eq!(err.exit_code(), 1);
     let ErrorKind::CiFailed { target, sha, failed, .. } = err.kind() else { panic!("{err:?}") };
     assert_eq!((target.as_deref(), sha.as_str()), (Some("2626"), SHA));
@@ -424,7 +424,7 @@ fn a_failed_run_is_ci_failed_exit_1_naming_its_failed_jobs() {
 fn an_unfinished_run_is_ci_pending_exit_8() {
     let runs = [run(1, "ci.yml", "success"), run(2, "lint.yml", "waiting")];
     let views: Vec<RunView<'_>> = runs.iter().map(RunView::bare).collect();
-    let err = view::verdict(&resolved(None), &views).unwrap_err();
+    let err = view::verdict(&resolved(None), &views, None).unwrap_err();
     assert_eq!(err.exit_code(), 8);
     let ErrorKind::CiPending { target, pending, .. } = err.kind() else { panic!("{err:?}") };
     assert_eq!((target, pending.as_slice()), (&None, &["lint.yml".to_owned()][..]));
@@ -434,7 +434,7 @@ fn an_unfinished_run_is_ci_pending_exit_8() {
 fn skipped_counts_as_success() {
     let runs = [run(1, "ci.yml", "success"), run(2, "docs.yml", "skipped")];
     let views: Vec<RunView<'_>> = runs.iter().map(RunView::bare).collect();
-    assert!(view::verdict(&resolved(None), &views).is_ok());
+    assert!(view::verdict(&resolved(None), &views, None).is_ok());
 }
 
 // ------------------------------------------------------------------------------------ logs
@@ -656,7 +656,7 @@ async fn watch_with_no_appear_timeout_gives_up_at_once() {
 fn a_failed_run_is_reported_by_its_id_not_the_number_in_its_url() {
     let runs = [run(6442, "ci.yml", "failure")];
     let views: Vec<RunView<'_>> = runs.iter().map(RunView::bare).collect();
-    let err = view::verdict(&resolved(None), &views).unwrap_err();
+    let err = view::verdict(&resolved(None), &views, None).unwrap_err();
     let ErrorKind::CiFailed { failed, .. } = err.kind() else { panic!("{err:?}") };
     assert_eq!(failed[0].id, 6442);
     assert_eq!(failed[0].url.as_deref(), Some("https://git.example.org/o/r/actions/runs/3623"));
@@ -704,11 +704,66 @@ async fn rerun_asks_for_the_failed_jobs_of_failed_runs_only() {
     ];
     let selected = select(&runs, false, None);
     let mut said = Vec::new();
-    let n =
+    let done =
         rerun_failed(&testing::api(fake.clone()), &slug(), &selected, |l| said.push(l.to_owned()))
-            .await
-            .unwrap();
-    assert_eq!(n, 1);
+            .await;
+    assert_eq!(done.runs, 1);
+    assert!(done.refused.is_none());
     assert_eq!(fake.call_count(), 3, "{:?}", fake.calls());
     assert_eq!(said, ["reran build of ci.yml (run 6442)"]);
+}
+
+/// Bug this prevents: one disabled workflow stopping `fjo ci rerun` before it reruns the
+/// others. The refused run is reported, the next one is still rerun, and the refusal is what the
+/// command exits with.
+#[tokio::test]
+async fn rerun_carries_on_past_a_run_the_server_refuses() {
+    let mut legacy = job(11, "old", "failure");
+    legacy.attempt = 1;
+    let mut build = job(21, "build", "failure");
+    build.attempt = 1;
+    let fake = Arc::new(on(
+        on(
+            on(
+                on(
+                    on(
+                        on(
+                            testing::transport(),
+                            "GET",
+                            &jobs_path(10),
+                            Canned::json(200, jobs_body(&[legacy.clone()])),
+                        ),
+                        "GET",
+                        "/api/v1/repos/o/r/actions/jobs/11",
+                        Canned::json(200, json!(legacy).to_string()),
+                    ),
+                    "POST",
+                    "/api/v1/repos/o/r/actions/jobs/11/rerun",
+                    Canned::json(400, r#"{"message":"workflow is disabled"}"#),
+                ),
+                "GET",
+                &jobs_path(20),
+                Canned::json(200, jobs_body(&[build.clone()])),
+            ),
+            "GET",
+            "/api/v1/repos/o/r/actions/jobs/21",
+            Canned::json(200, json!(build).to_string()),
+        ),
+        "POST",
+        "/api/v1/repos/o/r/actions/jobs/21/rerun",
+        testing::empty(),
+    ));
+    let runs = [run(10, "a-legacy.yml", "failure"), run(20, "ci.yml", "failure")];
+    let selected: Vec<&ActionRun> = runs.iter().collect();
+    let mut said = Vec::new();
+    let done =
+        rerun_failed(&testing::api(fake.clone()), &slug(), &selected, |l| said.push(l.to_owned()))
+            .await;
+    assert_eq!(done.runs, 1);
+    assert!(done.refused.is_some());
+    assert!(
+        said.iter().any(|l| l.starts_with("could not rerun a-legacy.yml (run 10)")),
+        "{said:?}"
+    );
+    assert!(said.contains(&"reran build of ci.yml (run 20)".to_owned()), "{said:?}");
 }

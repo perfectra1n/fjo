@@ -595,6 +595,10 @@ pub enum ErrorKind {
         sha: String,
         /// The runs that failed, one entry per workflow.
         failed: Vec<FailedRun>,
+        /// The `--workflow` filter the runs were selected with, repeated in the advice so it acts
+        /// on the same runs: `fjo ci rerun` without it would rerun every failed workflow of the
+        /// commit, not only the one the user was looking at.
+        workflow: Option<String>,
     },
     /// Forgejo Actions, for one commit, has not finished, and nothing has failed yet.
     ///
@@ -609,6 +613,10 @@ pub enum ErrorKind {
         sha: String,
         /// The workflow files whose runs are still queued or in progress.
         pending: Vec<String>,
+        /// The `--workflow` filter the runs were selected with, repeated in the advice so it acts
+        /// on the same runs: `fjo ci rerun` without it would rerun every failed workflow of the
+        /// commit, not only the one the user was looking at.
+        workflow: Option<String>,
     },
     /// Pagination hit its own ceiling: every page came back full and the instance never once
     /// said the collection had ended.
@@ -942,10 +950,16 @@ mod tests {
             slug: None,
             target: Some("42".into()),
             sha: "f36d1a7".repeat(5) + "ab0de",
+            workflow: None,
             failed: vec![FailedRun::new(6442, "ci.yml", "failure", vec![], None)],
         };
-        let pending =
-            ErrorKind::CiPending { slug: None, target: None, sha: "a".repeat(40), pending: vec![] };
+        let pending = ErrorKind::CiPending {
+            slug: None,
+            target: None,
+            sha: "a".repeat(40),
+            pending: vec![],
+            workflow: None,
+        };
         assert_eq!(failed.exit_code(), 1);
         assert_eq!(pending.exit_code(), 8);
         assert!(!failed.is_transient() && !pending.is_transient());

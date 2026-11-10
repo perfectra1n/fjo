@@ -445,9 +445,9 @@ async fn create(
 /// user was only renaming. Seeding from the current hook means an unspecified flag genuinely
 /// means "leave it alone".
 ///
-/// `authorization_header` is the one field the server does not echo back — it returns an empty
-/// string — but Forgejo also ignores an empty `authorization_header` on a PATCH, so round-tripping
-/// the blank is a no-op rather than a secret being cleared.
+/// `authorization_header` must be sent back as it was read: Forgejo applies the field on every
+/// edit, and an empty value clears the header. The server echoes the stored value (decrypted), so
+/// resending it is what leaves it alone.
 ///
 /// `config` is the exception: only the keys being changed are sent. Forgejo's edit reads just
 /// `url` and `content_type` from it (and, for a Slack hook, the four keys in [`SLACK_META`]), each

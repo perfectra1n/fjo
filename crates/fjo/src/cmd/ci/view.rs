@@ -94,7 +94,13 @@ pub(crate) fn next_verb(views: &[RunView<'_>]) -> Option<&'static str> {
 
 /// The exit code, through the taxonomy: a failed run is `CiFailed` (1), else an unfinished one
 /// is `CiPending` (8), else success. `skipped` and unrecognised statuses block nothing.
-pub(crate) fn verdict(resolved: &Resolved, views: &[RunView<'_>]) -> Result<()> {
+/// `workflow` is the `-W` filter the runs were selected with, carried into the error so its
+/// advice reruns or watches the same runs.
+pub(crate) fn verdict(
+    resolved: &Resolved,
+    views: &[RunView<'_>],
+    workflow: Option<&str>,
+) -> Result<()> {
     let failed: Vec<FailedRun> = views
         .iter()
         .filter(|v| ci_state(v.run) == CiState::Failed)
@@ -110,8 +116,9 @@ pub(crate) fn verdict(resolved: &Resolved, views: &[RunView<'_>]) -> Result<()> 
         .collect();
     let slug = Some(resolved.slug.to_string());
     let (target, sha) = (resolved.selector.clone(), resolved.sha.clone());
+    let workflow = workflow.map(str::to_owned);
     if !failed.is_empty() {
-        return Err(Error::new(ErrorKind::CiFailed { slug, target, sha, failed }));
+        return Err(Error::new(ErrorKind::CiFailed { slug, target, sha, failed, workflow }));
     }
     let pending: Vec<String> = views
         .iter()
@@ -119,7 +126,7 @@ pub(crate) fn verdict(resolved: &Resolved, views: &[RunView<'_>]) -> Result<()> 
         .map(|v| v.run.workflow_id.clone())
         .collect();
     if !pending.is_empty() {
-        return Err(Error::new(ErrorKind::CiPending { slug, target, sha, pending }));
+        return Err(Error::new(ErrorKind::CiPending { slug, target, sha, pending, workflow }));
     }
     Ok(())
 }
