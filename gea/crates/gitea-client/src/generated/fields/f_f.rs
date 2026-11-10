@@ -43,7 +43,7 @@ pub static FIELDS_FILE_DELETE_RESPONSE: &[FieldSpec] = &[
     },
     FieldSpec {
         name: "content",
-        kind: FieldKind::Str,
+        kind: FieldKind::Json,
         doc: "Content is always null for delete operations",
     },
     FieldSpec {

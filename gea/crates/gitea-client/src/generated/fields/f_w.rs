@@ -20,7 +20,7 @@ pub static FIELDS_WATCH_INFO: &[FieldSpec] = &[
     },
     FieldSpec {
         name: "reason",
-        kind: FieldKind::Str,
+        kind: FieldKind::Json,
         doc: "The reason for the current watch status",
     },
     FieldSpec {

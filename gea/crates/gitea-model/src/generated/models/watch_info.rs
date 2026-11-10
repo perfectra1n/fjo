@@ -22,8 +22,8 @@ pub struct WatchInfo {
     #[serde(default, deserialize_with = "crate::de::null_as_default")]
     pub ignored: bool,
     /// The reason for the current watch status
-    #[serde(default, deserialize_with = "crate::de::null_as_default")]
-    pub reason: String,
+    #[serde(default)]
+    pub reason: ::serde_json::Value,
     /// The URL of the repository being watched
     #[serde(default, deserialize_with = "crate::de::null_as_default")]
     pub repository_url: String,
