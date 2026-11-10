@@ -2,7 +2,7 @@
 
 A command-line interface for [Forgejo](https://forgejo.org), with commands similar to `gh`.
 
-Use `fjo pr`, `fjo issue`, and `fjo repo` for common tasks. For other API operations, use `fjo raw` or `fjo api`. The generated `raw` commands cover all 512 operations in the bundled Forgejo 17.0.1 API specification, and 501 of them are driven against a real Forgejo by the integration suite.
+Use `fjo pr`, `fjo issue`, and `fjo repo` for common tasks. For other API operations, use `fjo raw` or `fjo api`. The generated `raw` commands cover all 512 operations in the bundled Forgejo 17.0.1 API specification, and every one that a single test instance can reach (502 of them) is driven against a real Forgejo by the integration suite.
 
 ## Install
 
@@ -69,14 +69,14 @@ Use `fjo --help` to list command groups, or add `--help` to any command.
 | Plane | Surface | Covered |
 | --- | --- | --- |
 | Request contract (hermetic) | generated operations | 512 / 512 |
-| Against a real Forgejo | generated operations | 501 / 502 |
-| Against a real Forgejo | porcelain commands | 264 / 265 |
+| Against a real Forgejo | generated operations | 502 / 502 |
+| Against a real Forgejo | porcelain commands | 267 / 267 |
 
 The contract plane checks that every generated command composes the request its metadata declares — method, path substitution, per-parameter encoding, query keys, body types. It runs in the ordinary test suite and needs no Docker.
 
 The live plane boots a throwaway Forgejo 17.0.1 and drives real lifecycles against it. It is the only thing that can show the server disagreeing with its own published specification, and it regularly does.
 
-Ten operations are held unreachable in [`spec/live-coverage.toml`](spec/live-coverage.toml), each with a reason and what would unblock it: all ten are ActivityPub routes that need a second federating instance and HTTP-signed requests. The single remaining gap on each plane is one command with an open defect, not missing tests.
+Ten operations are held unreachable in [`spec/live-coverage.toml`](spec/live-coverage.toml), each with a reason and what would unblock it: all ten are ActivityPub routes that need a second federating instance and HTTP-signed requests. No gap remains on either plane, and the coverage ratchet keeps it that way: a new command without a live test fails CI.
 
 ```bash
 mise run test             # hermetic: contract plane included, no Docker
