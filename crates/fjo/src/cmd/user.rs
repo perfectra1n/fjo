@@ -611,7 +611,10 @@ async fn token_create(
     let body = CreateAccessTokenOption {
         name: args.name.clone(),
         scopes: Some(args.scopes.clone()),
-        repositories: Some(Vec::new()),
+        // Omitted, not `[]`: Forgejo reads an empty list as "limited to these repositories" and
+        // refuses it with `400 Access tokens with specified repositories must have at least one
+        // repository`, which is how this command failed on every server until now.
+        repositories: None,
     };
     let created = basic.user().create_token(&username, &body).await?;
 

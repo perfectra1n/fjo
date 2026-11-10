@@ -516,17 +516,14 @@ set -eu
 # crates/fjo-itest/src/coverage.rs.
 #
 # To drain one: `cargo xtask coverage-check --list` names what is uncovered.
-# Both numbers are ONE, and the same fjo defect is behind both: `fjo user
-# token create` always sends `"repositories": []` and Forgejo answers 400
-# (crates/fjo/src/cmd/user.rs, token_create). `live_user.rs` pins that
-# refusal. The operation and the leaf are deliberately NOT exempted in
-# spec/live-coverage.toml -- the route works fine, our command does not,
-# and an exemption would hide a real bug behind a clean number.
-#
-# So this budget drains to zero by FIXING THE BUG, which is the only kind
-# of debt a ratchet should be willing to carry.
-RAW_BUDGET=1
-PORCELAIN_BUDGET=1
+# Both numbers are ZERO. They were one each, for a single fjo defect: `fjo
+# user token create` sent `"repositories": []` and Forgejo answered 400. That
+# was drained the only way a ratchet should be, by fixing the bug, and
+# live_user.rs now drives the token it creates. Every operation the harness
+# can reach and every porcelain leaf is driven live; a new one without a live
+# test fails here.
+RAW_BUDGET=0
+PORCELAIN_BUDGET=0
 # Start from an empty directory. A journal is named after the pid that wrote
 # it, so stale ones from an earlier run would ACCUMULATE rather than be
 # overwritten -- and a stale contract journal would keep crediting an operation

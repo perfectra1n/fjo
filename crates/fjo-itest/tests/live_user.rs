@@ -568,8 +568,8 @@ fn deleting_a_token_falls_back_to_a_password_when_the_route_refuses_the_token() 
     );
     assert!((200..300).contains(&code) || code == 422, "could not create {name}: {code}: {body}");
 
-    // Minted out of band with Basic auth, because `fjo user token create` cannot do it — see
-    // `creating_a_token_through_fjo_is_refused_by_forgejo_16` for why.
+    // Minted out of band with Basic auth, so this test of `list` and `delete` does not also
+    // depend on `create`, which `a_token_created_through_fjo_authenticates_as_its_account` drives.
     let token_name = "doomed";
     let out = Command::new("curl")
         .args(["-sS", "-w", "\n%{http_code}", "--max-time", "30"])
@@ -622,20 +622,18 @@ fn deleting_a_token_falls_back_to_a_password_when_the_route_refuses_the_token() 
     inst.api("DELETE", &format!("admin/users/{name}"), None);
 }
 
-/// **A live defect, pinned here rather than in a bug tracker nobody reads.**
+/// `fjo user token create`, end to end: the token it prints must exist, carry the scope asked
+/// for, and authenticate as the account.
 ///
-/// `fjo user token create` always sends `"repositories": []` (`cmd/user.rs`'s `token_create`
-/// sets `repositories: Some(Vec::new())`). Forgejo 16.0.4 answers
-/// `400 Access tokens with specified repositories must have at least one repository.`, so the
-/// command cannot create a token on any supported server. Omitting the field entirely succeeds.
-///
-/// No mock caught this because the mock was told the call succeeded. This test therefore claims
-/// **no coverage**: `user token create` and `userCreateToken` stay in the uncovered column,
-/// which is the honest number. When the empty array stops being sent, replace this with the
-/// create-read-delete lifecycle it is standing in for.
+/// This replaces a test that pinned a live defect: the command used to send `"repositories": []`,
+/// which Forgejo reads as "limited to these repositories" and refuses with `400 Access tokens with
+/// specified repositories must have at least one repository`, so it could not create a token on
+/// any server. A mock had been told the call succeeded, so nothing else noticed. The token is
+/// proved by using it, because a 201 with an unusable secret would look the same on stdout.
 #[test]
-fn creating_a_token_through_fjo_is_refused_by_forgejo_16() {
+fn a_token_created_through_fjo_authenticates_as_its_account() {
     let inst = instance_or_skip!();
+    cover!(porcelain: ["user token create"], hits: ["userCreateToken"]);
 
     let name = format!("mktokuser{}", std::process::id());
     let password = "fjo-itest-token-owner-2";
@@ -651,29 +649,30 @@ fn creating_a_token_through_fjo_is_refused_by_forgejo_16() {
     let run = fjo_stdin(
         inst,
         password,
-        ["user", "token", "create", "wanted", "--scope", "read:user", "--username", &name],
+        [
+            "user",
+            "token",
+            "create",
+            "wanted",
+            "--scope",
+            "read:user",
+            "--username",
+            &name,
+            "--json",
+            "name,sha1,scopes",
+        ],
     );
-    assert!(
-        !run.ok(),
-        "fjo user token create now succeeds against Forgejo 16.0.4. That is the fix this test \
-         is waiting for: replace it with a create-read-delete lifecycle and move `user token \
-         create` / `userCreateToken` into the covered column.\n{}\n{}",
-        run.stdout,
-        run.stderr
-    );
-    run.assert_says("repositor");
+    run.assert_ok("fjo user token create, with the password on stdin");
+    let created = run.json();
+    assert_eq!(created["name"], "wanted", "{created}");
+    assert_eq!(created["scopes"], serde_json::json!(["read:user"]), "{created}");
+    let secret = created["sha1"].as_str().filter(|s| !s.is_empty());
+    let secret = secret.unwrap_or_else(|| panic!("no token secret was printed: {created}"));
 
-    // Out of band: the refusal must be total. A command that half-created a token would leave
-    // one behind that the user never saw the secret for.
-    let tokens = expect_json(
-        &format!("GET /users/{name}/tokens"),
-        inst.api("GET", &format!("users/{name}/tokens"), None),
-    );
-    assert_eq!(
-        tokens.as_array().map(Vec::len),
-        Some(0),
-        "the request was refused but a token exists anyway: {tokens}"
-    );
+    let (code, body) = inst.api_as(secret, "GET", "user", None);
+    assert_eq!(code, 200, "the printed token does not authenticate: {body}");
+    let me: serde_json::Value = serde_json::from_str(&body).expect("a user");
+    assert_eq!(me["login"], name.as_str(), "the token belongs to someone else: {body}");
 
     inst.api("DELETE", &format!("admin/users/{name}"), None);
 }
