@@ -1,6 +1,5 @@
 ---
 source: crates/forgejo-core/src/error/render.rs
-assertion_line: 2716
 expression: out
 ---
 error: 1 workflow run failed for commit f36d1a7
@@ -11,6 +10,6 @@ error: 1 workflow run failed for commit f36d1a7
 what to do:
   read the logs of the jobs that failed, then fix or rerun them.
   1. fjo ci logs  (only the failed jobs)
-  2. fjo run view 6442 --web  (rerun it from the run's page)
+  2. fjo ci rerun  (rerun only the failed jobs)
   note: a failed CI run returns exit code 1, as fjo pr checks does for a
         failed check.

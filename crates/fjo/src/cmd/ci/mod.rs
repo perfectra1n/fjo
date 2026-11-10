@@ -7,15 +7,14 @@
 //! filter, which (unlike `--ref`) finds `pull_request` runs, which Forgejo files under the pull
 //! request rather than the branch. [`target`] is that resolution.
 //!
-//! # No `fjo ci rerun`
+//! # `fjo ci rerun`, on Forgejo 17's routes
 //!
-//! The `gea` original has one. Forgejo 16 had no route to rerun a run or a job (measured on
-//! 16.0.5: `POST …/actions/runs/{id}/rerun` was a router 404), so this port was built without
-//! one. Forgejo 17 added `POST …/actions/runs/{id}/rerun` and `POST …/actions/jobs/{id}/rerun`;
-//! they are reachable as `fjo raw run rerun` and `fjo raw repo rerun-action-job`, and
-//! `crates/fjo-itest/tests/live_ci.rs` drives both, but no porcelain wraps them yet. Until one
-//! does, a failed `fjo ci` advises `fjo run view <id> --web`, which opens the page that has the
-//! button.
+//! Forgejo 16 had no route to rerun a run or a job (measured on 16.0.5: `POST …/actions/runs/
+//! {id}/rerun` was a router 404), so this port first shipped without the `gea` original's
+//! `ci rerun`. Forgejo 17 added `POST …/actions/runs/{id}/rerun` and `POST …/actions/jobs/{id}/
+//! rerun`, but not Gitea's "rerun the failed jobs" route, which is the one `gea ci rerun` takes.
+//! So `fjo ci rerun` asks for each failed job of each failed run in turn — see
+//! `run::rerun_failed_jobs` — and needs Forgejo 17.
 //!
 //! # Built for a reader who is a script as often as a person
 //!
@@ -57,6 +56,8 @@ use crate::global::GlobalOpts;
 use crate::runtime::Runtime;
 
 use target::{Resolved, latest_per_workflow, sort_for_display};
+
+pub(crate) use view::job_failed;
 
 /// `fjo ci --help`. Set on the `Porcelain::Ci` variant, because a variant's doc comment
 /// overrides a `long_about` on the struct it wraps.
@@ -134,6 +135,17 @@ Ctrl-C stops it at once.
   fjo ci watch 2626 --interval 10
   fjo ci watch && fjo pr merge")]
     Watch(WatchArgs),
+    /// Rerun the failed jobs of every failed run
+    #[command(long_about = "\
+For each of a target's runs that failed, rerun its failed and cancelled jobs (and the jobs
+that depend on them) — what `fjo run rerun --failed` does for one run. Runs that passed
+are not touched. Ends with the `fjo ci watch` that follows the reruns.
+
+Needs Forgejo 17 or later: earlier releases have no rerun route.
+
+  fjo ci rerun
+  fjo ci rerun 2626 --workflow ci.yml")]
+    Rerun(RerunArgs),
 }
 
 // No doc comment on purpose: it would become the `about` of whatever flattens this struct, and
@@ -185,6 +197,16 @@ pub struct WatchArgs {
     pub workflow: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, ClapArgs)]
+pub struct RerunArgs {
+    /// A pull request (42, #42, URL), a branch, or a commit. Defaults to the branch you are on
+    #[arg(value_name = "TARGET")]
+    pub target: Option<String>,
+    /// Only runs of this workflow file, e.g. `ci.yml`
+    #[arg(short = 'W', long, value_name = "FILE")]
+    pub workflow: Option<String>,
+}
+
 pub fn run(globals: &GlobalOpts, args: &Args) -> Result<()> {
     // Before the runtime, so `fjo ci --json` needs no host, no token and no network.
     if emit::discover(globals, fields_for(args.command.as_ref()))? {
@@ -198,16 +220,17 @@ pub fn run(globals: &GlobalOpts, args: &Args) -> Result<()> {
             Some(Cmd::Status(a)) => status(&rt, globals, &api, a).await,
             Some(Cmd::Logs(a)) => logs::run(&rt, globals, &api, a).await,
             Some(Cmd::Watch(a)) => watch::run(&rt, globals, &api, a).await,
+            Some(Cmd::Rerun(a)) => rerun(&rt, globals, &api, a).await,
         }
     })
 }
 
 /// Which generated field table `--json` validates against. Only `status` prints a document;
-/// `logs` is a text pump and `watch` ends in `status`'s human view.
+/// `logs` is a text pump and `watch`/`rerun` end in `status`'s human view or a next step.
 fn fields_for(cmd: Option<&Cmd>) -> Fields {
     match cmd {
         None | Some(Cmd::Status(_)) => RUN_FIELDS,
-        Some(Cmd::Logs(_) | Cmd::Watch(_)) => Fields::None,
+        Some(Cmd::Logs(_) | Cmd::Watch(_) | Cmd::Rerun(_)) => Fields::None,
     }
 }
 
@@ -333,6 +356,53 @@ fn listing<'a>(selected: &[&ActionRun]) -> Result<Listing<'a>> {
         total: None,
         noun: "runs",
     })
+}
+
+// ------------------------------------------------------------------------------------ rerun
+
+async fn rerun(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &RerunArgs) -> Result<()> {
+    let resolved = target::resolve_target(rt, globals, api, args.target.as_deref()).await?;
+    let runs = target::runs_for_sha(api, &resolved.slug, &resolved.sha).await?;
+    let selected = select(&runs, false, args.workflow.as_deref());
+    if selected.is_empty() {
+        no_runs(rt, api, &resolved, &runs, args.workflow.as_deref()).await;
+        return Ok(());
+    }
+    let reran = rerun_failed(api, &resolved.slug, &selected, support::warn).await?;
+    if reran == 0 {
+        support::warn(&format!(
+            "no run failed for {} ({}); there is nothing to rerun",
+            sha7(&resolved.sha),
+            resolved.label
+        ));
+        return Ok(());
+    }
+    let mut out = support::writer(globals)?;
+    writeln!(out, "next: {}", hint("watch", &resolved, globals))?;
+    out.flush()?;
+    Ok(())
+}
+
+/// Rerun the failed jobs of every failed run in `selected`, saying so for each as it goes, and
+/// answer how many runs were rerun. A run that passed or is still going is not touched: rerunning
+/// a green workflow is not what "rerun CI" means, and Forgejo refuses a job that has not
+/// finished.
+pub(crate) async fn rerun_failed(
+    api: &Api,
+    slug: &forgejo_core::types::RepoSlug,
+    selected: &[&ActionRun],
+    mut say: impl FnMut(&str),
+) -> Result<usize> {
+    let mut count = 0;
+    for run in selected.iter().filter(|r| target::ci_state(r) == target::CiState::Failed) {
+        let jobs = crate::cmd::run::rerun_failed_jobs(api, slug, run).await?;
+        if jobs.is_empty() {
+            continue;
+        }
+        say(&format!("reran {} of {} (run {})", jobs.join(", "), run.workflow_id, run.id));
+        count += 1;
+    }
+    Ok(count)
 }
 
 #[cfg(test)]

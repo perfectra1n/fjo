@@ -86,6 +86,18 @@ pub enum Cmd {
     List(ListArgs),
     /// Show one run, its jobs, and why any of them is waiting
     View(ViewArgs),
+    /// Run a finished run again, or only its failed jobs, or one job
+    #[command(long_about = "\
+Run a finished run again. By default every job; --failed only the jobs that failed or were
+cancelled, and the jobs that depend on them; --job one job and the jobs that depend on it.
+A pasted job URL (`…/runs/3623/jobs/1`) reruns that job unless --failed says otherwise.
+
+Needs Forgejo 17 or later: earlier releases have no rerun route.
+
+  fjo run rerun 6442
+  fjo run rerun 6442 --failed
+  fjo run rerun '#3623' --job build")]
+    Rerun(RerunArgs),
     /// Cancel a pending or running run
     Cancel(OneArgs),
     /// Delete a finished run
@@ -140,6 +152,19 @@ pub struct ViewArgs {
     /// Open the run in a browser instead
     #[arg(short = 'w', long)]
     pub web: bool,
+}
+
+#[derive(Debug, ClapArgs)]
+pub struct RerunArgs {
+    /// The run: an id (6442), a run number (#3623), or the run's URL
+    pub run: RunRef,
+    /// Only the jobs that failed or were cancelled, and the jobs that depend on them
+    #[arg(long, conflicts_with = "job")]
+    pub failed: bool,
+    /// Only this job, and the jobs that depend on it: its id, or its name (an unambiguous part
+    /// of it)
+    #[arg(short = 'j', long, value_name = "JOB")]
+    pub job: Option<JobRef>,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -219,6 +244,7 @@ pub fn run(globals: &GlobalOpts, args: &Args) -> Result<()> {
         match &args.command {
             Cmd::List(a) => list(&rt, globals, &api, a).await,
             Cmd::View(a) => view(&rt, globals, &api, a).await,
+            Cmd::Rerun(a) => rerun(&rt, globals, &api, a).await,
             Cmd::Cancel(a) => cancel(&rt, globals, &api, a).await,
             Cmd::Delete(a) => delete(&rt, globals, &api, a).await,
             Cmd::Logs(a) => logs(&rt, globals, &api, a).await,
@@ -240,7 +266,9 @@ fn fields_for(cmd: &Cmd) -> Fields {
         Cmd::Jobs(_) => JOB_FIELDS,
         Cmd::Artifacts(_) => Fields::Op("ListActionRunArtifacts"),
         Cmd::Runners(_) => Fields::Op("getRepoRunners"),
-        Cmd::Cancel(_) | Cmd::Delete(_) | Cmd::Logs(_) | Cmd::Watch(_) => Fields::None,
+        Cmd::Rerun(_) | Cmd::Cancel(_) | Cmd::Delete(_) | Cmd::Logs(_) | Cmd::Watch(_) => {
+            Fields::None
+        }
     }
 }
 
@@ -434,6 +462,101 @@ fn exit_status(wanted: bool, run: &ActionRun) -> Result<()> {
         "run {} ({}) concluded with {}",
         run.id, run.workflow_id, run.status
     )))
+}
+
+// ------------------------------------------------------------------------------------ rerun
+
+async fn rerun(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &RerunArgs) -> Result<()> {
+    let slug = slug(rt, globals)?;
+    let run = resolve_run(api, slug, &args.run).await?;
+    // `--failed` is explicit, so it outranks a job URL; `--job` cannot be combined with it.
+    // `--job` wins over a job URL because it is the more deliberate of the two.
+    let scope = if args.failed {
+        Rerun::Failed
+    } else if let Some(j) = &args.job {
+        let jobs = api.run().jobs(&slug.owner, &slug.name, run.id.get()).await?;
+        Rerun::Job(resolve_job(&jobs, j)?.id)
+    } else if let Some(pos) = args.run.url_job() {
+        let jobs = api.run().jobs(&slug.owner, &slug.name, run.id.get()).await?;
+        Rerun::Job(job_at(&jobs, pos)?.id)
+    } else {
+        Rerun::All
+    };
+    let what = request_rerun(api, slug, &run, scope).await?;
+    support::note(
+        rt.term(),
+        &format!("requested a rerun of {what}; follow it with `fjo run watch {}`", run.id),
+    );
+    Ok(())
+}
+
+/// Which part of a finished run to run again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rerun {
+    /// The whole run: `POST …/actions/runs/{id}/rerun`.
+    All,
+    /// Only the jobs that failed or were cancelled, and the jobs that depend on them. Forgejo has
+    /// no route for this; see [`rerun_failed_jobs`]. What `fjo ci rerun` asks for.
+    Failed,
+    /// One job, and the jobs that depend on it: `POST …/actions/jobs/{id}/rerun`.
+    Job(JobId),
+}
+
+/// Ask for the rerun, and describe what was asked for.
+pub(crate) async fn request_rerun(
+    api: &Api,
+    slug: &RepoSlug,
+    run: &ActionRun,
+    scope: Rerun,
+) -> Result<String> {
+    Ok(match scope {
+        Rerun::All => {
+            api.run().rerun(&slug.owner, &slug.name, run.id.get()).await?;
+            format!("run {}", run.id)
+        }
+        Rerun::Job(job) => {
+            api.repo().rerun_action_job(&slug.owner, &slug.name, job.get()).await?;
+            format!("job {job} of run {}", run.id)
+        }
+        Rerun::Failed => {
+            let reran = rerun_failed_jobs(api, slug, run).await?;
+            if reran.is_empty() {
+                return Err(support::usage(format!(
+                    "run {} ({}) has no failed or cancelled job to rerun; `fjo run rerun {}` \
+                     reruns every job",
+                    run.id, run.status, run.id
+                )));
+            }
+            format!("the failed jobs of run {}: {}", run.id, reran.join(", "))
+        }
+    })
+}
+
+/// Rerun every job of `run` that failed or was cancelled, and answer the ones asked for.
+///
+/// Gitea does this in one request; Forgejo has no such route, only "rerun this job and the jobs
+/// that depend on it", so each failed job is asked for in turn. The listing is a snapshot from
+/// before any of them, so each job is re-read just before its request: a job an earlier rerun
+/// already reset, because it depends on one rerun before it, has a newer `attempt` (or is no
+/// longer finished) and is skipped — rerunning it again would be refused while it waits, or run
+/// it twice once it is done. In practice that case is rare, since a job that depends on a failed
+/// one is normally *skipped*, not failed; its own rerun comes with its dependency's.
+pub(crate) async fn rerun_failed_jobs(
+    api: &Api,
+    slug: &RepoSlug,
+    run: &ActionRun,
+) -> Result<Vec<String>> {
+    let jobs = api.run().jobs(&slug.owner, &slug.name, run.id.get()).await?;
+    let mut reran = Vec::new();
+    for job in jobs.iter().filter(|j| crate::cmd::ci::job_failed(j)) {
+        let now = api.repo().get_action_job(&slug.owner, &slug.name, job.id.get()).await?;
+        if now.attempt != job.attempt || !is_finished(&now.status) {
+            continue;
+        }
+        api.repo().rerun_action_job(&slug.owner, &slug.name, job.id.get()).await?;
+        reran.push(job.name.clone());
+    }
+    Ok(reran)
 }
 
 // -------------------------------------------------------------------------- cancel / delete
@@ -970,7 +1093,7 @@ mod tests {
     use super::*;
     use crate::output::Term;
     use forgejo_core::http::transport::Canned;
-    use forgejo_core::http::{Auth, Client, FakeTransport, RetryPolicy};
+    use forgejo_core::http::{Auth, Client, FakeTransport, Method, RetryPolicy};
     use forgejo_core::types::ids::RunId;
     use std::sync::Arc;
 
@@ -1557,5 +1680,114 @@ mod tests {
             report.push_str(&format!("== {label}\n{}", String::from_utf8(buf).unwrap()));
         }
         insta::assert_snapshot!(report);
+    }
+
+    // --------------------------------------------------------------------------------- rerun
+
+    const BASE: &str = "/api/v1/repos/o/r/actions";
+
+    fn rerun_slug() -> RepoSlug {
+        "o/r".parse().expect("a slug")
+    }
+
+    fn finished_run(status: &str) -> ActionRun {
+        serde_json::from_value(serde_json::json!({
+            "id": 6442, "index_in_repo": 3623, "workflow_id": "ci.yml", "status": status,
+        }))
+        .expect("a run")
+    }
+
+    fn attempt(id: i64, name: &str, status: &str, attempt: i64) -> ActionRunJob {
+        ActionRunJob {
+            id: JobId::new(id),
+            name: name.to_owned(),
+            status: status.to_owned(),
+            attempt,
+            ..Default::default()
+        }
+    }
+
+    fn json_of<T: serde::Serialize>(v: &T) -> String {
+        serde_json::to_string(v).expect("serializable")
+    }
+
+    /// Forgejo has no "rerun the failed jobs" route, so `--failed` asks for each failed or
+    /// cancelled job in turn. Bug this prevents: rerunning a job a moment after an earlier rerun
+    /// already reset it as a dependent — refused while it waits, or a second run once it is done.
+    /// `deploy` was cancelled, but by the time it is reached its `attempt` has moved on, so it
+    /// gets no request of its own; `lint` passed and is not even read.
+    #[tokio::test]
+    async fn rerun_failed_asks_for_each_failed_job_and_skips_one_already_reset() {
+        let listed = vec![
+            attempt(11, "build", "failure", 1),
+            attempt(12, "lint", "success", 1),
+            attempt(13, "deploy", "cancelled", 1),
+        ];
+        let fake = Arc::new(
+            FakeTransport::new()
+                .on(
+                    Method::GET,
+                    &format!("{BASE}/runs/6442/jobs"),
+                    Canned::json(200, json_of(&listed)),
+                )
+                .on(Method::GET, &format!("{BASE}/jobs/11"), Canned::json(200, json_of(&listed[0])))
+                .on(Method::POST, &format!("{BASE}/jobs/11/rerun"), Canned::new(204))
+                .on(
+                    Method::GET,
+                    &format!("{BASE}/jobs/13"),
+                    Canned::json(200, json_of(&attempt(13, "deploy", "waiting", 2))),
+                ),
+        );
+        let reran =
+            rerun_failed_jobs(&api_for(fake.clone()), &rerun_slug(), &finished_run("failure"))
+                .await
+                .unwrap();
+        assert_eq!(reran, ["build"]);
+        let posts: Vec<String> =
+            fake.calls().into_iter().filter(|c| c.method == Method::POST).map(|c| c.path).collect();
+        assert_eq!(posts, [format!("{BASE}/jobs/11/rerun")]);
+        assert!(fake.calls_to(&Method::GET, &format!("{BASE}/jobs/12")).is_empty());
+    }
+
+    /// `--failed` on a run where nothing failed is refused before any rerun is requested, and
+    /// says what would rerun everything instead.
+    #[tokio::test]
+    async fn rerun_failed_with_nothing_failed_is_refused_without_a_request() {
+        let listed = vec![attempt(11, "build", "success", 1)];
+        let fake = Arc::new(FakeTransport::new().on(
+            Method::GET,
+            &format!("{BASE}/runs/6442/jobs"),
+            Canned::json(200, json_of(&listed)),
+        ));
+        let err = request_rerun(
+            &api_for(fake.clone()),
+            &rerun_slug(),
+            &finished_run("success"),
+            Rerun::Failed,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err.kind(), ErrorKind::Usage(_)), "{err:?}");
+        assert!(err.to_string().contains("fjo run rerun 6442"), "{err}");
+        assert!(fake.calls().iter().all(|c| c.method != Method::POST), "{:?}", fake.calls());
+    }
+
+    /// The whole run and one job go to their own routes, by the run's and the job's **id**.
+    #[tokio::test]
+    async fn rerun_all_and_rerun_one_job_hit_their_own_routes() {
+        let fake = Arc::new(
+            FakeTransport::new()
+                .on(Method::POST, &format!("{BASE}/runs/6442/rerun"), Canned::new(204))
+                .on(Method::POST, &format!("{BASE}/jobs/11/rerun"), Canned::new(204)),
+        );
+        let api = api_for(fake.clone());
+        let run = finished_run("failure");
+        assert_eq!(request_rerun(&api, &rerun_slug(), &run, Rerun::All).await.unwrap(), "run 6442");
+        assert_eq!(
+            request_rerun(&api, &rerun_slug(), &run, Rerun::Job(JobId::new(11))).await.unwrap(),
+            "job 11 of run 6442"
+        );
+        let paths: Vec<String> = fake.calls().into_iter().map(|c| c.path).collect();
+        assert_eq!(paths, [format!("{BASE}/runs/6442/rerun"), format!("{BASE}/jobs/11/rerun")]);
     }
 }

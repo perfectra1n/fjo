@@ -163,7 +163,7 @@ fn the_watch_interval_cannot_be_zero_and_defaults_are_as_documented() {
 fn every_subcommand_describes_itself() {
     let cmd = Harness::command();
     let ci = cmd.find_subcommand("ci").unwrap();
-    for sub in ["status", "logs", "watch"] {
+    for sub in ["status", "logs", "watch", "rerun"] {
         let s = ci.find_subcommand(sub).unwrap_or_else(|| panic!("{sub}"));
         assert!(s.get_about().is_some(), "{sub}");
         assert!(s.get_long_about().is_some(), "{sub}");
@@ -663,12 +663,52 @@ fn a_failed_run_is_reported_by_its_id_not_the_number_in_its_url() {
     assert_ne!(runs[0].index_in_repo, 6442);
 }
 
-/// There is no `ci rerun` (see the module docs in `ci/mod.rs`). Bug this prevents: shipping the
-/// Gitea port's subcommand, built for Gitea's rerun routes, by accident. Forgejo 17's routes
-/// differ, so a `ci rerun` here must be written for them, deliberately, with its own tests.
+// ----------------------------------------------------------------------------------- rerun
+
 #[test]
-fn there_is_no_rerun_subcommand() {
-    let cmd = Harness::command();
-    let ci = cmd.find_subcommand("ci").unwrap();
-    assert!(ci.find_subcommand("rerun").is_none());
+fn rerun_takes_a_target_and_a_workflow() {
+    let Some(Cmd::Rerun(r)) = parse(&["rerun", "2626", "-W", "ci.yml"]).unwrap().command else {
+        panic!("rerun")
+    };
+    assert_eq!((r.target.as_deref(), r.workflow.as_deref()), (Some("2626"), Some("ci.yml")));
+    let Some(Cmd::Rerun(r)) = parse(&["rerun"]).unwrap().command else { panic!("rerun") };
+    assert!(r.target.is_none() && r.workflow.is_none());
+}
+
+/// Only the failed run is rerun, through Forgejo's job route, one request per failed job: the
+/// run that is still going and the run that passed are not touched, not even read.
+#[tokio::test]
+async fn rerun_asks_for_the_failed_jobs_of_failed_runs_only() {
+    let mut build = job(11, "build", "failure");
+    build.attempt = 1;
+    let fake = Arc::new(on(
+        on(
+            on(
+                testing::transport(),
+                "GET",
+                &jobs_path(6442),
+                Canned::json(200, jobs_body(&[build.clone(), job(12, "lint", "success")])),
+            ),
+            "GET",
+            "/api/v1/repos/o/r/actions/jobs/11",
+            Canned::json(200, json!(build).to_string()),
+        ),
+        "POST",
+        "/api/v1/repos/o/r/actions/jobs/11/rerun",
+        testing::empty(),
+    ));
+    let runs = vec![
+        run(6442, "ci.yml", "failure"),
+        run(6443, "lint.yml", "running"),
+        run(6444, "docs.yml", "success"),
+    ];
+    let selected = select(&runs, false, None);
+    let mut said = Vec::new();
+    let n =
+        rerun_failed(&testing::api(fake.clone()), &slug(), &selected, |l| said.push(l.to_owned()))
+            .await
+            .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(fake.call_count(), 3, "{:?}", fake.calls());
+    assert_eq!(said, ["reran build of ci.yml (run 6442)"]);
 }

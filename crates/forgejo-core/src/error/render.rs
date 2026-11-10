@@ -543,11 +543,6 @@ fn ci_args(target: Option<&str>, slug: Option<&str>) -> String {
     out
 }
 
-/// ` -R owner/name` when the repository is known, so a pasted command reaches it from anywhere.
-fn repo_flag(slug: Option<&str>) -> String {
-    slug.map(|s| format!(" -R {s}")).unwrap_or_default()
-}
-
 /// One `failed:` fact for [`ErrorKind::CiFailed`]: `ci.yml (run 6442): failure — jobs: a, b — url`.
 fn failed_run_line(run: &FailedRun) -> String {
     let mut line = format!("{} (run {}): {}", run.workflow, run.id, run.conclusion);
@@ -1381,18 +1376,12 @@ fn advise(kind: &ErrorKind, ctx: &RequestCtx) -> Advice {
                     Line::step(1, format!("fjo ci logs{args}"))
                         .and_text("  (only the failed jobs)"),
                 );
-            // `fjo ci` has no rerun of its own (Forgejo 16 had no rerun route; 17's is reachable
-            // only through `fjo raw`), so the second step opens the first failed run's page
-            // rather than naming a command that does not exist. With no run known (the list is
-            // empty), there is no page to open.
-            let a = match failed.first() {
-                Some(run) => a.todo(
-                    Line::step(2, format!("fjo run view {}{} --web", run.id, repo_flag(slug.as_deref())))
-                        .and_text("  (rerun it from the run's page)"),
-                ),
-                None => a,
-            };
-            a.todo(Line::note(
+            // Step 2 needs Forgejo 17: `fjo ci rerun` drives its job rerun route.
+            a.todo(
+                Line::step(2, format!("fjo ci rerun{args}"))
+                    .and_text("  (rerun only the failed jobs)"),
+            )
+            .todo(Line::note(
                 "a failed CI run returns exit code 1, as fjo pr checks does for a failed check.",
             ))
         }
@@ -2711,9 +2700,7 @@ mod tests {
             RequestCtx::default(),
         );
         assert!(out.contains("1. fjo ci logs  ("), "{out}");
-        assert!(out.contains("2. fjo run view 6442 --web  ("), "{out}");
-        // `fjo ci` has no rerun, so no advice may name a rerun command.
-        assert!(!out.contains("ci rerun"), "{out}");
+        assert!(out.contains("2. fjo ci rerun  ("), "{out}");
         insta::assert_snapshot!(out);
     }
 
