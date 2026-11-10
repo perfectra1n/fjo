@@ -18,6 +18,18 @@
 //! first and only the named ones are changed, which is `docs/porcelain-conventions.md`'s
 //! "edit commands mutate; they never replace a whole set" applied to a body that cannot express
 //! absence.
+//!
+//! # Units travel as `units_map`, never `units`
+//!
+//! Forgejo 17 deprecated the flat `units` list in favour of `units_map` (unit → access level).
+//! The two do not combine: when a body carries a map, Forgejo uses the map and ignores the list,
+//! and it also recomputes a below-admin `permission` from the map (the lowest level in it), so the
+//! level the caller asked for is ignored too. A team read back from the server always has a
+//! populated map, and this command used to send it back beside the list on every edit, which
+//! silently threw away both `--unit` and `--permission`. So `--unit` is translated here: each
+//! named unit gets the `--permission` level, which is what the server itself does with `units`,
+//! and `--permission` alone re-levels the units the team can already reach. The same move gea
+//! made for Gitea 28.
 
 use clap::{Args as ClapArgs, Subcommand};
 use forgejo_client::{Api, query};
@@ -25,6 +37,7 @@ use forgejo_core::error::{Error, ErrorKind, Result};
 use forgejo_core::types::RepoRef;
 use forgejo_model::{CreateTeamOption, EditTeamOption, PermissionLevel, Team, User};
 use futures::{StreamExt, TryStreamExt};
+use std::collections::BTreeMap;
 
 use crate::cmd::support;
 use crate::cmd::support::listing::{self as emit, Fields, Listing};
@@ -268,11 +281,6 @@ pub(crate) async fn names(api: &Api, org: &str) -> Result<Vec<String>> {
 
 // ------------------------------------------------------------------------------------- list
 
-// Forgejo 17 marks `units` deprecated on Team, CreateTeamOption and EditTeamOption in favour of
-// `units_map`, and says it "will be dropped in later versions". 17.0.1 still returns it and
-// accepts it on create (live_org_team.rs creates every team with `--units`), so these keep using
-// it until the team porcelain moves to `units_map`, the way gea's did for Gitea 28.
-#[allow(deprecated)]
 async fn list(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &ListArgs) -> Result<()> {
     let limit = support::limit(None, globals);
     // `teamSearch` is the only way to filter server-side, and it wraps its results in an envelope;
@@ -307,7 +315,7 @@ async fn list(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &ListArgs) ->
                 team.id.to_string(),
                 team.name.clone(),
                 team.permission.as_str().to_owned(),
-                team.units.join(", "),
+                unit_names(team),
                 if team.includes_all_repositories { "yes".to_owned() } else { String::new() },
                 team.description.clone(),
             ]);
@@ -320,15 +328,13 @@ async fn view(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &TeamArgs) ->
     detail(rt, globals, &team)
 }
 
-// Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
-#[allow(deprecated)]
 fn detail(rt: &Runtime, globals: &GlobalOpts, team: &Team) -> Result<()> {
     let mut rows = vec![
         ("name".to_owned(), team.name.clone()),
         ("id".to_owned(), team.id.to_string()),
         ("description".to_owned(), team.description.clone()),
         ("permission".to_owned(), team.permission.as_str().to_owned()),
-        ("units".to_owned(), team.units.join(", ")),
+        ("units".to_owned(), unit_names(team)),
         (
             "all repositories".to_owned(),
             if team.includes_all_repositories { "yes".to_owned() } else { "no".to_owned() },
@@ -338,8 +344,8 @@ fn detail(rt: &Runtime, globals: &GlobalOpts, team: &Team) -> Result<()> {
             if team.can_create_org_repo { "yes".to_owned() } else { "no".to_owned() },
         ),
     ];
-    // The per-unit access map is the part people actually need when debugging permissions, and it
-    // is invisible in the `units` list.
+    // The per-unit access map is the part people actually need when debugging permissions; the
+    // `units` row above names only the units the team can reach.
     for (unit, access) in &team.units_map {
         rows.push((format!("unit {unit}"), access.clone()));
     }
@@ -354,17 +360,25 @@ fn detail(rt: &Runtime, globals: &GlobalOpts, team: &Team) -> Result<()> {
 
 // ----------------------------------------------------------------------------- create / edit
 
-// Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
-#[allow(deprecated)]
 async fn create(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &CreateArgs) -> Result<()> {
+    let units_map = if args.units.is_empty() {
+        None
+    } else {
+        let level = args.permission.as_deref().ok_or_else(|| {
+            support::usage(
+                "--unit needs --permission, to say what the team may do in those units".to_owned(),
+            )
+        })?;
+        Some(units_at(&args.units, level))
+    };
     let body = CreateTeamOption {
         name: args.name.clone(),
         description: args.description.clone(),
         permission: args.permission.as_deref().map(PermissionLevel::from),
-        units: Some(args.units.clone()),
         includes_all_repositories: Some(args.all_repositories),
         can_create_org_repo: Some(args.can_create_repos),
-        units_map: Default::default(),
+        units_map,
+        ..Default::default()
     };
     let team = api.org().create_team(&args.org, &body).await?;
     support::note(
@@ -376,7 +390,7 @@ async fn create(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &CreateArgs
 
 async fn edit(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &EditArgs) -> Result<()> {
     let current = resolve(api, &args.org, &args.team).await?;
-    let team = api.org().edit_team(current.id.get(), &merge_edit(args, &current)).await?;
+    let team = api.org().edit_team(current.id.get(), &merge_edit(args, &current)?).await?;
     detail(rt, globals, &team)
 }
 
@@ -385,16 +399,44 @@ async fn edit(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &EditArgs) ->
 /// Note `units`: an empty `--unit` list means "leave them alone", not "remove them all". Removing
 /// every unit from a team makes its repositories invisible to its members, which is not something
 /// to do by omission.
-// Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
-#[allow(deprecated)]
-fn merge_edit(args: &EditArgs, current: &Team) -> EditTeamOption {
-    EditTeamOption {
+///
+/// The units go out as `units_map` only (see the module docs), and the server derives a
+/// below-admin level from the map whenever one is present, so `--permission` without `--unit` is
+/// applied by re-levelling the units the team can already reach. Units at `none` stay at `none`:
+/// changing a level must not quietly grant access to a unit the team was kept out of.
+fn merge_edit(args: &EditArgs, current: &Team) -> Result<EditTeamOption> {
+    let team_level = Some(current.permission.as_str()).filter(|p| *p != "none");
+    let level = args.permission.as_deref().or(team_level);
+    let units_map = if !args.units.is_empty() {
+        let level = level.ok_or_else(|| {
+            support::usage(format!(
+                "the team {} sets its access per unit, so --unit needs --permission to say what \
+                 the team may do in those units",
+                current.name
+            ))
+        })?;
+        Some(units_at(&args.units, level))
+    } else if current.units_map.is_empty() {
+        None
+    } else if let Some(new) = args.permission.as_deref() {
+        Some(
+            current
+                .units_map
+                .iter()
+                .map(|(unit, old)| {
+                    let access = if old == "none" { old.as_str() } else { new };
+                    (unit.clone(), access.to_owned())
+                })
+                .collect(),
+        )
+    } else {
+        Some(current.units_map.clone())
+    };
+    Ok(EditTeamOption {
         name: args.name.clone().unwrap_or_else(|| current.name.clone()),
         description: Some(args.description.clone().unwrap_or_else(|| current.description.clone())),
-        permission: Some(PermissionLevel::from(
-            args.permission.as_deref().unwrap_or(current.permission.as_str()),
-        )),
-        units: Some(if args.units.is_empty() { current.units.clone() } else { args.units.clone() }),
+        // `none` is not a level Forgejo accepts on a request, so it is never echoed back.
+        permission: level.map(PermissionLevel::from),
         includes_all_repositories: if args.all_repositories {
             Some(true)
         } else if args.no_all_repositories {
@@ -403,8 +445,21 @@ fn merge_edit(args: &EditArgs, current: &Team) -> EditTeamOption {
             Some(current.includes_all_repositories)
         },
         can_create_org_repo: Some(current.can_create_org_repo),
-        units_map: Some(current.units_map.clone()),
-    }
+        units_map,
+        ..Default::default()
+    })
+}
+
+/// Every named unit at one access level — what Forgejo itself makes of the deprecated `units`
+/// list.
+fn units_at(units: &[String], level: &str) -> BTreeMap<String, String> {
+    units.iter().map(|u| (u.clone(), level.to_owned())).collect()
+}
+
+/// The units a team can reach, for display: those whose level in `units_map` is not `none`.
+fn unit_names(team: &Team) -> String {
+    let reachable = team.units_map.iter().filter(|(_, access)| *access != "none");
+    reachable.map(|(unit, _)| unit.as_str()).collect::<Vec<_>>().join(", ")
 }
 
 async fn delete(rt: &Runtime, api: &Api, args: &DeleteArgs) -> Result<()> {
@@ -593,15 +648,13 @@ mod tests {
     /// empty string, clearing its units and dropping its permission, because `EditTeamOption` has
     /// no way to say "unchanged".
     #[test]
-    // Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
-    #[allow(deprecated)]
     fn edit_preserves_the_name_units_and_permission_it_was_not_given() {
         let current = Team {
             id: TeamId::new(7),
             name: "Dev".into(),
             description: "old".into(),
             permission: "write".into(),
-            units: vec!["repo.code".into(), "repo.issues".into()],
+            units_map: units_at(&["repo.code".into(), "repo.issues".into()], "write"),
             includes_all_repositories: true,
             can_create_org_repo: true,
             ..Default::default()
@@ -616,18 +669,84 @@ mod tests {
             all_repositories: false,
             no_all_repositories: false,
         };
-        let body = merge_edit(&args, &current);
+        let body = merge_edit(&args, &current).unwrap();
         assert_eq!(body.name, "Dev", "an omitted --name must not rename the team to \"\"");
         assert_eq!(body.description.as_deref(), Some("new"));
         assert_eq!(body.permission, Some(PermissionLevel::Write));
-        assert_eq!(
-            body.units.as_deref(),
-            Some(&["repo.code".to_owned(), "repo.issues".to_owned()][..])
-        );
+        assert_eq!(body.units_map.as_ref(), Some(&current.units_map));
         assert_eq!(body.includes_all_repositories, Some(true), "an omitted flag is not `false`");
         // And the explicit negative form does change it.
         let args = EditArgs { no_all_repositories: true, ..args };
-        assert_eq!(merge_edit(&args, &current).includes_all_repositories, Some(false));
+        assert_eq!(merge_edit(&args, &current).unwrap().includes_all_repositories, Some(false));
+    }
+
+    /// Bug this prevents: `team edit --unit` and `--permission` doing nothing on a non-admin
+    /// team. Forgejo uses the map whenever a body carries one, ignoring the `units` list beside it,
+    /// and derives a below-admin level from the map, ignoring the requested one. The command used
+    /// to send the team's current map back on every edit, so both flags were thrown away.
+    #[test]
+    fn edit_sends_units_only_as_a_map_and_the_map_carries_the_change() {
+        let current = Team {
+            name: "Dev".into(),
+            permission: "write".into(),
+            units_map: BTreeMap::from([
+                ("repo.code".to_owned(), "write".to_owned()),
+                ("repo.wiki".to_owned(), "none".to_owned()),
+            ]),
+            ..Default::default()
+        };
+        let args = EditArgs {
+            org: "acme".into(),
+            team: "Dev".into(),
+            name: None,
+            description: None,
+            permission: None,
+            units: vec![],
+            all_repositories: false,
+            no_all_repositories: false,
+        };
+        let wire = serde_json::to_value(merge_edit(&args, &current).unwrap()).unwrap();
+        assert!(wire.get("units").is_none(), "the deprecated list rode along: {wire}");
+
+        // --permission re-levels the reachable units and leaves the excluded one excluded.
+        let relevel = EditArgs { permission: Some("read".into()), ..args };
+        let body = merge_edit(&relevel, &current).unwrap();
+        let map = body.units_map.unwrap();
+        assert_eq!(map["repo.code"], "read", "the requested level did not reach the map");
+        assert_eq!(map["repo.wiki"], "none", "a level change granted access");
+
+        // --unit replaces the set at the requested level.
+        let replace = EditArgs {
+            permission: Some("read".into()),
+            units: vec!["repo.issues".into()],
+            ..relevel
+        };
+        let body = merge_edit(&replace, &current).unwrap();
+        assert_eq!(body.units_map, Some(units_at(&["repo.issues".into()], "read")));
+        assert_eq!(body.permission, Some(PermissionLevel::Read));
+    }
+
+    /// `--unit` takes the team's own level when no `--permission` is given, and is refused when
+    /// there is no level to take — Forgejo reports `none` for a team set entirely per unit.
+    #[test]
+    fn unit_without_a_level_anywhere_is_a_usage_error() {
+        let current = Team { name: "Dev".into(), permission: "none".into(), ..Default::default() };
+        let args = EditArgs {
+            org: "acme".into(),
+            team: "Dev".into(),
+            name: None,
+            description: None,
+            permission: None,
+            units: vec!["repo.issues".into()],
+            all_repositories: false,
+            no_all_repositories: false,
+        };
+        assert_eq!(merge_edit(&args, &current).unwrap_err().exit_code(), 2);
+        let wire = serde_json::to_value(
+            merge_edit(&EditArgs { units: vec![], ..args }, &current).unwrap(),
+        )
+        .unwrap();
+        assert!(wire.get("permission").is_none(), "`none` is not a requestable level: {wire}");
     }
 
     /// `team repo add` completes a bare name with the organization, and refuses a name from a
@@ -667,15 +786,13 @@ mod tests {
     }
 
     #[test]
-    // Deprecated in Forgejo 17 but still served; see the note on the first allow in this file.
-    #[allow(deprecated)]
     fn team_list_output_goldens() {
         let teams = vec![
             Team {
                 id: TeamId::new(1),
                 name: "Owners".into(),
                 permission: "owner".into(),
-                units: vec!["repo.code".into()],
+                units_map: units_at(&["repo.code".into()], "owner"),
                 includes_all_repositories: true,
                 description: "the org's owners".into(),
                 ..Default::default()
@@ -684,7 +801,7 @@ mod tests {
                 id: TeamId::new(7),
                 name: "Dev".into(),
                 permission: "write".into(),
-                units: vec!["repo.code".into(), "repo.issues".into()],
+                units_map: units_at(&["repo.code".into(), "repo.issues".into()], "write"),
                 ..Default::default()
             },
         ];
@@ -713,7 +830,7 @@ mod tests {
                         team.id.to_string(),
                         team.name.clone(),
                         team.permission.as_str().to_owned(),
-                        team.units.join(", "),
+                        unit_names(team),
                         if team.includes_all_repositories {
                             "yes".to_owned()
                         } else {

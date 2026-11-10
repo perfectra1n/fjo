@@ -12,7 +12,7 @@
 //! every test owns a freshly created organization so the suite can run on parallel threads
 //! against the one shared container.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use fjo_itest::{Instance, cover, instance_or_skip};
@@ -117,6 +117,17 @@ fn create_team(inst: &Instance, org: &str, name: &str, permission: &str, units: 
     run.assert_ok(&format!("fjo raw org create-team {name}"));
     let team = run.json();
     team["id"].as_i64().unwrap_or_else(|| panic!("no team id in {}", run.stdout))
+}
+
+/// A team's `units_map` without the units it is kept out of (`none`): what it can actually reach.
+fn reachable_units(team: &serde_json::Value) -> BTreeMap<String, String> {
+    team["units_map"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(unit, level)| Some((unit.clone(), level.as_str()?.to_owned())))
+        .filter(|(_, level)| level != "none")
+        .collect()
 }
 
 /// The values of `key` across a JSON array, as a set — the shape almost every listing assertion
@@ -630,6 +641,37 @@ fn editing_a_team_keeps_the_units_and_permission_it_was_not_asked_to_change() {
         units,
         BTreeSet::from(["repo.code", "repo.issues"]),
         "team edit cleared the unit list, hiding the team's repositories from its members: {after}"
+    );
+
+    // And the two flags that change access do change it. Forgejo derives a below-admin team's
+    // level from `units_map` and ignores the `units` list beside one, so before fjo sent the map
+    // carrying the change, both of these exited 0 and changed nothing.
+    let read_team = |id: i64| -> serde_json::Value {
+        let (code, body) = inst.api("GET", &format!("teams/{id}"), None);
+        assert_eq!(code, 200, "{body}");
+        serde_json::from_str(&body).expect("a team")
+    };
+    inst.fjo(["team", "edit", org.name(), "Dev", "--permission", "read"])
+        .assert_ok("fjo team edit --permission read");
+    let after = read_team(id);
+    assert_eq!(after["permission"], "read", "--permission was ignored: {after}");
+    assert_eq!(
+        reachable_units(&after),
+        BTreeMap::from([
+            ("repo.code".to_owned(), "read".to_owned()),
+            ("repo.issues".to_owned(), "read".to_owned()),
+        ]),
+        "--permission did not re-level the units the team reaches: {after}"
+    );
+
+    inst.fjo(["team", "edit", org.name(), "Dev", "--unit", "repo.wiki", "--permission", "write"])
+        .assert_ok("fjo team edit --unit --permission");
+    let after = read_team(id);
+    assert_eq!(after["permission"], "write", "{after}");
+    assert_eq!(
+        reachable_units(&after),
+        BTreeMap::from([("repo.wiki".to_owned(), "write".to_owned())]),
+        "--unit did not replace the units the team reaches: {after}"
     );
 
     // Bare list, then the filtered form — which is a different route (`teamSearch`) behind one
