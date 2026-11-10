@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2](https://github.com/perfectra1n/gea/compare/v0.2.1...v0.2.2) (2026-11-10)
+
+
+### Bug Fixes
+
+* **codegen:** generate untyped properties as free-form JSON ([91469e1](https://github.com/perfectra1n/gea/commit/91469e126509ab8e47cd08a00597e8031b89ed17))
+
+
+### Tests
+
+* **itest:** compare the server version with the pinned image ([23eaced](https://github.com/perfectra1n/gea/commit/23eaced662592fd83e07a10df4adff24096f5d35))
+
 ## [0.2.1](https://github.com/perfectra1n/gea/compare/v0.2.0...v0.2.1) (2026-11-09)
 
 
