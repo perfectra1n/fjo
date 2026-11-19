@@ -34,7 +34,7 @@ use crate::Result;
 use crate::swagger::{ParamIn, Spec};
 
 /// The version these expectations were verified against.
-pub const EXPECTED_VERSION: &str = "17.0.1";
+pub const EXPECTED_VERSION: &str = "17.0.2";
 
 pub struct Stats {
     pub paths: usize,
