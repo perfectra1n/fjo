@@ -269,8 +269,17 @@ CI also checks code-quality counts, startup time, and binary size. When a count 
 - [CI budgets](docs/ratchets.md)
 - [Contributing](CONTRIBUTING.md)
 
+## gea, for Gitea
+
+This repository is also the home of [`gea`](gea/README.md), the same kind of CLI for [Gitea](https://about.gitea.com). It is a separate tool: its own binary, its own releases (tagged `gea-vX.Y.Z`), its own installer and its own container image, `ghcr.io/perfectra1n/gea`. It lives in the `gea/` directory as a Cargo workspace of its own. Nothing about `fjo` changes because of it.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/perfectra1n/fjo/main/gea/install.sh | sh
+```
+
 ## Related tools
 
+- [`gea`](gea/README.md): this project's CLI for Gitea, in this repository.
 - [`forgejo-cli`](https://codeberg.org/forgejo-contrib/forgejo-cli) (`fj`): another Forgejo CLI.
 - [`tea`](https://gitea.com/gitea/tea): Gitea's CLI, also usable with Forgejo.
 

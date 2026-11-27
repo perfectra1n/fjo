@@ -4,12 +4,15 @@ A command-line interface for [Gitea](https://about.gitea.com), with commands sim
 
 Use `gea pr`, `gea issue`, and `gea repo` for common tasks. For other API operations, use `gea raw` or `gea api`. The generated `raw` commands cover all 537 operations in the bundled Gitea 28.1.0 API specification, and 532 of them are driven against a real Gitea by the integration suite.
 
+> [!NOTE]
+> gea now lives in the [fjo repository](https://github.com/perfectra1n/fjo), in the `gea/` directory, next to `fjo`, its sibling for Forgejo. It is still a separate tool with its own releases. The install commands from the old `perfectra1n/gea` repository keep working.
+
 ## Install
 
 ### Linux and macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/perfectra1n/gea/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/perfectra1n/fjo/main/gea/install.sh | sh
 ```
 
 Installs to `~/.local/bin` (never needs `sudo`), verifies the published SHA-256, and installs shell completions. It probes your system to choose between the glibc and the statically linked musl build, so older distributions get a binary that actually runs. Set `GEA_INSTALL_DIR` to install elsewhere, or `GEA_VERSION` to pin a release.
@@ -17,7 +20,7 @@ Installs to `~/.local/bin` (never needs `sudo`), verifies the published SHA-256,
 ### Windows
 
 ```powershell
-irm https://raw.githubusercontent.com/perfectra1n/gea/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/perfectra1n/fjo/main/gea/install.ps1 | iex
 ```
 
 ### Container
@@ -30,14 +33,14 @@ Images are published to `ghcr.io/perfectra1n/gea` for `linux/amd64` and `linux/a
 
 ### Manual download
 
-Archives for every supported target are attached to each [release](https://github.com/perfectra1n/gea/releases), each with a `.sha256` beside it and shell completions inside.
+Archives for every supported target are attached to each [release](https://github.com/perfectra1n/fjo/releases?q=gea-v) (tagged `gea-vX.Y.Z`; releases up to v0.2.2 are in the [old repository](https://github.com/perfectra1n/gea/releases)), each with a `.sha256` beside it and shell completions inside.
 
 Pick `-gnu` on Ubuntu 22.04+, Debian 12+, or Fedora 36+. Pick the statically linked `-musl` on anything older, on Alpine, and on RHEL/Rocky/Alma 9 and Amazon Linux 2023 — those ship glibc 2.34, just below what the `-gnu` build needs. `install.sh` makes this choice for you.
 
 ### From source
 
 ```bash
-cargo install --git https://github.com/perfectra1n/gea --locked gea
+cargo install --git https://github.com/perfectra1n/fjo --locked gea
 ```
 
 Requires Rust 1.95 or newer. The trailing `gea` names the package to install: the workspace root is a virtual manifest, so cargo needs to be told which one. `--locked` builds against the committed `Cargo.lock` rather than re-resolving.

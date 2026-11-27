@@ -1,5 +1,16 @@
 # Contributing to gea
 
+## Two tools, one repository
+
+gea lives in the [fjo repository](https://github.com/perfectra1n/fjo), which holds two tools. `fjo`, for Forgejo, is the workspace at the root. `gea`, for Gitea, is a second, self-contained Cargo workspace under `gea/`, with its own `Cargo.lock`, `spec/`, `.mise/config.toml` and docs. They share no code yet.
+
+- Run a tool's commands from its own directory: `mise run ci` in this directory (`gea/`) checks gea, and at the repository root it checks fjo. Neither one looks at the other.
+- A fix that applies to both has to be made in both, for now.
+- They are released separately. A commit that touches only `gea/` releases only gea (tags `gea-vX.Y.Z`), and a commit that touches nothing under `gea/` releases only fjo (tags `vX.Y.Z`). Use the `gea` scope for gea-only commits, e.g. `fix(gea): ...`.
+- CI is split the same way: `ci.yaml` skips changes under `gea/`, and `ci-gea.yaml` runs only for them.
+
+Everything below is about gea, and every path in it is relative to `gea/`.
+
 ## The boundary that matters: generated versus hand-written
 
 About 60,000 of this repository's lines are generated, and they are committed. That is only tolerable because the boundary between generated and hand-written code is mechanical rather than conventional. Three guarantees hold it up, and a new contributor's first mistake is almost always one of them.
