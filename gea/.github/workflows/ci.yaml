@@ -1,0 +1,170 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: CI
+
+# Every step below is `mise run <task>`. The commands themselves live in
+# .mise/config.toml and nowhere else — mise is the source of truth for tools and
+# tasks in developer shells and in CI alike, so `mise run ci` locally runs the
+# same gates this file runs. A gate spelled out in both places drifts, and the
+# copy people run locally is always the one that loses.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # mise refuses to read an untrusted config. mise-action normally handles this;
+  # set it explicitly so a self-hosted runner with a warm HOME behaves the same.
+  MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+  # Selects [profile.ci] from .config/nextest.toml (no fail-fast, longer per-test
+  # timeouts for a noisier runner, failures repeated at the end of the log). It is
+  # an env var rather than a `--profile` flag precisely so `mise run test` stays
+  # one command with one definition, in .mise/config.toml, for CI and laptops alike.
+  NEXTEST_PROFILE: ci
+
+# Four of the pinned tools come from GitHub releases through mise's `aqua:`
+# backend, so installing them calls api.github.com. jdx/mise-action defaults its
+# `github_token` input to ${{ github.token }}, which on GitHub is a real,
+# authenticated GitHub token — so those calls get 1,000 requests/hour instead of
+# the 60/hour/IP that unauthenticated callers share. Nothing to configure.
+#
+# (On Gitea this was the opposite: `github.token` is a *Gitea* token, valid there
+# and meaningless to api.github.com, which answered 401. That is why the previous
+# workflow carried a GH_API_TOKEN secret and passed it to every mise-action step.
+# Neither the secret nor the overrides are needed here.)
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Installs the pinned toolchain and tools from .mise/config.toml — rust
+      # (kept in lockstep with rust-toolchain.toml) plus its rustfmt/clippy
+      # components. No rustup lines here: two places to bump a toolchain is one
+      # too many.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+
+      - name: Format
+        run: mise run fmt-check
+
+      - name: Clippy
+        run: mise run clippy
+
+      - name: Test
+        run: mise run test
+
+      # nextest cannot run doctests (nextest-rs/nextest#16), so they are their own
+      # gate. Without this step, switching `test` to nextest would have silently
+      # stopped compile-checking gitea-client's published crate-root example.
+      - name: Doctests
+        run: mise run test-doc
+
+      # The generated tree must always agree with the vendored spec. The task
+      # regenerates into a temp dir and diffs; a hand-edit under src/generated/
+      # fails here, which is the whole reason we can commit 42k lines of
+      # generated code and still trust them.
+      - name: Codegen is not stale
+        run: mise run codegen-check
+
+      # Generated crates are published, so their docs are part of the product.
+      - name: Docs build without warnings
+        run: mise run docs
+
+  # Ratchet gates: each freezes a count and fails when it grows. See
+  # docs/ratchets.md for what each one protects and how to drain it. They are
+  # their own job because they are seconds-fast and their failure message is the
+  # actionable part — burying them behind the test suite hides that.
+  ratchets:
+    name: Ratchets
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+
+      # Text-only scans (python3, no build): a panic bypasses the error taxonomy
+      # entirely, a stray process::exit bypasses the exit-code table, and a
+      # reach-in to cmd/admin/support puts a lie in the dependency graph.
+      - name: No new panics
+        run: mise run panic-check
+
+      - name: No new process::exit
+        run: mise run exit-check
+
+      - name: No new reach-ins to cmd/admin/support
+        run: mise run support-check
+
+      # Needs a clippy pass, so it runs last in this job.
+      - name: No new over-complex functions
+        run: mise run complexity-check
+
+  deny:
+    name: Deny
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # cargo-deny comes pinned from .mise/config.toml; `cargo install` here
+      # would pull an unpinned build on every run and rebuild it from source.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - run: mise run deny
+
+  budgets:
+    name: Budgets
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # hyperfine comes pinned from .mise/config.toml, same reasoning.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: release
+
+      # Startup and size budgets. The generated layer holds 506 commands; if it
+      # ever starts being constructed eagerly, `gea --version` is where that
+      # shows up first. The task builds the release binary itself (`depends`).
+      - name: Startup and size budgets
+        run: mise run budget-check
+
+  integration:
+    name: Integration
+    runs-on: ubuntu-24.04
+    # Boots a throwaway Gitea and runs the real thing against it. The only tests that prove
+    # the server agrees with the spec we generated from.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+      # Deliberately NOT nextest: the harness shares one Gitea container per
+      # process, and nextest runs every test in its own process, so it would boot
+      # 24 containers. `mise run itest` -> `cargo xtask itest` -> `cargo test`.
+      # This job is what covers the tests the nextest default profile filters out.
+      #
+      # `coverage-check` rather than `itest`: it runs the hermetic contract tests (which
+      # write the porcelain inventory and the 506-operation contract journal), then
+      # `cargo xtask itest` exactly as before, then the ratchet over what both actually
+      # drove. The integration suite is therefore run once, not twice, and the run ends
+      # with a number instead of only a tick.
+      - run: mise run coverage-check

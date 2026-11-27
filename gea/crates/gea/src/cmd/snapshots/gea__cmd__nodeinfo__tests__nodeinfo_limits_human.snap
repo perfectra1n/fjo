@@ -1,0 +1,11 @@
+---
+source: crates/gea/src/cmd/nodeinfo.rs
+expression: "render_limits(&testing::term(), &settings())"
+---
+Showing 4 settings
+
+SETTING                     VALUE   MEANING
+max_response_items          50      every `limit` query parameter is clamped to this, without sayin…
+default_paging_num          30      page size when a request does not ask for one
+default_git_trees_per_page  1000    entries per page when listing a git tree
+default_max_blob_size       10 MiB  file contents above this are omitted from responses

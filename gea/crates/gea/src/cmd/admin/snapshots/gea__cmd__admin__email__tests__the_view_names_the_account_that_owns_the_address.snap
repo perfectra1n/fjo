@@ -1,0 +1,8 @@
+---
+source: crates/gea/src/cmd/admin/email.rs
+expression: "String::from_utf8(buf).unwrap()"
+---
+Showing 1 email addresses
+
+EMAIL                ACCOUNT  PRIMARY  VERIFIED
+ada@example.invalid  ada      true     true

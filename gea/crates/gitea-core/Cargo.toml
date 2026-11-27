@@ -1,0 +1,43 @@
+[package]
+name = "gitea-core"
+version = "0.1.0"
+description = "Runtime for Gitea API clients: HTTP transport, auth, pagination, and errors"
+keywords = ["gitea", "gitea", "api", "client"]
+categories = ["api-bindings"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# This crate deliberately does NOT depend on gitea-model. The Gitea error body is a
+# small hand-written struct here, so the two largest units in the workspace (this crate
+# and the generated models) compile in parallel.
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
+toml.workspace = true
+bytes.workspace = true
+reqwest.workspace = true
+# `sync` for the `capabilities` single-flight gate. Named explicitly rather than relied on
+# through tokio-util's feature unification: a transitive feature is not a contract.
+tokio = { workspace = true, features = ["sync"] }
+tokio-util.workspace = true
+futures.workspace = true
+http.workspace = true
+jiff.workspace = true
+secrecy.workspace = true
+zeroize.workspace = true
+keyring.workspace = true
+etcetera.workspace = true
+thiserror.workspace = true
+anstyle.workspace = true
+sha2.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "test-util"] }

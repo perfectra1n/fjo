@@ -1,0 +1,5 @@
+---
+source: crates/gea/src/cmd/milestone.rs
+expression: text(&buf)
+---
+[{"title":"1.0","open_issues":2,"closed_issues":3},{"title":"2.0","open_issues":0,"closed_issues":0}]

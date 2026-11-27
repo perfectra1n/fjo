@@ -1,0 +1,15 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::StateConflict\n{\n    resource: Some(\"pull request 4212\".into()), state: None, server_message:\n    \"The head branch is behind the base branch\".into(),\n}, c)"
+---
+error: operation unavailable in the current state of pull request 4212
+
+  request:     POST /api/v1/repos/perf3ct/gea/pulls/4212/merge
+  resource:    pull request 4212
+  server says: The head branch is behind the base branch
+
+what to do:
+  the current state prevents this operation. Check the server message above.
+  1. gea api -X POST repos/perf3ct/gea/pulls/4212/merge  (read the current state)
+  2. resolve the reported state conflict, then retry
+  note: changing token scopes does not resolve a state conflict.

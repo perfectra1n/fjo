@@ -1,0 +1,15 @@
+---
+source: crates/gea/src/cmd/release.rs
+assertion_line: 1105
+expression: text(&buf)
+---
+v1.0.0 — First
+release • published by alice
+
+notes here
+
+ASSET              SIZE     DOWNLOADS
+gea-x86_64.tar.gz  2.0 KiB  7
+checksums.txt      64 B     1
+
+https://git.example.org/perf3ct/gea/releases/tag/v1.0.0

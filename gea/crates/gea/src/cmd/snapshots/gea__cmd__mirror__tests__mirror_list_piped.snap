@@ -1,0 +1,7 @@
+---
+source: crates/gea/src/cmd/mirror.rs
+assertion_line: 725
+expression: "render_list(&Term::piped(), &mirrors())"
+---
+remote_mirror_abc123	https://github.com/me/proj.git	8h0m0s	yes	-	-
+remote_mirror_def456	https://codeberg.org/me/proj.git	10m0s	no	-	authentication required

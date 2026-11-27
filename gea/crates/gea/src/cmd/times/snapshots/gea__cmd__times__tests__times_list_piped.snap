@@ -1,0 +1,6 @@
+---
+source: crates/gea/src/cmd/times/mod.rs
+expression: "render_list(&Term::piped(), &times, false)"
+---
+7	#42	1h25m	alice	-
+8	#42	15m	bob	-

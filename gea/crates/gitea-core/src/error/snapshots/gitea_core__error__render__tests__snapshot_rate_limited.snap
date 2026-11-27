@@ -1,0 +1,14 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::RateLimited\n{\n    host: \"git.example.org\".into(), retry_after:\n    Some(Duration::from_secs(30)),\n}, c)"
+---
+error: rate limit reached on git.example.org (HTTP 429)
+
+  request:     POST /api/v1/repos/perf3ct/gea/issues
+  host:        git.example.org
+  retry after: 30s (reported by the server)
+
+what to do:
+  wait before sending more requests.
+  1. sleep 30  then run it again
+  2. reduce the request rate in scripts; server limits may be shared

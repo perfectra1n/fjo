@@ -1,0 +1,12 @@
+---
+source: crates/gea/src/cmd/pr/checks.rs
+expression: "human(&s, false)"
+---
+CHECK       STATE    AGE  DETAILS
+ci / build  success       /them/proj/actions/runs/6441/jobs/64411
+ci / test   failure       /them/proj/actions/runs/6442/jobs/64421
+external    pending       https://ci.example.org/external
+docs        skipped       https://ci.example.org/docs
+
+1 passed, 1 failed, 1 pending, 1 skipped
+next: gea ci logs 42

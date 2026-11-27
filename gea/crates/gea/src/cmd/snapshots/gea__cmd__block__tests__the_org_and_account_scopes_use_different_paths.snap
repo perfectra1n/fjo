@@ -1,0 +1,9 @@
+---
+source: crates/gea/src/cmd/block.rs
+assertion_line: 218
+expression: "seen.join(\"\\n\")"
+---
+PUT /api/v1/user/blocks/mallory note=spam
+DELETE /api/v1/user/blocks/mallory
+PUT /api/v1/orgs/acme/blocks/mallory
+DELETE /api/v1/orgs/acme/blocks/mallory

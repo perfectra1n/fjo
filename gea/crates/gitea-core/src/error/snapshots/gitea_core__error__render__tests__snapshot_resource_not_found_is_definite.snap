@@ -1,0 +1,15 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::ResourceNotFound\n{\n    kind: \"pull request\", id: \"4212\".into(), slug:\n    Some(\"perf3ct/gea\".into()), server_message: None,\n}, c)"
+---
+error: there is no pull request 4212 (HTTP 404)
+
+  request:      GET /api/v1/repos/perf3ct/gea/pulls/4212
+  repository:   perf3ct/gea  (found)
+  pull request: 4212
+
+what to do:
+  check the pull request identifier and list the available resources:
+  1. gea pr list --state all -R perf3ct/gea
+  note: most issue and pull request paths use the number shown in the web
+        UI, not the database ID.

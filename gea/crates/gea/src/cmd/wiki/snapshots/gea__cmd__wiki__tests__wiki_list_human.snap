@@ -1,0 +1,9 @@
+---
+source: crates/gea/src/cmd/wiki/mod.rs
+expression: "render_list(&testing::term(), &pages())"
+---
+Showing 2 wiki pages
+
+TITLE            UPDATED           AUTHOR  MESSAGE
+Home             2026-09-10 09:15  alice   Add a home page
+Release Process  2026-09-11 16:40  bob     Document the release

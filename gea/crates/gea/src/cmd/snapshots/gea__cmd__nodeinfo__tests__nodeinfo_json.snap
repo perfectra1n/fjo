@@ -1,0 +1,6 @@
+---
+source: crates/gea/src/cmd/nodeinfo.rs
+assertion_line: 548
+expression: "testing::as_json(VERSION_FIELDS, \"version\",\nporcelain::json_of(&version()).unwrap())"
+---
+{"version":"1.27.3"}

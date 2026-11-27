@@ -1,0 +1,13 @@
+---
+source: crates/gea/src/cmd/search.rs
+expression: report
+---
+== human/tty
+REPOSITORY   VISIBILITY  STARS  DESCRIPTION   UPDATED
+acme/anvil   public      12     heavy things
+acme/secret  private     0
+== human/piped
+acme/anvil	public	12	heavy things	
+acme/secret	private	0		
+== json/piped
+[{"full_name":"acme/anvil","private":false},{"full_name":"acme/secret","private":true}]

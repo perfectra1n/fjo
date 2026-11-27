@@ -1,0 +1,28 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+description = "Code generator and repository tooling for gea. Not a dependency of the binary."
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+prettyplease.workspace = true
+heck.workspace = true
+sha2.workspace = true
+clap.workspace = true
+anstream.workspace = true
+anstyle.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+tempfile.workspace = true

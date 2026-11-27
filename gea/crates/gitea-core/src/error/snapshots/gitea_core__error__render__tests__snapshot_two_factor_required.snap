@@ -1,0 +1,15 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::TwoFactorRequired { host: \"git.example.org\".into() }, ctx())"
+---
+error: git.example.org requires a two-factor code
+
+  request:    POST /api/v1/repos/perf3ct/gea/issues
+  host:       git.example.org
+  token from: the OS keyring, entry gea:git.example.org
+
+what to do:
+  password authentication requires a two-factor code for this account.
+  1. gea --otp 123456 <command>  (the current code)
+  2. gea auth login --host git.example.org  (store a token instead)
+  note: API tokens do not require a two-factor code.

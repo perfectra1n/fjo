@@ -1,0 +1,19 @@
+---
+source: crates/gitea-core/src/error/render.rs
+assertion_line: 2666
+expression: "snap(ErrorKind::CiFailed\n{\n    slug: Some(\"perf3ct/gea\".into()), target: Some(\"2626\".into()), sha:\n    \"f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed\".into(), failed:\n    vec![FailedRun::new(6442, \"ci.yml\", \"failure\",\n    vec![\"Fast Checks (fmt + static lints)\".into(),\n    \"Build - workspace\".into()],\n    Some(\"https://git.example.org/perf3ct/gea/actions/runs/6442\".into()),),\n    FailedRun::new(6445, \"release.yml\", \"cancelled\", vec![], None),],\n}, RequestCtx::default())"
+---
+error: 2 workflow runs failed for commit f36d1a7
+
+  commit:     f36d1a7c0ffee0ddba11f00dfeedface0b5e55ed
+  target:     2626
+  repository: perf3ct/gea
+  failed:     ci.yml (run 6442): failure — jobs: Fast Checks (fmt + static lints), Build - workspace — https://git.example.org/perf3ct/gea/actions/runs/6442
+              release.yml (run 6445): cancelled
+
+what to do:
+  read the logs of the jobs that failed, then fix or rerun them.
+  1. gea ci logs 2626 -R perf3ct/gea  (only the failed jobs)
+  2. gea ci rerun 2626 -R perf3ct/gea  (rerun only the failed jobs)
+  note: a failed CI run returns exit code 1, as gea pr checks does for a
+        failed check.

@@ -1,0 +1,5 @@
+---
+source: crates/gea/src/cmd/stopwatch.rs
+expression: "testing::as_json(STOPWATCH_FIELDS,\n\"issue_index,issue_title,repo_name,repo_owner_name,seconds\",\nporcelain::json_of(&w).unwrap())"
+---
+{"issue_index":42,"issue_title":"Make the thing faster","repo_name":"proj","repo_owner_name":"them","seconds":5100}

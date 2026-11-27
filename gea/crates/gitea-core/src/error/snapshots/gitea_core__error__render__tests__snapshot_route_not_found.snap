@@ -1,0 +1,14 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::RouteNotFound\n{\n    method: \"POST\".into(), path:\n    \"/api/v1/repos/perf3ct/gea/actions/runs/12/rerun\".into(), instance:\n    Some(\"gitea 7.0.0\".into()),\n}, c)"
+---
+error: API endpoint not found (HTTP 404)
+
+  request:  POST /api/v1/repos/perf3ct/gea/actions/runs/12/rerun
+  instance: gitea 7.0.0
+
+what to do:
+  the server does not support this endpoint or HTTP method.
+  1. gea api settings/api  (server API settings)
+  2. try the web interface at https://git.example.org
+  note: check whether the server version supports this operation.

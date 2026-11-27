@@ -1,0 +1,25 @@
+---
+source: crates/gea/src/cmd/mirror.rs
+assertion_line: 748
+expression: out
+---
+them/proj
+
+pull mirror  none
+  Gitea can only make a repository a pull mirror when it is created:
+  `gea repo create <name> --mirror-from <url>`.
+
+push mirrors  2 (force push of every branch and tag)
+
+  remote_mirror_abc123
+    to        https://github.com/me/proj.git
+    interval  8h0m0s
+    on commit yes
+    last sync -
+
+  remote_mirror_def456
+    to        https://codeberg.org/me/proj.git
+    interval  10m0s
+    on commit no
+    last sync -
+    error     authentication required

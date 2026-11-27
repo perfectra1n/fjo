@@ -1,0 +1,15 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::PathNotFound\n{\n    path: PathBuf::from(\"dist/gea-v1.2.3-linux.tar.gz\"), what:\n    \"release asset\",\n}, RequestCtx::default())"
+---
+error: there is no release asset at dist/gea-v1.2.3-linux.tar.gz
+
+  path:       dist/gea-v1.2.3-linux.tar.gz
+  wanted for: release asset
+
+what to do:
+  check the path to the release asset.
+  1. ls -l dist/gea-v1.2.3-linux.tar.gz
+  2. relative paths start at the current directory, not the repository root
+  note: check wildcard matches; some shells pass an unmatched pattern as a
+        literal filename.

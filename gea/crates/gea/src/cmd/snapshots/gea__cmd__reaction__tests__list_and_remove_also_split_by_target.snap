@@ -1,0 +1,8 @@
+---
+source: crates/gea/src/cmd/reaction.rs
+expression: "seen.join(\"\\n\")"
+---
+GET /api/v1/repos/acme/widget/issues/7/reactions
+GET /api/v1/repos/acme/widget/issues/comments/7/reactions
+DELETE /api/v1/repos/acme/widget/issues/7/reactions
+DELETE /api/v1/repos/acme/widget/issues/comments/7/reactions

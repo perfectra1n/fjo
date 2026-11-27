@@ -1,0 +1,5 @@
+---
+source: crates/gea/src/cmd/nodeinfo.rs
+expression: "testing::as_json(SETTINGS_FIELDS, \"max_response_items,default_paging_num\",\nporcelain::json_of(&settings()).unwrap())"
+---
+{"max_response_items":50,"default_paging_num":30}

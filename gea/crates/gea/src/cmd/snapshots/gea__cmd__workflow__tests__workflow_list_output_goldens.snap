@@ -1,0 +1,11 @@
+---
+source: crates/gea/src/cmd/workflow.rs
+expression: report
+---
+== human/tty
+NAME  FILE    STATE   DISPATCH  RUNS-ON  EVENTS                   JOBS
+CI    ci.yml  active  yes       docker   push, workflow_dispatch  build
+== human/piped
+CI	ci.yml	active	yes	docker	push, workflow_dispatch	build
+== json/piped
+[{"path":".gitea/workflows/ci.yml","state":"active","dispatch":true,"runs_on":["docker"]}]

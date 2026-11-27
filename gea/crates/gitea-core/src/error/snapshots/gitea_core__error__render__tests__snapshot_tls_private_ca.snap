@@ -1,0 +1,16 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::Tls\n{\n    host: \"git.internal.corp\".into(), cause:\n    \"invalid peer certificate: UnknownIssuer\".into(), looks_like_private_ca:\n    true,\n}, RequestCtx\n{\n    host: Some(\"git.internal.corp\".into()), method: Some(\"GET\".into()), path:\n    Some(\"/api/v1/user\".into()), ..RequestCtx::default()\n})"
+---
+error: TLS connection to git.internal.corp failed
+
+  request: GET /api/v1/user
+  host:    git.internal.corp
+  cause:   invalid peer certificate: UnknownIssuer
+
+what to do:
+  this machine does not trust the server's certificate authority (CA).
+  1. add the CA certificate to the system trust store, then retry
+  2. or set the CA file for one command: SSL_CERT_FILE=/path/to/ca.pem gea auth status
+  note: use a trusted CA certificate. Disabling verification leaves the
+        connection unverified.

@@ -1,0 +1,16 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::QuotaExceeded\n{\n    server_message: \"quota exceeded for size:assets\".into(), uploading:\n    Some(\"gea-v1.2.3-linux.tar.gz\".into()),\n}, c)"
+---
+error: the storage quota is full (HTTP 413)
+
+  request:     POST /api/v1/repos/perf3ct/gea/releases/12/assets
+  uploading:   gea-v1.2.3-linux.tar.gz
+  server says: quota exceeded for size:assets
+
+what to do:
+  check storage usage, including LFS objects, packages, and release assets.
+  1. gea quota  (what is using the space)
+  2. delete old release assets or package versions, or ask an admin to raise
+     the quota
+  note: check which quota rule applies before removing data.

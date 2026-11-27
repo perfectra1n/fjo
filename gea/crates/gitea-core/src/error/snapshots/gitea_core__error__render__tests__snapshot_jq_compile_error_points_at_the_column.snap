@@ -1,0 +1,14 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::JqCompile\n{\n    expr: \".[] | .titel\".into(), message: \"undefined variable\".into(), col:\n    Some(6),\n}, RequestCtx::default())"
+---
+error: invalid --jq expression
+
+  expr:    .[] | .titel
+                 ^
+  message: undefined variable
+
+what to do:
+  correct the jq expression using the error above.
+  1. gea api repos/OWNER/REPO/pulls > /tmp/p.json  then iterate with jq locally
+  2. reference: https://jqlang.github.io/jq/manual/

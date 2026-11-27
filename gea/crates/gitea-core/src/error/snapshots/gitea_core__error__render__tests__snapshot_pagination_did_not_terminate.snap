@@ -1,0 +1,18 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::PaginationDidNotTerminate { pages: 10_000, items: 500_000 },\nc)"
+---
+error: pagination stopped after 10000 pages without reaching the end
+
+  request:       GET /api/v1/repos/perf3ct/gea/issues
+  pages fetched: 10000
+  items so far:  500000
+
+what to do:
+  the page limit was reached before the server indicated the end of the results.
+  check whether the server ignores ?page or a proxy strips the Link and
+  X-Total-Count headers.
+  1. inspect the response headers: gea api repos/perf3ct/gea/issues -i
+  2. request a limited number of items: gea api repos/perf3ct/gea/issues --limit 500
+  3. report unexpected pagination behavior to the server or proxy administrator
+  note: the request failed because the result may be incomplete.

@@ -1,0 +1,444 @@
+//! `gea ci` — CI status, logs and reruns for a pull request, branch or commit.
+//!
+//! The *context* layer over `gea run`: where `gea run` addresses one run precisely, `gea ci`
+//! answers "what is CI doing for this pull request / branch / commit / where I am" and goes from
+//! there to logs, watch and rerun without the user ever typing an id. The commit SHA is the join
+//! key throughout — a target resolves to a SHA, and runs are listed with the server-side
+//! `head_sha` filter, which (unlike `--branch`) finds `pull_request` runs, whose `head_branch`
+//! Gitea leaves empty. [`target`] is that resolution.
+//!
+//! # Built for a reader who is a script as often as a person
+//!
+//! * **No pickers.** An ambiguous `--job` is refused with every candidate listed, labelled with
+//!   its workflow, never guessed and never prompted for.
+//! * **The exit code is the verdict.** `gea ci` exits 1 (`ErrorKind::CiFailed`) when a selected
+//!   run failed, 8 (`ErrorKind::CiPending`) while one is unfinished — or, for `gea ci watch`,
+//!   when no run ever appeared (`ErrorKind::CiNoRuns`) — 0 otherwise — under
+//!   `--json` too, as `gea pr checks` does — so `case $?` is all a script needs.
+//! * **Every human view ends with the next command**, on stdout so an agent reading the output
+//!   sees it: `next: gea ci logs 2626` when something failed, `next: gea ci watch 2626` while
+//!   something is running.
+//!
+//! # Superseded runs are hidden
+//!
+//! One commit collects several runs of one workflow: a re-push, a manual rerun, a cancelled
+//! duplicate. Only the newest says anything about the commit now, so every subcommand works on
+//! [`target::latest_per_workflow`]'s selection; `gea ci status --all` shows the rest, marked
+//! superseded, without letting them into the exit code.
+//!
+//! See `docs/superpowers/specs/2026-10-09-ci-porcelain-design.md`.
+
+mod logs;
+pub(crate) mod target;
+mod view;
+mod watch;
+
+use std::io::Write;
+
+use clap::{Args as ClapArgs, Subcommand};
+use gitea_client::Api;
+use gitea_core::error::{Error, ErrorKind, Result};
+use gitea_core::types::RepoSlug;
+use gitea_model::ActionWorkflowRun;
+
+use crate::cmd::run::{RUN_FIELDS, Rerun, request_rerun, warn_if_actions_disabled, workflow_file};
+use crate::cmd::run_ref::JobRef;
+use crate::cmd::support;
+use crate::cmd::support::listing::{self as emit, Fields, Listing};
+use crate::global::GlobalOpts;
+use crate::runtime::Runtime;
+
+use target::{CiState, Resolved, ci_state, latest_per_workflow, sort_for_display};
+
+/// `gea ci --help`. Set on the `Porcelain::Ci` variant, because a variant's doc comment
+/// overrides a `long_about` on the struct it wraps.
+pub const LONG_ABOUT: &str = "\
+CI status, logs and reruns for a pull request, branch or commit.
+
+TARGET is one of:
+  (nothing)        the branch you are on, as the server has it
+  42, #42, a URL   a pull request
+  f36d1a7          a commit (7-40 hex characters, at least one a letter)
+  anything else    a branch; its open pull request when it has one
+
+Every target becomes one commit, and gea ci shows the Actions runs for that commit,
+including pull_request runs, which Gitea files under no branch. Only the newest run of
+each workflow is shown; a run it superseded is hidden (`gea ci status --all` shows it,
+marked superseded; it never changes the exit code).
+
+`gea ci [TARGET]` is `gea ci status [TARGET]`. A branch named like a subcommand needs
+the explicit form: `gea ci status logs`.
+
+Exit codes: 0 when every run passed (skipped counts as passed), 1 when a run failed,
+8 while a run has not finished. The same under --json. A commit with no runs at all is
+0 for `gea ci status` (an empty listing is not an error); to gate on CI, use
+`gea ci watch`, which exits 8 when no run appears within --appear-timeout.
+
+  gea ci                     # CI for the branch you are on
+  gea ci 2626                # CI for pull request #2626
+  gea ci logs 2626           # the logs of its failed jobs
+  gea ci watch && gea pr merge
+  gea ci --json id,status,conclusion";
+
+#[derive(Debug, ClapArgs)]
+#[command(args_conflicts_with_subcommands = true)]
+pub struct Args {
+    #[command(subcommand)]
+    pub command: Option<Cmd>,
+    // Bare `gea ci [TARGET]` is `gea ci status [TARGET]`.
+    #[command(flatten)]
+    pub status: StatusArgs,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Cmd {
+    /// Show the CI runs for a target, failed jobs first (the default)
+    #[command(long_about = "\
+Show the CI runs for a target: each workflow's newest run, failed first, with the jobs
+that failed under it and why a waiting job is waiting. Ends with the next command to run.
+
+Exit codes: 0 passed, 1 failed, 8 still running. The same under --json. No runs at all
+is 0 (an empty listing is not an error); gate on `gea ci watch` instead, which exits 8.
+--all only adds the superseded runs to what is shown; the exit code and the next command
+still come from each workflow's newest run.
+
+  gea ci status
+  gea ci status 2626 --workflow ci.yml
+  gea ci status main --all --json id,status,conclusion")]
+    Status(StatusArgs),
+    /// Print the logs of the failed jobs
+    #[command(long_about = "\
+Print job logs for a target's runs, each under a `==> workflow / job (run, job) <==`
+header. By default only the jobs that failed; --all prints every job, --job one.
+
+When nothing failed: exit 8 if something is still running, else 0.
+
+  gea ci logs
+  gea ci logs 2626 --job \"Fast Checks\"
+  gea ci logs main --all --workflow ci.yml")]
+    Logs(LogsArgs),
+    /// Wait for a target's CI to finish, then show it
+    #[command(long_about = "\
+Poll a target's runs until every one has finished, printing each status change to
+stderr, then print `gea ci status` and exit as it does (--exit-status is implied: 0
+passed, 1 failed). When no run exists yet, keep polling up to --appear-timeout; if none
+appears, exit 8 (no CI result yet) rather than 0, so `gea ci watch && gea pr merge` never
+merges a commit CI did not look at.
+
+Ctrl-C stops it at once.
+
+  gea ci watch
+  gea ci watch 2626 --interval 10
+  gea ci watch && gea pr merge")]
+    Watch(WatchArgs),
+    /// Rerun the failed jobs of every failed run
+    #[command(long_about = "\
+For each of a target's runs that failed, rerun its failed jobs (and the jobs that depend
+on them) — the route `gea run rerun --failed` takes. Runs that passed are not touched.
+
+  gea ci rerun
+  gea ci rerun 2626 --workflow ci.yml")]
+    Rerun(RerunArgs),
+}
+
+// No doc comment on purpose: it would become the `about` of whatever flattens this struct, and
+// bare `gea ci` flattens it.
+#[derive(Debug, Clone, Default, ClapArgs)]
+pub struct StatusArgs {
+    /// A pull request (42, #42, URL), a branch, or a commit. Defaults to the branch you are on
+    #[arg(value_name = "TARGET")]
+    pub target: Option<String>,
+    /// Also show runs a newer run of the same workflow superseded (display only: the exit code
+    /// still comes from each workflow's newest run)
+    #[arg(long)]
+    pub all: bool,
+    /// Only runs of this workflow file, e.g. `ci.yml`
+    #[arg(short = 'W', long, value_name = "FILE")]
+    pub workflow: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, ClapArgs)]
+pub struct LogsArgs {
+    /// A pull request (42, #42, URL), a branch, or a commit. Defaults to the branch you are on
+    #[arg(value_name = "TARGET")]
+    pub target: Option<String>,
+    /// Every job's log, not only the failed ones
+    #[arg(long, conflicts_with = "job")]
+    pub all: bool,
+    /// Only this job: an id, or a name matched across every run
+    #[arg(short = 'j', long, value_name = "ID|NAME")]
+    pub job: Option<JobRef>,
+    /// Only runs of this workflow file, e.g. `ci.yml`
+    #[arg(short = 'W', long, value_name = "FILE")]
+    pub workflow: Option<String>,
+}
+
+#[derive(Debug, Clone, ClapArgs)]
+pub struct WatchArgs {
+    /// A pull request (42, #42, URL), a branch, or a commit. Defaults to the branch you are on
+    #[arg(value_name = "TARGET")]
+    pub target: Option<String>,
+    /// Seconds between polls
+    #[arg(short = 'i', long, value_name = "SECONDS", default_value_t = 5,
+          value_parser = clap::value_parser!(u64).range(1..=3600))]
+    pub interval: u64,
+    /// Seconds to wait for a first run to appear before giving up
+    #[arg(long = "appear-timeout", value_name = "SECONDS", default_value_t = 60,
+          value_parser = clap::value_parser!(u64).range(0..=86400))]
+    pub appear_timeout: u64,
+    /// Only runs of this workflow file, e.g. `ci.yml`
+    #[arg(short = 'W', long, value_name = "FILE")]
+    pub workflow: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, ClapArgs)]
+pub struct RerunArgs {
+    /// A pull request (42, #42, URL), a branch, or a commit. Defaults to the branch you are on
+    #[arg(value_name = "TARGET")]
+    pub target: Option<String>,
+    /// Only runs of this workflow file, e.g. `ci.yml`
+    #[arg(short = 'W', long, value_name = "FILE")]
+    pub workflow: Option<String>,
+}
+
+pub fn run(globals: &GlobalOpts, args: &Args) -> Result<()> {
+    // Before the runtime, so `gea ci --json` needs no host, no token and no network.
+    if emit::discover(globals, fields_for(args.command.as_ref()))? {
+        return Ok(());
+    }
+    crate::runtime::block_on(async move {
+        let rt = Runtime::new(globals)?;
+        let api = support::api(&rt);
+        match &args.command {
+            None => status(&rt, globals, &api, &args.status).await,
+            Some(Cmd::Status(a)) => status(&rt, globals, &api, a).await,
+            Some(Cmd::Logs(a)) => logs::run(&rt, globals, &api, a).await,
+            Some(Cmd::Watch(a)) => watch::run(&rt, globals, &api, a).await,
+            Some(Cmd::Rerun(a)) => rerun(&rt, globals, &api, a).await,
+        }
+    })
+}
+
+/// Which generated field table `--json` validates against. Only `status` prints a document;
+/// `logs` is a text pump and `watch`/`rerun` end in `status`'s human view.
+fn fields_for(cmd: Option<&Cmd>) -> Fields {
+    match cmd {
+        None | Some(Cmd::Status(_)) => RUN_FIELDS,
+        Some(Cmd::Logs(_) | Cmd::Watch(_) | Cmd::Rerun(_)) => Fields::None,
+    }
+}
+
+/// The first seven characters of a SHA.
+pub(crate) fn sha7(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
+}
+
+/// The runs a subcommand works on: the newest per workflow (or all of them), optionally one
+/// workflow's, in the order that puts what needs attention first.
+pub(crate) fn select<'a>(
+    runs: &'a [ActionWorkflowRun],
+    all: bool,
+    workflow: Option<&str>,
+) -> Vec<&'a ActionWorkflowRun> {
+    let mut picked = if all {
+        let mut every: Vec<&ActionWorkflowRun> = runs.iter().collect();
+        sort_for_display(&mut every);
+        every
+    } else {
+        latest_per_workflow(runs)
+    };
+    if let Some(w) = workflow {
+        // `.gitea/workflows/ci.yml` and `ci.yml` both mean the file Gitea reports as `ci.yml`.
+        let want = w.rsplit('/').next().unwrap_or(w);
+        picked.retain(|r| workflow_file(&r.path) == want);
+    }
+    picked
+}
+
+/// `gea ci <verb> [target]`, the command a hint names.
+///
+/// `-R` is added exactly when [`repo_flag`] says so, the same rule the advice of a
+/// `CiFailed`/`CiPending`/`CiNoRuns` error follows, so the `next:` line and the error under it
+/// never name two different commands.
+pub(crate) fn hint(verb: &str, resolved: &Resolved, globals: &GlobalOpts) -> String {
+    let mut cmd = format!("gea ci {verb}");
+    if let Some(sel) = &resolved.selector {
+        cmd.push(' ');
+        cmd.push_str(sel);
+    }
+    if let Some(slug) = repo_flag(resolved, globals) {
+        cmd.push_str(&format!(" -R {slug}"));
+    }
+    cmd
+}
+
+/// The repository a follow-up `gea ci` command must name with `-R`, or `None` when it reaches
+/// the same one without.
+///
+/// `-R` is carried over when the user gave it, so the command runs as printed from wherever the
+/// user is — one that only works inside the checkout is not "the exact next command". It is
+/// left off when the target is a URL, which names its repository itself, and when the user gave
+/// no `-R`: the repository then came from the checkout, where the command will run again.
+///
+/// The one source of this decision. [`hint`] prints it; the `gea ci` error variants carry it as
+/// their `slug`, which `gitea-core` renders as `-R` whenever it is set.
+pub(crate) fn repo_flag<'a>(resolved: &'a Resolved, globals: &GlobalOpts) -> Option<&'a RepoSlug> {
+    let is_url = resolved.selector.as_deref().is_some_and(|s| s.contains("://"));
+    (globals.repo.is_some() && !is_url).then_some(&resolved.slug)
+}
+
+/// The `slug` of a `gea ci` error: [`repo_flag`], as the taxonomy carries it.
+pub(crate) fn advice_slug(resolved: &Resolved, globals: &GlobalOpts) -> Option<String> {
+    repo_flag(resolved, globals).map(ToString::to_string)
+}
+
+/// The error `gea ci watch` ends with when no run appeared for the commit in time.
+pub(crate) fn no_runs_error(
+    resolved: &Resolved,
+    globals: &GlobalOpts,
+    workflow: Option<&str>,
+) -> Error {
+    Error::new(ErrorKind::CiNoRuns {
+        slug: advice_slug(resolved, globals),
+        target: resolved.selector.clone(),
+        sha: resolved.sha.clone(),
+        workflow: workflow.map(str::to_owned),
+    })
+}
+
+/// The stderr note for a commit with nothing selected, and a check for the usual reason.
+pub(crate) async fn no_runs(
+    rt: &Runtime,
+    api: &Api,
+    resolved: &Resolved,
+    runs: &[ActionWorkflowRun],
+    workflow: Option<&str>,
+) {
+    support::warn(&no_runs_message(resolved, runs, workflow));
+    if runs.is_empty() {
+        warn_if_actions_disabled(rt, api, &resolved.slug).await;
+    }
+}
+
+fn no_runs_message(
+    resolved: &Resolved,
+    runs: &[ActionWorkflowRun],
+    workflow: Option<&str>,
+) -> String {
+    let at = format!("{} ({})", sha7(&resolved.sha), resolved.label);
+    match workflow {
+        Some(w) if !runs.is_empty() => {
+            let mut have: Vec<&str> = runs.iter().map(|r| workflow_file(&r.path)).collect();
+            have.sort_unstable();
+            have.dedup();
+            format!("no run of {w} for {at}; its runs are of: {}", have.join(", "))
+        }
+        _ => format!(
+            "no Actions runs for {at}. The workflows' `on:` filters may not match, Actions may \
+             be disabled, or the push has not been processed yet."
+        ),
+    }
+}
+
+// ----------------------------------------------------------------------------------- status
+
+async fn status(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &StatusArgs) -> Result<()> {
+    let resolved = target::resolve_target(rt, globals, api, args.target.as_deref()).await?;
+    let runs = target::runs_for_sha(api, &resolved.slug, &resolved.sha).await?;
+    let selected = select(&runs, args.all, args.workflow.as_deref());
+    report(rt, globals, api, &resolved, &runs, &selected, args.workflow.as_deref()).await
+}
+
+/// Print the status view (or `--json`) for `selected`, and turn it into the exit code.
+///
+/// Shared by `status` and `watch`, which ends by printing exactly what `status` would.
+///
+/// `selected` is what to *show*; the verdict and the `next:` line always come from the newest
+/// run of each workflow, so `--all` — a display flag — can never change the exit code. A run in
+/// `selected` that a newer one superseded is marked as such in the human view and ignored by
+/// both. An empty `selected` is success: a listing with nothing in it is not an error, and
+/// gating on "CI looked at this commit" is `gea ci watch`'s job.
+pub(crate) async fn report(
+    rt: &Runtime,
+    globals: &GlobalOpts,
+    api: &Api,
+    resolved: &Resolved,
+    runs: &[ActionWorkflowRun],
+    selected: &[&ActionWorkflowRun],
+    workflow: Option<&str>,
+) -> Result<()> {
+    let machine = globals.wants_machine_output();
+    // The waiting diagnosis costs requests and only the human view prints it.
+    let mut views = view::gather(api, &resolved.slug, selected, !machine).await?;
+    view::mark_superseded(&mut views, runs, workflow);
+    if machine {
+        emit::list(rt, globals, listing(selected)?, |_| {})?;
+    } else {
+        let next = view::next_verb(&views).map(|verb| hint(verb, resolved, globals));
+        let mut out = support::writer(globals)?;
+        out.write_all(view::render(resolved, &views, rt.term(), next.as_deref()).as_bytes())?;
+        out.flush()?;
+    }
+    if selected.is_empty() {
+        no_runs(rt, api, resolved, runs, workflow).await;
+    }
+    view::verdict(resolved, &views, advice_slug(resolved, globals))
+}
+
+/// The selected runs as `--json` prints them: the API's own objects, validated against
+/// [`RUN_FIELDS`].
+fn listing<'a>(selected: &[&ActionWorkflowRun]) -> Result<Listing<'a>> {
+    Ok(Listing {
+        fields: RUN_FIELDS,
+        value: support::to_value(selected)?,
+        count: selected.len(),
+        total: None,
+        noun: "runs",
+    })
+}
+
+// ------------------------------------------------------------------------------------ rerun
+
+async fn rerun(rt: &Runtime, globals: &GlobalOpts, api: &Api, args: &RerunArgs) -> Result<()> {
+    let resolved = target::resolve_target(rt, globals, api, args.target.as_deref()).await?;
+    let runs = target::runs_for_sha(api, &resolved.slug, &resolved.sha).await?;
+    let selected = select(&runs, false, args.workflow.as_deref());
+    if selected.is_empty() {
+        no_runs(rt, api, &resolved, &runs, args.workflow.as_deref()).await;
+        return Ok(());
+    }
+    let reran = rerun_failed(api, &resolved.slug, &selected, support::warn).await?;
+    if reran == 0 {
+        support::warn(&format!(
+            "no run failed for {} ({}); there is nothing to rerun",
+            sha7(&resolved.sha),
+            resolved.label
+        ));
+        return Ok(());
+    }
+    let mut out = support::writer(globals)?;
+    writeln!(out, "next: {}", hint("watch", &resolved, globals))?;
+    out.flush()?;
+    Ok(())
+}
+
+/// Rerun the failed jobs of every failed run in `selected`, saying so for each as it goes, and
+/// answer how many were rerun. A run that passed or is still going is not touched: rerunning a
+/// green workflow is not what "rerun CI" means, and Gitea refuses one that has not finished.
+pub(crate) async fn rerun_failed(
+    api: &Api,
+    slug: &RepoSlug,
+    selected: &[&ActionWorkflowRun],
+    mut say: impl FnMut(&str),
+) -> Result<usize> {
+    let mut count = 0;
+    for run in selected.iter().filter(|r| ci_state(r) == CiState::Failed) {
+        request_rerun(api, slug, run.id, Rerun::Failed).await?;
+        say(&format!("reran failed jobs of {} (run {})", workflow_file(&run.path), run.id));
+        count += 1;
+    }
+    Ok(count)
+}
+
+#[cfg(test)]
+mod tests;
