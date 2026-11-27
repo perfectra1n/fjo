@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install gea from a published GitHub release.
 #
-#   curl -fsSL https://raw.githubusercontent.com/perfectra1n/gea/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/perfectra1n/fjo/main/gea/install.sh | sh
 #
 # Deliberately POSIX sh and deliberately never sudo: the default target is the
 # caller's own ~/.local/bin, so `curl | sh` never needs root. Reviewing a script
@@ -9,16 +9,22 @@
 # enough to read, which is the other reason there is no cleverness here.
 #
 # Knobs:
-#   GEA_VERSION      tag to install (default: the latest release)
+#   GEA_VERSION      version to install, e.g. v0.2.2 (default: the latest release)
 #   GEA_INSTALL_DIR  where the binary goes (default: ~/.local/bin)
 #   GEA_NO_COMPLETIONS  set to 1 to skip shell completions
 set -eu
 
-REPO="perfectra1n/gea"
+# gea lives in the fjo repository, as a workspace under gea/, and releases from
+# there under gea-vX.Y.Z tags. Releases up to v0.2.2 were published by the
+# standalone gea repository, under plain vX.Y.Z tags, and are still downloaded
+# from it.
+REPO="perfectra1n/fjo"
+LEGACY_REPO="perfectra1n/gea"
+LEGACY_LAST="v0.2.2"
 INSTALL_DIR="${GEA_INSTALL_DIR:-$HOME/.local/bin}"
 # The gnu artifacts are built on ubuntu-22.04. Anything older than its glibc
 # cannot run them, so it gets the static musl build instead. Keep this in step
-# with the runner in .github/workflows/release.yaml -- `mise run glibc-floor-check`
+# with the runner in .github/workflows/release-gea.yaml -- `mise run glibc-floor-check`
 # is what stops the built artifact from drifting past it.
 GLIBC_FLOOR_MAJOR=2
 GLIBC_FLOOR_MINOR=35
@@ -85,14 +91,24 @@ target_triple() {
 
 # --- release resolution ------------------------------------------------------
 
+# The newest published release of gea. gea is published from the fjo repository, next to
+# fjo itself (tags vX.Y.Z), so "the repository's latest release" is not the same question:
+# list the releases, newest first, and take the first gea-vX.Y.Z tag that is neither
+# a draft nor a prerelease. The API pretty-prints one field per line, in the
+# order tag_name, draft, prerelease, which is all this reads.
 latest_tag() {
-    _api="https://api.github.com/repos/$REPO/releases/latest"
+    _api="https://api.github.com/repos/$REPO/releases?per_page=100"
     if command -v curl >/dev/null 2>&1; then
         _body=$(curl -fsSL "$_api")
     else
         _body=$(wget -qO- "$_api")
     fi
-    printf '%s' "$_body" | grep -m1 '"tag_name"' | cut -d'"' -f4
+    printf '%s\n' "$_body" | awk -F'"' '
+        /^ *"tag_name":/   { tag = $4; skip = 0 }
+        /^ *"draft": *true/ { skip = 1 }
+        /^ *"prerelease":/ {
+            if ($0 !~ /true/ && !skip && tag ~ /^gea-v[0-9]/) { print tag; exit }
+        }'
 }
 
 fetch() {
@@ -118,20 +134,33 @@ else
 fi
 TARGET=$(target_triple "$OS" "$ARCH" "$LIBC")
 
-TAG="${GEA_VERSION:-$(latest_tag)}"
-[ -n "$TAG" ] || die "could not resolve the latest release tag"
+# VERSION is always vX.Y.Z. GEA_VERSION may be given either way, v0.2.2 or gea-v0.2.2.
+if [ -n "${GEA_VERSION:-}" ]; then
+    VERSION="${GEA_VERSION#gea-}"
+else
+    VERSION=$(latest_tag)
+    VERSION="${VERSION#gea-}"
+    # Nothing has been released from the new repository yet.
+    [ -n "$VERSION" ] || VERSION="$LEGACY_LAST"
+fi
 
-STAGE="gea-$TAG-$TARGET"
-URL="https://github.com/$REPO/releases/download/$TAG/$STAGE.tar.gz"
+case "$VERSION" in
+    v0.1.*|v0.2.0|v0.2.1|v0.2.2) DL_REPO="$LEGACY_REPO"; TAG="$VERSION" ;;
+    *)                           DL_REPO="$REPO";        TAG="gea-$VERSION" ;;
+esac
 
-say "installing $TAG for $TARGET"
+# The archive name did not change with the move: gea-vX.Y.Z-<target>.
+STAGE="gea-$VERSION-$TARGET"
+URL="https://github.com/$DL_REPO/releases/download/$TAG/$STAGE.tar.gz"
+
+say "installing $VERSION for $TARGET"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 fetch "$URL" "$TMP/$STAGE.tar.gz" ||
     die "download failed: $URL
-The release may not publish this target. See https://github.com/$REPO/releases"
+The release may not publish this target. See https://github.com/$DL_REPO/releases"
 
 # Verify against the checksum published beside the archive. A failure here is
 # fatal rather than a warning -- a mismatch means the bytes are not the bytes

@@ -3,10 +3,10 @@
     Install gea from a published GitHub release.
 
 .DESCRIPTION
-    irm https://raw.githubusercontent.com/perfectra1n/gea/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/perfectra1n/fjo/main/gea/install.ps1 | iex
 
     Knobs (set before piping):
-      $env:GEA_VERSION       tag to install (default: the latest release)
+      $env:GEA_VERSION       version to install, e.g. v0.2.2 (default: the latest release)
       $env:GEA_INSTALL_DIR   where the binary goes
                              (default: %LOCALAPPDATA%\Programs\gea\bin)
 
@@ -22,7 +22,12 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Repo = 'perfectra1n/gea'
+# gea lives in the fjo repository, as a workspace under gea/, and releases from there
+# under gea-vX.Y.Z tags. Releases up to v0.2.2 were published by the standalone gea
+# repository, under plain vX.Y.Z tags, and are still downloaded from it.
+$Repo = 'perfectra1n/fjo'
+$LegacyRepo = 'perfectra1n/gea'
+$LegacyLast = 'v0.2.2'
 $InstallDir = if ($env:GEA_INSTALL_DIR) { $env:GEA_INSTALL_DIR }
               else { Join-Path $env:LOCALAPPDATA 'Programs\gea\bin' }
 
@@ -36,15 +41,30 @@ if ($arch -ne 'X64') {
 }
 $target = 'x86_64-pc-windows-msvc'
 
-$tag = if ($env:GEA_VERSION) { $env:GEA_VERSION } else {
-    (Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest").tag_name
+# gea is published from the fjo repository, next to fjo itself (tags vX.Y.Z), so the
+# repository's "latest release" is not necessarily gea's. Take the newest gea-vX.Y.Z.
+# $version is always vX.Y.Z; GEA_VERSION may be given as v0.2.2 or gea-v0.2.2.
+$version = if ($env:GEA_VERSION) { $env:GEA_VERSION } else {
+    Invoke-RestMethod "https://api.github.com/repos/$Repo/releases?per_page=100" |
+        ForEach-Object { $_ } |
+        Where-Object { -not $_.draft -and -not $_.prerelease -and $_.tag_name -match '^gea-v\d' } |
+        Select-Object -First 1 -ExpandProperty tag_name
 }
-if (-not $tag) { throw 'gea: could not resolve the latest release tag' }
+# Nothing has been released from the new repository yet.
+if (-not $version) { $version = $LegacyLast }
+$version = $version -replace '^gea-', ''
 
-$stage = "gea-$tag-$target"
-$url   = "https://github.com/$Repo/releases/download/$tag/$stage.zip"
+if ($version -match '^v0\.1\.|^v0\.2\.[012]$') {
+    $dlRepo = $LegacyRepo; $tag = $version
+} else {
+    $dlRepo = $Repo; $tag = "gea-$version"
+}
 
-Say "installing $tag for $target"
+# The archive name did not change with the move: gea-vX.Y.Z-<target>.
+$stage = "gea-$version-$target"
+$url   = "https://github.com/$dlRepo/releases/download/$tag/$stage.zip"
+
+Say "installing $version for $target"
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
@@ -52,7 +72,7 @@ try {
     $zip = Join-Path $tmp "$stage.zip"
     Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
 
-    # release.yaml writes the Windows checksum with certutil, which emits the
+    # release-gea.yaml writes the Windows checksum with certutil, which emits the
     # bare hash with no filename -- unlike the shasum format used for tar.gz.
     try {
         $expected = (Invoke-WebRequest -Uri "$url.sha256" -UseBasicParsing).Content.Trim()
