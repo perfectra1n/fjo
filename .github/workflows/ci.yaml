@@ -12,9 +12,19 @@ on:
   push:
     branches:
       - main
+    # gea is a separate nested workspace with its own pipeline (ci-gea.yaml). A change
+    # that touches only gea must not boot this suite's 24 Forgejo containers.
+    paths-ignore:
+      - "gea/**"
+      - ".github/workflows/*-gea.yaml"
   pull_request:
     branches:
       - main
+    # gea is a separate nested workspace with its own pipeline (ci-gea.yaml). A change
+    # that touches only gea must not boot this suite's 24 Forgejo containers.
+    paths-ignore:
+      - "gea/**"
+      - ".github/workflows/*-gea.yaml"
   merge_group:
   workflow_dispatch:
 

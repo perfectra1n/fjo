@@ -1,0 +1,13 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::AmbiguousRemote\n{\n    candidates:\n    vec![RemoteCandidate\n    {\n        remote: \"fork\".into(), host: \"git.example.org\".into(), slug:\n        \"me/gea\".into(),\n    }, RemoteCandidate\n    {\n        remote: \"mirror\".into(), host: \"codeberg.org\".into(), slug:\n        \"perf3ct/gea\".into(),\n    },],\n}, RequestCtx::default())"
+---
+error: multiple Git remotes match; select a repository
+
+  remotes: fork → git.example.org/me/gea
+           mirror → codeberg.org/perf3ct/gea
+
+what to do:
+  choose which remote repository to use.
+  1. gea repo set-default  (save the choice in Git config)
+  2. gea <command> -R owner/name  (choose for one command)

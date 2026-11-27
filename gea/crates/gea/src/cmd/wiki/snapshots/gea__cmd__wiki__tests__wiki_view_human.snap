@@ -1,0 +1,15 @@
+---
+source: crates/gea/src/cmd/wiki/mod.rs
+expression: "render_page(&testing::term(), \"Home\", markdown, 3, true)"
+---
+Home
+────
+
+Home
+
+Welcome.
+
+• one
+• two
+
+3 revisions — `gea wiki revisions Home`

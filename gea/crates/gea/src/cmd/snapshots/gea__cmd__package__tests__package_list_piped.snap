@@ -1,0 +1,6 @@
+---
+source: crates/gea/src/cmd/package.rs
+expression: "render_list(&Term::piped(), &packages())"
+---
+mycrate	1.2.3	cargo	acme/thing	-
+web	sha-abc	container	-	-

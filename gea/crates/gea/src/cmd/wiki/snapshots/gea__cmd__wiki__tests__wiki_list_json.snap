@@ -1,0 +1,5 @@
+---
+source: crates/gea/src/cmd/wiki/mod.rs
+expression: "testing::as_json(META_FIELDS, \"title,sub_url,html_url\",\nporcelain::json_of(&pages()).unwrap())"
+---
+[{"title":"Home","sub_url":"Home","html_url":"https://git.example.org/them/proj/wiki/Home"},{"title":"Release Process","sub_url":"Release-Process","html_url":"https://git.example.org/them/proj/wiki/Release-Process"}]

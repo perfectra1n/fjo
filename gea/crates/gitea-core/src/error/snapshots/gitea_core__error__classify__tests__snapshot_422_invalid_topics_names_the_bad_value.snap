@@ -1,0 +1,17 @@
+---
+source: crates/gitea-core/src/error/classify.rs
+expression: "rendered(422, &json(),\nbr#\"{\"invalidTopics\":[\"Bad Topic\",\"another bad one\"],\"message\":\"Topic names are invalid\"}\"#,\n&topics_ctx())"
+---
+error: the server rejected the values in this request (HTTP 422)
+
+  request:       PUT /api/v1/repos/perf3ct/gea/topics
+  invalidTopics: Bad Topic
+  invalidTopics: another bad one
+  server says:   Topic names are invalid
+
+what to do:
+  correct the rejected values listed above.
+  1. correct the values and retry
+  2. gea raw search issue  (find the endpoint and its flags)
+  note: the server may require a field that the API specification marks
+        optional.

@@ -1,0 +1,10 @@
+---
+source: crates/gea/src/cmd/admin/runner.rs
+expression: "String::from_utf8(buf).unwrap()"
+---
+Showing 3 runners
+
+ID  NAME        STATUS   BUSY  DISABLED  LABELS
+1   builder     online   yes             docker,ubuntu-latest
+2   repo-local  offline                  self-hosted
+3   org-wide    online         yes       arm64

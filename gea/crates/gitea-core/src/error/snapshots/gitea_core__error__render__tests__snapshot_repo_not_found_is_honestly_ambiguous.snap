@@ -1,0 +1,21 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::RepoNotFound\n{\n    slug: \"perf3ct/gea\".into(), host: \"git.example.org\".into(), login:\n    Some(\"perf3ct\".into()), probed: true, server_message: None,\n}, c)"
+---
+error: could not find the repository perf3ct/gea on git.example.org (HTTP 404)
+
+  request:      GET /api/v1/repos/perf3ct/gea/pulls/4212
+  repository:   perf3ct/gea
+  host:         git.example.org
+  logged in as: perf3ct
+  token from:   the OS keyring, entry gea:git.example.org
+
+what to do:
+  check these possible causes:
+  1. check the owner and repository name; the repository may have been
+     renamed, transferred, or deleted
+  2. for a private repository, check account access and read:repository.
+     if the scope is missing, create a new token at
+     https://git.example.org/user/settings/applications
+  3. check the configured server: gea auth status
+  check repository access: gea api repos/perf3ct/gea

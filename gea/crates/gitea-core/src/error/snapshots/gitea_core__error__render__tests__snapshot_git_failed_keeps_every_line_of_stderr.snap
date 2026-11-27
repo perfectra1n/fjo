@@ -1,0 +1,16 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::GitFailed\n{\n    command: \"git push origin HEAD:refs/for/main/my-topic\".into(), stderr:\n    \"remote: Permission to perf3ct/gea.git denied.\\nfatal: unable to access 'https://git.example.org/perf3ct/gea.git/': The requested URL returned error: 403\".into(),\n    status: Some(128),\n}, RequestCtx::default())"
+---
+error: Git command failed: git push origin …
+
+  ran:      git push origin HEAD:refs/for/main/my-topic
+  exit:     128
+  git says: remote: Permission to perf3ct/gea.git denied.
+            fatal: unable to access 'https://git.example.org/perf3ct/gea.git/': The requested URL returned error: 403
+
+what to do:
+  check Git's error above. Your Git configuration and credential helpers apply.
+  1. git push origin HEAD:refs/for/main/my-topic  (run Git directly)
+  2. for authentication failures, check Git's credential configuration
+  note: gea auth setup-git makes git use the same credential gea does.

@@ -1,0 +1,15 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::Forbidden\n{ server_message: \"user is not a collaborator on this repository\".into() },\nctx())"
+---
+error: permission denied (HTTP 403)
+
+  request:     POST /api/v1/repos/perf3ct/gea/issues
+  server says: user is not a collaborator on this repository
+  token from:  the OS keyring, entry gea:git.example.org
+
+what to do:
+  the server denied this action. Check the message and your account permissions.
+  1. gea api user --jq .login  (confirm who you are)
+  2. ask for the access you need, or, as an instance admin, act as
+     someone who has it with --sudo <user>

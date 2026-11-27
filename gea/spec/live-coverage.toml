@@ -1,0 +1,15 @@
+# Operations the live suite cannot drive, and what would change that.
+#
+# Read by `cargo xtask coverage-check` (crates/xtask/src/coverage.rs). An entry here leaves the
+# operation OUT OF THE DENOMINATOR rather than counting it as covered, so the live budget stays
+# pure debt and its honest target is zero.
+#
+# Modelled on spec/name-lock.toml: the point is not the exemption, it is the **reviewable diff**.
+# Every entry carries a `reason` (what stops it today) and an `unblock` (what would remove it).
+# An entry naming an operation that no longer exists is a hard failure, so a spec bump cannot
+# quietly shrink the denominator.
+#
+# Adding one is a decision somebody signs off on. Before adding, ask whether the answer is
+# harness capability rather than exemption: "we would need X in the harness" is a reason to
+# build X, not a reason to be excused from it forever.
+#

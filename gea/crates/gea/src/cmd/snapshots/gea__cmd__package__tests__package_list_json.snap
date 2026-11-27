@@ -1,0 +1,5 @@
+---
+source: crates/gea/src/cmd/package.rs
+expression: "testing::as_json(PACKAGE_FIELDS, \"id,name,version,type,html_url\",\nporcelain::json_of(&packages()).unwrap())"
+---
+[{"id":1,"name":"mycrate","version":"1.2.3","type":"cargo","html_url":"https://git.example.org/acme/-/packages/cargo/mycrate/1.2.3"},{"id":2,"name":"web","version":"sha-abc","type":"container","html_url":"https://git.example.org/acme/-/packages/container/web/sha-abc"}]

@@ -734,3 +734,11 @@ for shell in bash zsh fish powershell elvish; do
 done
 ls -la "$out"
 '''
+
+[tasks.installer-check]
+description = "Run install.sh and gea/install.sh against real releases (needs the network)"
+# Not part of `mise run ci`: it downloads release archives. dist-check.yaml runs it
+# whenever an installer changes. What it guards is in scripts/test-installers.sh --
+# chiefly that each installer resolves the newest release of ITS tool, now that fjo
+# and gea are both released from this repository.
+run = "sh scripts/test-installers.sh"

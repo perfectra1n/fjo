@@ -1,0 +1,8 @@
+---
+source: crates/gea/src/cmd/milestone.rs
+expression: text(&buf)
+---
+Milestone "1.0": 2 open, 3 closed, due 2026-12-31
+
+NUMBER  STATE  TITLE     LABELS  UPDATED
+#42     open   It broke          —

@@ -300,3 +300,7 @@ jobs:
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*
+          # This repository also publishes gea releases (tags gea-v*, release-gea.yaml).
+          # "Latest" stays on fjo, because `releases/latest` is what older copies of
+          # install.sh resolve.
+          make_latest: true

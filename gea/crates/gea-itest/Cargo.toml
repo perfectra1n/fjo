@@ -1,0 +1,32 @@
+[package]
+name = "gea-itest"
+version = "0.1.0"
+description = "Integration tests for gea against a real Gitea instance"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Used by the harness itself (src/lib.rs), not only by the tests: `Run::json` parses
+# command output, so it cannot live in dev-dependencies.
+serde_json.workspace = true
+# The container lifecycle. See `Instance::boot` for why this is not `docker run`.
+testcontainers.workspace = true
+# Only for the two things `testcontainers` does not expose but its re-exported `bollard` does:
+# asking whether there is a daemon at all, and reaping leftovers by label. `bollard` is async,
+# so the harness needs a runtime to drive those two calls; it is not otherwise async.
+tokio.workspace = true
+
+[dev-dependencies]
+gitea-core.workspace = true
+gitea-model.workspace = true
+gitea-client.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+insta.workspace = true

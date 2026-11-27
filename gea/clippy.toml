@@ -1,0 +1,16 @@
+# A HashMap iteration inside a code generator is a silent diff-churn bug: iteration
+# order is nondeterministic, so generated output moves between runs for no reason.
+# Generators must use BTreeMap / sorted Vec exclusively.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "use BTreeMap: generator output must be deterministic" },
+    { path = "std::collections::HashSet", reason = "use BTreeSet: generator output must be deterministic" },
+]
+
+# Threshold for clippy::cognitive_complexity (the `mise run complexity` /
+# `complexity-check` tasks). 25 is clippy's default — pinned here so the
+# complexity ratchet is stable across toolchain bumps: without it, a clippy
+# release that retunes the default silently moves the ratchet's baseline and
+# the gate either goes red for nobody's change or quietly stops gating. The
+# lint is allow-by-default, so the ordinary `mise run clippy` gate is
+# unaffected.
+cognitive-complexity-threshold = 25

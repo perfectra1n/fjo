@@ -1,0 +1,9 @@
+---
+source: crates/gea/src/cmd/reaction.rs
+expression: out
+---
+Showing 2 reactions
+
+REACTION  USER   WHEN
++1        ada    2024-05-01T10:00:00Z
+rocket    grace  2024-05-02T11:30:00Z

@@ -1,0 +1,10 @@
+---
+source: crates/gea/src/cmd/mirror.rs
+assertion_line: 724
+expression: "render_list(&testing::term(), &mirrors())"
+---
+Showing 2 push mirrors
+
+REMOTE                ADDRESS                    INTERVAL  ON COMMIT  LAST SYNC  ERROR
+remote_mirror_abc123  https://github.com/me/pr…  8h0m0s    yes        -          -
+remote_mirror_def456  https://codeberg.org/me/…  10m0s     no         -          authentication req…

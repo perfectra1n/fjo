@@ -1,0 +1,14 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::Archived\n{ slug: \"perf3ct/gea\".into(), host: \"git.example.org\".into() }, c)"
+---
+error: perf3ct/gea is archived and read-only (HTTP 423)
+
+  request:    POST /api/v1/repos/perf3ct/gea/issues
+  repository: perf3ct/gea
+
+what to do:
+  archived repositories are read-only.
+  1. unarchive it at https://git.example.org/perf3ct/gea/settings
+  2. then run the command again
+  reads still work: gea issue list -R perf3ct/gea

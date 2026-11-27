@@ -1,0 +1,16 @@
+---
+source: crates/gea/src/cmd/issue/ops.rs
+expression: text(&buf)
+---
+It broke #42
+open • opened by alice about 2 hours ago • 1 comment
+Labels: bug
+Milestone: 1.0
+Assignees: bob
+
+# Steps
+
+- one
+- two
+
+https://git.example.org/perf3ct/gea/issues/42

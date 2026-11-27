@@ -1,0 +1,21 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::RepoNotFound\n{\n    slug: \"perf3ct/gea\".into(), host: \"git.example.org\".into(), login:\n    Some(\"perf3ct\".into()), probed: false, server_message:\n    Some(\"could not find 'no-such-branch' to be a commit, branch or tag\".into(),),\n}, c)"
+---
+error: repository or resource not found under perf3ct/gea on git.example.org (HTTP 404)
+
+  request:      POST /api/v1/repos/perf3ct/gea/pulls
+  repository:   perf3ct/gea  (not checked)
+  host:         git.example.org
+  logged in as: perf3ct
+  server says:  could not find 'no-such-branch' to be a commit, branch or tag
+  token from:   the OS keyring, entry gea:git.example.org
+
+what to do:
+  the repository check was disabled or failed. The repository or a referenced
+  resource may be missing.
+  1. gea api repos/perf3ct/gea  (check repository access)
+  2. another 404 may mean the repository is missing, private with a token
+     that lacks read:repository, or on another server. Check: gea auth status
+  3. if it succeeds, check the resources referenced by the request:
+     branch, tag, or user names

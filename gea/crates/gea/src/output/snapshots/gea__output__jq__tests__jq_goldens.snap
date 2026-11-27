@@ -1,0 +1,85 @@
+---
+source: crates/gea/src/output/jq.rs
+expression: report
+---
+.
+[{"number":1,"title":"add a thing","state":"open","head":{"ref":"feat/a"},"labels":[{"name":"bug"},{"name":"ui"}],"user":{"login":"alice"},"draft":false,"created_at":"2024-01-02T03:04:05Z"},{"number":2,"title":"fix a thing","state":"closed","head":{"ref":"fix/b"},"labels":[],"user":{"login":"bob"},"draft":true,"created_at":"2024-03-04T05:06:07Z"}]
+
+length
+2
+
+.[0].number
+1
+
+.[].number
+1
+2
+
+.[].title
+add a thing
+fix a thing
+
+.[0].head.ref
+feat/a
+
+.[] | .user.login
+alice
+bob
+
+.[] | select(.state == "open") | .number
+1
+
+map(.number)
+[1,2]
+
+[.[].state] | unique
+["closed","open"]
+
+.[0] | keys
+["created_at","draft","head","labels","number","state","title","user"]
+
+.[0] | {n: .number, t: .title}
+{"n":1,"t":"add a thing"}
+
+.[] | [.number, .title] | @text
+[1,"add a thing"]
+[2,"fix a thing"]
+
+.[].labels | map(.name) | join(",")
+bug,ui
+
+
+.[0].labels[0].name
+bug
+
+.[] | .number, .state
+1
+open
+2
+closed
+
+map(select(.draft)) | length
+1
+
+.[0].created_at
+2024-01-02T03:04:05Z
+
+.[] | "#\(.number) \(.title)"
+#1 add a thing
+#2 fix a thing
+
+group_by(.state) | map(length)
+[1,1]
+
+.[0].missing_field
+null
+
+to_entries | length
+2
+
+.[] | .number * 10
+10
+20
+
+[limit(1; .[].number)]
+[1]

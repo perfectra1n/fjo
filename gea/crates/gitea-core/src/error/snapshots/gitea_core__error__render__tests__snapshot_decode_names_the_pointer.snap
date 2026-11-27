@@ -1,0 +1,17 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::Decode\n{\n    pointer: \"/3/head/repo/owner/login\".into(), expected:\n    \"invalid type: null, expected a string\".into(), body_excerpt:\n    r#\"[{\"head\":{\"repo\":{\"owner\":{\"login\":null}}}}]\"#.into(),\n}, c)"
+---
+error: unexpected API response format
+
+  request:  GET /api/v1/repos/perf3ct/gea/pulls
+  at:       /3/head/repo/owner/login
+  expected: invalid type: null, expected a string
+  body:     [{"head":{"repo":{"owner":{"login":null}}}}]
+
+what to do:
+  the response does not match the expected API format.
+  1. gea api repos/perf3ct/gea/pulls  (inspect the API response)
+  2. report the error with the field path shown above
+  note: a write may have succeeded before response decoding failed. Check
+        before retrying.

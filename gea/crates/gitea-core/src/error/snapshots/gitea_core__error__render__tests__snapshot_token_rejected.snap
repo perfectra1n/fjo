@@ -1,0 +1,16 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::TokenRejected\n{\n    host: \"git.example.org\".into(), login: Some(\"perf3ct\".into()),\n    settings_url: \"https://git.example.org/user/settings/applications\".into(),\n}, c)"
+---
+error: git.example.org refused your token (HTTP 401)
+
+  request:    GET /api/v1/user
+  host:       git.example.org
+  login:      perf3ct
+  token from: the OS keyring, entry gea:git.example.org
+
+what to do:
+  the token may be expired, revoked, or from another server.
+  1. create a new token at https://git.example.org/user/settings/applications
+  2. gea auth login --host git.example.org
+  note: replacing a token requires creating a new one.

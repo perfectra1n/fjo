@@ -19,7 +19,8 @@
       // honours the toolchain file and mise honours this one"). Adding Renovate
       // without this rule would manufacture that bug rather than find it.
       customType: "regex",
-      managerFilePatterns: ["/^rust-toolchain\\.toml$/"],
+      // `(^|/)` so the nested gea workspace's gea/rust-toolchain.toml is covered too.
+      managerFilePatterns: ["/(^|/)rust-toolchain\\.toml$/"],
       matchStrings: ["channel = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
       depNameTemplate: "rust",
       packageNameTemplate: "rust-lang/rust",

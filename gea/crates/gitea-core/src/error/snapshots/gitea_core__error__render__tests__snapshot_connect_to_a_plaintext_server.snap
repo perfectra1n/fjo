@@ -1,0 +1,19 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::Connect\n{\n    host: \"172.17.0.1\".into(), port: 39683, cause:\n    \"received corrupt message of type InvalidContentType\".into(),\n    looks_like_plaintext: true, scheme: \"https\".into(),\n}, RequestCtx\n{\n    host: Some(\"172.17.0.1\".into()), method: Some(\"GET\".into()), path:\n    Some(\"/api/v1/repos/geatest/agit\".into()), ..Default::default()\n},)"
+---
+error: cannot connect to 172.17.0.1
+
+  request: GET /api/v1/repos/geatest/agit
+  host:    172.17.0.1
+  port:    39683
+  cause:   received corrupt message of type InvalidContentType
+
+what to do:
+  the server replied with HTTP, but gea used HTTPS.
+  1. use an explicit HTTP address:
+     gea auth login --host http://172.17.0.1:39683
+  2. check the server response:
+     curl -sS -o /dev/null -w '%{http_code}\n' http://172.17.0.1:39683/api/v1/version
+  note: non-loopback hosts default to HTTPS. Use http:// only if the
+        server requires it.

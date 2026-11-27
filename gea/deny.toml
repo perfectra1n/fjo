@@ -1,0 +1,65 @@
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+# Unmaintained, not vulnerable: zbus 6 absorbed these three crates, and nothing we can
+# update has moved to it yet. They arrive only through the Linux Secret Service backend:
+# keyring 4.2 -> zbus-secret-service-keyring-store 1.0.1 -> secret-service 5.2 -> zbus 5.
+# Delete these once secret-service (or the keyring store) depends on zbus 6.
+ignore = [
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: merged into zbus 6; pulled in by keyring's secret-service backend, which is still on zbus 5" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: merged into zbus 6; pulled in by keyring's secret-service backend, which is still on zbus 5" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: merged into zbus 6; pulled in by keyring's secret-service backend, which is still on zbus 5" },
+    # Unmaintained, not vulnerable, and test-only: astral-tokio-tar reaches the graph solely
+    # through testcontainers 0.28.0 -> gea-itest, which never ships. 0.28.0 is the newest
+    # testcontainers and the advisory lists no safe upgrade. Delete this once testcontainers
+    # moves to a maintained tar implementation (the advisory points at `tar-codec`).
+    { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar: unmaintained; test-only, via testcontainers 0.28.0 (latest), no safe upgrade yet" },
+]
+
+[licenses]
+version = 2
+allow = [
+    # The workspace's own crates. cargo-deny checks every crate in the graph,
+    # workspace members included, so the project's own licence has to be listed
+    # here or `mise run deny` fails on our own code.
+    "AGPL-3.0-only",
+
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+# Each of these is either advisory-flagged or superseded. Banning them outright stops one
+# arriving transitively and going unnoticed.
+deny = [
+    { name = "atty", reason = "unmaintained, advisory-flagged; use std::io::IsTerminal" },
+    { name = "is-terminal", reason = "superseded by std::io::IsTerminal since Rust 1.70" },
+    { name = "structopt", reason = "RUSTSEC-2022-0104 unmaintained; use clap 4 derive" },
+    { name = "ansi_term", reason = "unmaintained; use anstyle" },
+    { name = "term_size", reason = "unmaintained; use terminal_size" },
+    { name = "serde_yaml", reason = "deprecated and archived by its author" },
+    { name = "fuzzy-matcher", reason = "unmaintained since 2020; matching is hand-rolled" },
+    { name = "termsize", reason = "stale pre-0.2; use terminal_size" },
+    # We deliberately shell out to git instead: libgit2 ignores url.*.insteadOf and
+    # includeIf, which silently breaks remote-to-host matching for anyone with a rewrite rule.
+    { name = "git2", reason = "ignores insteadOf/includeIf; we shell out to git on purpose" },
+    { name = "comfy-table", reason = "one hand-written Table is shared with tablerender" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

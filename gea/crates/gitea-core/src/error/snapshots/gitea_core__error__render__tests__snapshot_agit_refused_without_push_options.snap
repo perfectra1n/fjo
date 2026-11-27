@@ -1,0 +1,13 @@
+---
+source: crates/gitea-core/src/error/render.rs
+expression: "snap(ErrorKind::AgitRefused\n{\n    refspec: \"HEAD:refs/for/main/fix-parser\".into(), remedy:\n    AgitRemedy::PushOptionsDisabled, stderr:\n    \"fatal: the receiving end does not support push options\".into(),\n}, RequestCtx::default())"
+---
+error: the AGit push to HEAD:refs/for/main/fix-parser was refused
+
+  refspec:  HEAD:refs/for/main/fix-parser
+  git says: fatal: the receiving end does not support push options
+
+what to do:
+  AGit requires Git push options, which this server has disabled.
+  1. ask the server administrator to enable Git push options
+  2. gea pr create --head <branch>  (create from a branch instead)

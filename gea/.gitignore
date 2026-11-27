@@ -1,0 +1,14 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# insta review leftovers
+**/*.snap.new
+
+# local scratch
+/.direnv
+/result
+
+# insta writes a run-log line into these on every `cargo test`, so tracking them means
+# every test run dirties the working tree.
+**/.*.pending-snap

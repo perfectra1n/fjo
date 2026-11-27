@@ -1,0 +1,15 @@
+---
+source: crates/gea/src/cmd/package.rs
+expression: out
+---
+mycrate 1.2.3
+
+type      cargo
+owner     -
+creator   -
+linked to acme/thing
+created   -
+url       https://git.example.org/acme/-/packages/cargo/mycrate/1.2.3
+
+This version cannot be edited. Publish a new version to make changes.
+List its files with `gea package files mycrate 1.2.3`.

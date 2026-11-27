@@ -1,0 +1,13 @@
+---
+source: crates/gea/src/cmd/user.rs
+expression: report
+---
+== human/tty
+ID  TITLE         TYPE         FINGERPRINT    ADDED
+4   ada@thinkpad  ssh-ed25519  SHA256:abcdef
+9   ci            ssh-rsa      SHA256:123456
+== human/piped
+4	ada@thinkpad	ssh-ed25519	SHA256:abcdef	
+9	ci	ssh-rsa	SHA256:123456	
+== json/piped
+[{"id":4,"title":"ada@thinkpad","fingerprint":"SHA256:abcdef"},{"id":9,"title":"ci","fingerprint":"SHA256:123456"}]

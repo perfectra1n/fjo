@@ -1,0 +1,5 @@
+---
+source: crates/gea/src/cmd/times/mod.rs
+expression: "testing::as_json(Fields::Generated(gitea_client::fields::FIELDS_TRACKED_TIME),\n\"id,time,user_name\", value)"
+---
+[{"id":7,"time":5100,"user_name":"alice"},{"id":8,"time":900,"user_name":"bob"}]

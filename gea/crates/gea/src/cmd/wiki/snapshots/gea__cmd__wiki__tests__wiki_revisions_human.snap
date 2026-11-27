@@ -1,0 +1,8 @@
+---
+source: crates/gea/src/cmd/wiki/mod.rs
+expression: "render_revisions(&testing::term(), &commits, Some(12))"
+---
+Showing 1 of 12 revisions
+
+SHA       WHEN              AUTHOR  MESSAGE
+01234567  2026-09-10 09:15  alice   Add a home page

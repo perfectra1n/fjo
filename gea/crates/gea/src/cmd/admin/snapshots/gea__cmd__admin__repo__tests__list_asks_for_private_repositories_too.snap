@@ -1,0 +1,6 @@
+---
+source: crates/gea/src/cmd/admin/repo.rs
+expression: "String::from_utf8(buf).unwrap()"
+---
+ada/widget	private	42	
+acme/public	public+archived	7

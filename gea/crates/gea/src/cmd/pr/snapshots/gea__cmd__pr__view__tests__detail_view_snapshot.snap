@@ -1,0 +1,12 @@
+---
+source: crates/gea/src/cmd/pr/view.rs
+expression: "common::detail(&pr(), &Term::tty(80), true)"
+---
+Teach the parser about tabs #42
+open • alice wants to merge into main from alice:tabs • +24 -3
+
+  Fixes #12
+  
+  The lexer treated a tab as one column.
+
+View this pull request on the web: https://git.example.org/them/proj/pulls/42

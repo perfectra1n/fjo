@@ -1,0 +1,13 @@
+---
+source: crates/gea/src/cmd/org.rs
+expression: report
+---
+== human/tty
+NAME        FULL NAME  VISIBILITY  DESCRIPTION
+acme        Acme Corp  public      makes anvils
+skunkworks             private
+== human/piped
+acme	Acme Corp	public	makes anvils
+skunkworks		private	
+== json/piped
+[{"username":"acme","visibility":"public"},{"username":"skunkworks","visibility":"private"}]

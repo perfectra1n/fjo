@@ -6,6 +6,10 @@ name: Release Please
 # build anything — release.yaml still does that, and this workflow hands off to it
 # (see "Handing off" below).
 #
+# Two components live here: fjo at the repository root (tags vX.Y.Z) and gea under gea/
+# (tags gea-vX.Y.Z). Each gets its own release pull request (`separate-pull-requests`),
+# and the root package excludes gea/ so a gea commit never bumps fjo.
+#
 # release-type is `simple`, not `rust`, and that is deliberate. release-please's
 # Rust strategy calls CargoToml on the workspace root, which throws outright on a
 # manifest with no [package] section ("is not a package manifest (might be a cargo
@@ -83,3 +87,38 @@ jobs:
               workflow_id: 'release.yaml',
               ref: '${{ steps.release.outputs.tag_name }}',
             });
+
+      # gea (the Gitea CLI, a nested workspace under gea/) is the second release-please
+      # component. Its outputs are prefixed with the package path, its tag is gea-vX.Y.Z,
+      # and it has its own build workflow. Same hand-off, same reason as above.
+      - name: Trigger the gea release build
+        if: ${{ steps.release.outputs['gea--release_created'] }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release-gea.yaml',
+              ref: '${{ steps.release.outputs['gea--tag_name'] }}',
+            });
+
+      # GitHub marks a newly created release "Latest" unless told otherwise, and
+      # release-please does not tell it. A gea release would therefore take the badge,
+      # and `releases/latest` with it, away from fjo. Put it back on the newest fjo
+      # release (a plain vX.Y.Z tag). Both installers resolve their own tag prefix and
+      # no longer depend on this; it protects copies of the old install.sh.
+      - name: Keep "Latest" on the newest fjo release
+        # always(): this must still run if the dispatch above failed.
+        if: ${{ always() && steps.release.outputs['gea--release_created'] }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          newest="$(gh release list --limit 100 --exclude-drafts --exclude-pre-releases \
+            --json tagName --jq '[.[].tagName | select(test("^v[0-9]"))][0] // empty')"
+          if [ -n "$newest" ]; then
+            gh release edit "$newest" --latest
+            echo "Latest -> $newest"
+          fi

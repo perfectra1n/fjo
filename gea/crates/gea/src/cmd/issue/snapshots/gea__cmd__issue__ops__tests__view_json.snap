@@ -1,0 +1,5 @@
+---
+source: crates/gea/src/cmd/issue/ops.rs
+expression: text(&buf)
+---
+{"number":42,"title":"It broke","state":"open"}

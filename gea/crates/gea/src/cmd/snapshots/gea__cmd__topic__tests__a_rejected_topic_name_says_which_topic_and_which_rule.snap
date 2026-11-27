@@ -1,0 +1,5 @@
+---
+source: crates/gea/src/cmd/topic.rs
+expression: message
+---
+3 of those are not topic names Gitea accepts. No request was made: "not a topic" contains ' '; a topic may only hold letters, digits and hyphens; "-leading-hyphen" starts with '-'; a topic must start with a letter or a digit; "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" 36 characters; Gitea allows at most 35
