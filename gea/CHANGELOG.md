@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.2.3](https://github.com/perfectra1n/fjo/compare/gea-v0.2.2...gea-v0.2.3) (2026-11-27)
+
+
+### Bug Fixes
+
+* **gea:** install from the fjo repository, falling back to the old one for &lt;= v0.2.2 ([6ce0ee4](https://github.com/perfectra1n/fjo/commit/6ce0ee42e03dea13869857e74461010bb3db3bfa))
+* **gea:** never fall back to an old version when the release listing fails ([5d9c745](https://github.com/perfectra1n/fjo/commit/5d9c745b7abf3ce4699d91ab229e26b5d3538e8f))
+* **gea:** update url to 2.5.9 (RUSTSEC-2026-0592) ([dfd5e45](https://github.com/perfectra1n/fjo/commit/dfd5e45730325e5f8616209a7b8722aeab2897a8))
+
+
+### Documentation
+
+* document gea's new home ([2c22bff](https://github.com/perfectra1n/fjo/commit/2c22bff8108a1177a8cba3a8432343752f30d431))
+
+
+### Continuous Integration
+
+* **release:** manage fjo and gea as separate release-please components ([b58dfe0](https://github.com/perfectra1n/fjo/commit/b58dfe084e25f62785841891238ea2b610d2272a))
+* run gea's pipelines from the fjo repository, scoped to gea/** ([6049b30](https://github.com/perfectra1n/fjo/commit/6049b301dd8c95a249184900ace4f54f4deaed4e))
+
+
+### Miscellaneous Chores
+
+* drop gea's per-repo CI and release config (root owns them) ([c3a57bc](https://github.com/perfectra1n/fjo/commit/c3a57bcd8d40fa7510a11e1ffce3774db0f5c283))
+* import gea (Gitea CLI) into this repository as a nested workspace ([570a7fa](https://github.com/perfectra1n/fjo/commit/570a7fa1ed95dd423bdabc52ef6fe99f9a36b0ca))
+* import gea (Gitea CLI) with full history into gea/ ([009d684](https://github.com/perfectra1n/fjo/commit/009d684f3142c681b11587cf5c44d9c30219e94e))
+
 ## [0.2.2](https://github.com/perfectra1n/gea/compare/v0.2.1...v0.2.2) (2026-11-10)
 
 
