@@ -31,7 +31,7 @@ COPY dist/${TARGETARCH}/gea /usr/local/bin/gea
 # Where a CI job is expected to mount its checkout.
 WORKDIR /workspace
 
-LABEL org.opencontainers.image.source="https://github.com/perfectra1n/gea" \
+LABEL org.opencontainers.image.source="https://github.com/perfectra1n/fjo" \
       org.opencontainers.image.description="gea - a command-line interface for Gitea" \
       org.opencontainers.image.licenses="AGPL-3.0-only"
 

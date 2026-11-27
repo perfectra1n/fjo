@@ -83,22 +83,25 @@ mod tests {
     }
 
     /// Bug this prevents: `gea --version` printing 0.1.0 on the v0.1.2 release. release-please
-    /// owns the version in `.release-please-manifest.json`, and the crate version only follows
-    /// it because `release-please-config.json` lists this Cargo.toml (and its Cargo.lock
-    /// entry) under `extra-files`. Drop that and every release PR goes red here.
+    /// owns the version as the `gea` package in the repository root's
+    /// `.release-please-manifest.json` (gea is a nested workspace inside the fjo repository),
+    /// and the crate version only follows it because the root `release-please-config.json`
+    /// lists this Cargo.toml (and its Cargo.lock entry) under that package's `extra-files`.
+    /// Drop that and every release PR goes red here.
     #[test]
     fn the_crate_version_is_the_release_version() {
         let manifest = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../.release-please-manifest.json"
+            "/../../../.release-please-manifest.json"
         ))
         .expect("read .release-please-manifest.json");
         let manifest: serde_json::Value =
             serde_json::from_str(&manifest).expect("parse the manifest");
         assert_eq!(
             Some(env!("CARGO_PKG_VERSION")),
-            manifest["."].as_str(),
-            "crates/gea/Cargo.toml disagrees with .release-please-manifest.json"
+            manifest["gea"].as_str(),
+            "gea/crates/gea/Cargo.toml disagrees with the \"gea\" entry in \
+             .release-please-manifest.json"
         );
     }
 }

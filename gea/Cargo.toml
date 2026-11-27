@@ -14,7 +14,7 @@ members = [
 edition = "2024"
 rust-version = "1.95"
 license = "AGPL-3.0-only"
-repository = "https://github.com/perfectra1n/gea"
+repository = "https://github.com/perfectra1n/fjo"
 authors = ["perf3ct"]
 
 [workspace.dependencies]
