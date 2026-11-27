@@ -25,7 +25,10 @@ for a in "$@"; do
 done
 for a in "$@"; do
     case "$a" in
-        https://api.github.com/repos/perfectra1n/fjo/releases*) cat "$FIXTURE"; exit 0 ;;
+        https://api.github.com/repos/perfectra1n/fjo/releases*)
+            # A missing fixture stands for the API refusing the request (403, rate limit).
+            [ -f "$FIXTURE" ] || exit 22
+            cat "$FIXTURE"; exit 0 ;;
     esac
 done
 exec "$REAL_CURL" "$@"
@@ -56,7 +59,7 @@ run() {
     rc=0
     env PATH="$T/bin:$PATH" CURL_LOG="$log" FIXTURE="$T/$fixture" HOME="$T/home-$n" \
         FJO_INSTALL_DIR="$dir" GEA_INSTALL_DIR="$dir" FJO_NO_COMPLETIONS=1 GEA_NO_COMPLETIONS=1 \
-        "$@" sh "$ROOT/$script" > "$out" 2>&1 || rc=$?
+        "$@" "${RUN_SHELL:-sh}" "$ROOT/$script" > "$out" 2>&1 || rc=$?
 }
 ok()   { printf 'ok    %s\n' "$name"; }
 fail() { printf 'FAIL  %s: %s\n' "$name" "$1"; sed 's/^/      | /' "$out"; fails=$((fails + 1)); }
@@ -95,6 +98,29 @@ if grep -q '^https://github.com/perfectra1n/fjo/releases/download/gea-v9.9.9/gea
 else
     fail "never requested gea-v9.9.9 from perfectra1n/fjo"
 fi
+
+# `curl ... | bash` is how many people run an installer, and bash outside POSIX mode does
+# not carry `set -e` into a command substitution. A failed listing must stop the install
+# there too, and must never be mistaken for "no release yet" and install an old version.
+expect_refused() {
+    if [ "$rc" -ne 0 ] && [ ! -e "$dir/$1" ] && grep -q 'could not list the releases' "$out"; then
+        ok
+    else
+        fail "wanted a refusal naming the release listing, got exit $rc"
+    fi
+}
+if command -v bash >/dev/null 2>&1; then
+    RUN_SHELL=bash
+    run "gea: a failed release listing stops the install under bash" api-down.json gea/install.sh
+    expect_refused gea
+    run "fjo: a failed release listing stops the install under bash" api-down.json install.sh
+    expect_refused fjo
+    unset RUN_SHELL
+fi
+run "gea: a failed release listing stops the install under sh" api-down.json gea/install.sh
+expect_refused gea
+run "fjo: a failed release listing stops the install under sh" api-down.json install.sh
+expect_refused fjo
 
 if [ "$fails" -ne 0 ]; then
     printf '%s installer test(s) failed\n' "$fails"

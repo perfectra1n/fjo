@@ -92,10 +92,13 @@ target_triple() {
 # order tag_name, draft, prerelease, which is all this reads.
 latest_tag() {
     _api="https://api.github.com/repos/$REPO/releases?per_page=100"
+    # Fail here, explicitly. bash outside POSIX mode (`curl ... | bash`) does not
+    # carry `set -e` into a command substitution, so without the `|| return` a
+    # refused request would look like an empty list.
     if command -v curl >/dev/null 2>&1; then
-        _body=$(curl -fsSL "$_api")
+        _body=$(curl -fsSL "$_api") || return 1
     else
-        _body=$(wget -qO- "$_api")
+        _body=$(wget -qO- "$_api") || return 1
     fi
     printf '%s\n' "$_body" | awk -F'"' '
         /^ *"tag_name":/   { tag = $4; skip = 0 }
@@ -128,7 +131,12 @@ else
 fi
 TARGET=$(target_triple "$OS" "$ARCH" "$LIBC")
 
-TAG="${FJO_VERSION:-$(latest_tag)}"
+if [ -n "${FJO_VERSION:-}" ]; then
+    TAG="$FJO_VERSION"
+else
+    TAG=$(latest_tag) ||
+        die "could not list the releases of $REPO (is api.github.com reachable, or rate limiting you?). Set FJO_VERSION to install a specific version"
+fi
 [ -n "$TAG" ] || die "could not resolve the latest release tag"
 
 STAGE="fjo-$TAG-$TARGET"
