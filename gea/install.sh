@@ -98,10 +98,13 @@ target_triple() {
 # order tag_name, draft, prerelease, which is all this reads.
 latest_tag() {
     _api="https://api.github.com/repos/$REPO/releases?per_page=100"
+    # Fail here, explicitly. bash outside POSIX mode (`curl ... | bash`) does not
+    # carry `set -e` into a command substitution, so without the `|| return` a
+    # refused request would look like an empty list.
     if command -v curl >/dev/null 2>&1; then
-        _body=$(curl -fsSL "$_api")
+        _body=$(curl -fsSL "$_api") || return 1
     else
-        _body=$(wget -qO- "$_api")
+        _body=$(wget -qO- "$_api") || return 1
     fi
     printf '%s\n' "$_body" | awk -F'"' '
         /^ *"tag_name":/   { tag = $4; skip = 0 }
@@ -138,9 +141,11 @@ TARGET=$(target_triple "$OS" "$ARCH" "$LIBC")
 if [ -n "${GEA_VERSION:-}" ]; then
     VERSION="${GEA_VERSION#gea-}"
 else
-    VERSION=$(latest_tag)
+    VERSION=$(latest_tag) ||
+        die "could not list the releases of $REPO (is api.github.com reachable, or rate limiting you?). Set GEA_VERSION to install a specific version"
     VERSION="${VERSION#gea-}"
-    # Nothing has been released from the new repository yet.
+    # The listing worked and holds no gea release: nothing has been released from
+    # the new repository yet. A failed listing never reaches this line.
     [ -n "$VERSION" ] || VERSION="$LEGACY_LAST"
 fi
 
