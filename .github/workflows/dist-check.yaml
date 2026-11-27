@@ -28,6 +28,9 @@ on:
       - ".dockerignore"
       - "install.sh"
       - "install.ps1"
+      - "gea/install.sh"
+      - "gea/install.ps1"
+      - "scripts/test-installers.sh"
       - "rust-toolchain.toml"
   workflow_dispatch:
 
@@ -135,3 +138,14 @@ jobs:
           # executes, TLS has a trust store, and git is present for repo context.
           docker run --rm fjo:smoke --version
           docker run --rm --entrypoint sh fjo:smoke -c 'git --version && ls /etc/ssl/certs/ca-certificates.crt'
+
+  # Both installers, fjo's and gea's, against real release downloads. They are tested
+  # together and from here because they share one hazard: the two tools are released
+  # from this one repository, so each must pick out its own newest release.
+  installers:
+    name: Installers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+      - run: mise run installer-check

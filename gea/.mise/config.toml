@@ -120,7 +120,7 @@ description = "Markdown report of how an upstream spec differs from another (arg
 run = '''
 set -eu
 # Exit status 3 means "they differ" — distinct from 1 so that
-# .github/workflows/spec-drift.yaml can branch on drift versus a real failure.
+# .github/workflows/spec-drift-gea.yaml can branch on drift versus a real failure.
 # Run daily there twice: vendored against the latest release tag (bump PR), and
 # the latest release tag against the `gitea` branch (tracking issue) — the
 # second is the one that reports only what upstream has NOT released yet.
@@ -575,7 +575,7 @@ run = [
 # ---------------------------------------------------------------------------
 # Distribution
 # ---------------------------------------------------------------------------
-# release.yaml drives these instead of calling cargo itself. It previously called
+# release-gea.yaml drives these instead of calling cargo itself. It previously called
 # cargo directly, arguing that a release is "plain cargo build" and that adding
 # mise would put a third name on the 1.98.1 pin. But .mise/config.toml already
 # pins 1.98.1 alongside rust-toolchain.toml, so mise was never a third name -- and
