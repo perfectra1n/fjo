@@ -36,8 +36,13 @@ if ($arch -ne 'X64') {
 }
 $target = 'x86_64-pc-windows-msvc'
 
+# This repository also publishes gea (tags gea-vX.Y.Z), so the repository's "latest
+# release" is not necessarily fjo's. Take the newest vX.Y.Z release instead.
 $tag = if ($env:FJO_VERSION) { $env:FJO_VERSION } else {
-    (Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest").tag_name
+    Invoke-RestMethod "https://api.github.com/repos/$Repo/releases?per_page=100" |
+        ForEach-Object { $_ } |
+        Where-Object { -not $_.draft -and -not $_.prerelease -and $_.tag_name -match '^v\d' } |
+        Select-Object -First 1 -ExpandProperty tag_name
 }
 if (-not $tag) { throw 'fjo: could not resolve the latest release tag' }
 

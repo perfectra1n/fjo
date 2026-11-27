@@ -85,14 +85,24 @@ target_triple() {
 
 # --- release resolution ------------------------------------------------------
 
+# The newest published release of fjo. This repository also publishes gea (tags
+# gea-vX.Y.Z), so "the repository's latest release" is not the same question:
+# list the releases, newest first, and take the first vX.Y.Z tag that is neither
+# a draft nor a prerelease. The API pretty-prints one field per line, in the
+# order tag_name, draft, prerelease, which is all this reads.
 latest_tag() {
-    _api="https://api.github.com/repos/$REPO/releases/latest"
+    _api="https://api.github.com/repos/$REPO/releases?per_page=100"
     if command -v curl >/dev/null 2>&1; then
         _body=$(curl -fsSL "$_api")
     else
         _body=$(wget -qO- "$_api")
     fi
-    printf '%s' "$_body" | grep -m1 '"tag_name"' | cut -d'"' -f4
+    printf '%s\n' "$_body" | awk -F'"' '
+        /^ *"tag_name":/   { tag = $4; skip = 0 }
+        /^ *"draft": *true/ { skip = 1 }
+        /^ *"prerelease":/ {
+            if ($0 !~ /true/ && !skip && tag ~ /^v[0-9]/) { print tag; exit }
+        }'
 }
 
 fetch() {
