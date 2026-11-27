@@ -296,6 +296,14 @@ jobs:
           # keeps the name it had in its own repository. The tag is gea-vX.Y.Z, which is
           # not semver as metadata-action reads it, so the versions are matched out of it.
           images: ghcr.io/${{ github.repository_owner }}/gea
+          # `type=match` adds `latest` on its own under the default flavor, which
+          # would defeat the prerelease guard on the raw tag below.
+          flavor: latest=false
+          # metadata-action fills title and description from the repository, which
+          # is fjo, and its labels win over the Dockerfile's.
+          labels: |
+            org.opencontainers.image.title=gea
+            org.opencontainers.image.description=gea - a command-line interface for Gitea
           tags: |
             type=match,pattern=gea-v(\d+\.\d+\.\d+.*),group=1
             type=match,pattern=gea-v(\d+\.\d+)\.\d+$,group=1
