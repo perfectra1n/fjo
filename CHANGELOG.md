@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.3.2](https://github.com/perfectra1n/fjo/compare/v0.3.1...v0.3.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* **deps:** update url to 2.5.9 (RUSTSEC-2026-0592) ([d3d254c](https://github.com/perfectra1n/fjo/commit/d3d254ce982d7153dabc51330de750b206e2b3df))
+* **install:** resolve fjo's newest release, not the repository's ([7bb888d](https://github.com/perfectra1n/fjo/commit/7bb888db2ae0ee7c205afdad88573620091347d3))
+* **install:** stop when the release listing fails, under bash as well as sh ([084480a](https://github.com/perfectra1n/fjo/commit/084480a1d36f2eca33b0bbc5093a8a35ce856482))
+
+
+### Documentation
+
+* document gea's new home ([2c22bff](https://github.com/perfectra1n/fjo/commit/2c22bff8108a1177a8cba3a8432343752f30d431))
+
+
+### Continuous Integration
+
+* **release:** correct gea's image labels and latest tag; drop an unread config key ([1708515](https://github.com/perfectra1n/fjo/commit/1708515ef315d3de6dbaa2c736436600db1e8aac))
+* **release:** manage fjo and gea as separate release-please components ([b58dfe0](https://github.com/perfectra1n/fjo/commit/b58dfe084e25f62785841891238ea2b610d2272a))
+* run gea's pipelines from the fjo repository, scoped to gea/** ([6049b30](https://github.com/perfectra1n/fjo/commit/6049b301dd8c95a249184900ace4f54f4deaed4e))
+
+
+### Miscellaneous Chores
+
+* import gea (Gitea CLI) into this repository as a nested workspace ([570a7fa](https://github.com/perfectra1n/fjo/commit/570a7fa1ed95dd423bdabc52ef6fe99f9a36b0ca))
+* **release:** gea 0.2.3 ([136b9ca](https://github.com/perfectra1n/fjo/commit/136b9ca9cc7089aec7cf3c1c94756456cd11fa58))
+* **release:** gea 0.2.3 ([b4e2704](https://github.com/perfectra1n/fjo/commit/b4e2704feb8747492eb1bd21a8fef16199aa6b96))
+
 ## [0.3.1](https://github.com/perfectra1n/fjo/compare/v0.3.0...v0.3.1) (2026-11-10)
 
 
