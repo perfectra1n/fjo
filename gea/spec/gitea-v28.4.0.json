@@ -2814,6 +2814,9 @@
           "x-go-name": "Path"
         }
       },
+      "required": [
+        "path"
+      ],
       "type": "object",
       "x-go-package": "gitea.dev/modules/structs"
     },
@@ -9272,7 +9275,7 @@
       "url": "http://opensource.org/licenses/MIT"
     },
     "title": "Gitea API",
-    "version": "28.3.0"
+    "version": "28.4.0"
   },
   "paths": {
     "/admin/actions/jobs": {
