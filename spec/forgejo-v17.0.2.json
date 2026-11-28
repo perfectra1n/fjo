@@ -8396,7 +8396,7 @@
       "url": "http://opensource.org/licenses/MIT"
     },
     "title": "Forgejo API",
-    "version": "17.0.1"
+    "version": "17.0.2"
   },
   "paths": {
     "/actions/run": {
